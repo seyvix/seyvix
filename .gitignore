@@ -1,0 +1,58 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# --- Виртуальные окружения ---
+# Игнорируем папку с зависимостями (venv, .venv)
+venv/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+
+# --- Переменные окружения (СЕКРЕТЫ) ---
+# Никогда не коммитьте файлы .env с паролями и ключами
+.env
+.env.*
+!.env.example
+
+# --- FastAPI / БД / Логи ---
+*.log
+sql_app.db
+db.sqlite3
+.pytest_cache/
+htmlcov/
+.tox/
+.coverage
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.conan/
+
+# --- Редакторы кода и ОС ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
