@@ -9,6 +9,7 @@ export const noteHandlers = [
     const url = new URL(request.url)
     const search = url.searchParams.get('search')?.toLowerCase()
     const tags = url.searchParams.get('tags')?.split(',').filter(Boolean)
+    const folders = url.searchParams.get('folders')?.split(',').filter(Boolean)
 
     let result = notes
     if (search) {
@@ -16,6 +17,9 @@ export const noteHandlers = [
     }
     if (tags?.length) {
       result = result.filter(n => n.tags.some(t => tags.includes(t.name)))
+    }
+    if (folders?.length) {
+      result = result.filter(n => n.folderId !== null && folders.includes(n.folderId))
     }
     return HttpResponse.json(result)
   }),

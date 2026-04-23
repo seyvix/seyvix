@@ -11,10 +11,12 @@ async function prepare(): Promise<void> {
   }
 }
 
-prepare().then(() => {
-  createRoot(document.getElementById('root')!).render(
-    <StrictMode>
-      <App />
-    </StrictMode>
-  )
-})
+prepare()
+  .then(() => {
+    createRoot(document.getElementById('root')!).render(
+      <StrictMode>
+        <App />
+      </StrictMode>
+    )
+  })
+  .catch(console.error)
