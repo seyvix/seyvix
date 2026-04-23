@@ -1,8 +1,87 @@
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.main import app
+from app.core.config import Settings, get_settings
+from app.main import app, configure_cors
 
 client = TestClient(app)
+
+
+def test_settings_read_cors_values_from_env(monkeypatch) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv(
+        "CORS_ALLOWED_ORIGINS",
+        '["http://localhost:3000","http://127.0.0.1:5173"]',
+    )
+    monkeypatch.setenv(
+        "CORS_ALLOW_ORIGIN_REGEX",
+        r"https://([a-zA-Z0-9-]+\.)*temaa\.space",
+    )
+
+    settings = Settings()
+
+    assert settings.cors_allowed_origins == [
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+    ]
+    assert settings.cors_allow_origin_regex == r"https://([a-zA-Z0-9-]+\.)*temaa\.space"
+
+    get_settings.cache_clear()
+
+
+def test_cors_allows_configured_origin_and_credentials() -> None:
+    cors_app = FastAPI()
+    configure_cors(
+        cors_app,
+        Settings(
+            cors_allowed_origins=["http://localhost:3000"],
+            cors_allow_origin_regex=r"https://([a-zA-Z0-9-]+\.)*temaa\.space",
+        ),
+    )
+
+    @cors_app.get("/ping")
+    async def ping() -> dict[str, str]:
+        return {"status": "ok"}
+
+    cors_client = TestClient(cors_app)
+    response = cors_client.options(
+        "/ping",
+        headers={
+            "Origin": "https://app.temaa.space",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "https://app.temaa.space"
+    assert response.headers["access-control-allow-credentials"] == "true"
+
+
+def test_cors_rejects_unknown_origin() -> None:
+    cors_app = FastAPI()
+    configure_cors(
+        cors_app,
+        Settings(
+            cors_allowed_origins=["http://localhost:3000"],
+            cors_allow_origin_regex=r"https://([a-zA-Z0-9-]+\.)*temaa\.space",
+        ),
+    )
+
+    @cors_app.get("/ping")
+    async def ping() -> dict[str, str]:
+        return {"status": "ok"}
+
+    cors_client = TestClient(cors_app)
+    response = cors_client.options(
+        "/ping",
+        headers={
+            "Origin": "https://evil.example.com",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "access-control-allow-origin" not in response.headers
 
 
 def test_healthcheck() -> None:
@@ -27,3 +106,27 @@ def test_modules_overview_contains_expected_modules() -> None:
         "vectorization",
         "llm",
     }
+
+
+def test_openapi_documents_auth_contracts() -> None:
+    response = client.get("/openapi.json")
+
+    assert response.status_code == 200
+    schema = response.json()
+    register_operation = schema["paths"]["/api/v1/auth/register"]["post"]
+    refresh_operation = schema["paths"]["/api/v1/auth/refresh"]["post"]
+    me_operation = schema["paths"]["/api/v1/auth/me"]["get"]
+
+    assert register_operation["summary"] == "Register user"
+    assert (
+        register_operation["responses"]["409"]["description"] == "Email already exists."
+    )
+    assert (
+        refresh_operation["responses"]["401"]["description"]
+        == "Missing or invalid refresh token."
+    )
+    assert me_operation["responses"]["401"]["description"] == "Missing or invalid access token."
+    assert "RegisterRequest" in schema["components"]["schemas"]
+    assert "AuthTokensResponse" in schema["components"]["schemas"]
+    assert "ErrorResponse" in schema["components"]["schemas"]
+    assert "ErrorDetail" in schema["components"]["schemas"]
