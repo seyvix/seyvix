@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     api_prefix: str = "/api/v1"
     log_level: str = "INFO"
+    sqlalchemy_echo: bool = False
     database_url: str = Field(
         default="postgresql+asyncpg://postgres:postgres@localhost:5432/vkr_api"
     )
