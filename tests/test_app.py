@@ -132,17 +132,25 @@ def test_openapi_documents_auth_contracts() -> None:
 
     assert response.status_code == 200
     schema = response.json()
-    register_operation = schema["paths"]["/api/v1/auth/register"]["post"]
+    telegram_callback_operation = schema["paths"]["/api/v1/auth/telegram-callback"]["get"]
+    telegram_code_operation = schema["paths"]["/api/v1/auth/telegram-code"]["post"]
+    telegram_login_operation = schema["paths"]["/api/v1/auth/telegram-login"]["post"]
     refresh_operation = schema["paths"]["/api/v1/auth/refresh"]["post"]
     me_operation = schema["paths"]["/api/v1/auth/me"]["get"]
 
-    assert register_operation["summary"] == "Register user"
-    assert register_operation["responses"]["409"]["description"] == "Email already exists."
+    assert "/api/v1/auth/register" not in schema["paths"]
+    assert "/api/v1/auth/login" not in schema["paths"]
+    assert telegram_callback_operation["summary"] == "Telegram redirect callback"
+    assert telegram_code_operation["summary"] == "Exchange Telegram login code"
+    assert telegram_login_operation["summary"] == "Login with Telegram"
+    assert telegram_login_operation["responses"]["401"]["description"] == (
+        "Invalid Telegram login data."
+    )
     assert (
         refresh_operation["responses"]["401"]["description"] == "Missing or invalid refresh token."
     )
     assert me_operation["responses"]["401"]["description"] == "Missing or invalid access token."
-    assert "RegisterRequest" in schema["components"]["schemas"]
+    assert "TelegramLoginRequest" in schema["components"]["schemas"]
     assert "AuthTokensResponse" in schema["components"]["schemas"]
     assert "ErrorResponse" in schema["components"]["schemas"]
     assert "ErrorDetail" in schema["components"]["schemas"]

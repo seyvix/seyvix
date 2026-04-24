@@ -1,39 +1,60 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 
 
-class RegisterRequest(BaseModel):
-    email: EmailStr = Field(
-        examples=["user@example.com"],
-        description="Unique email used as the login identifier.",
+class TelegramLoginRequest(BaseModel):
+    id: int = Field(
+        gt=0,
+        examples=[100500],
+        description="Telegram user id returned by the Login Widget.",
     )
-    display_name: str = Field(
+    first_name: str = Field(
         min_length=1,
         max_length=255,
+        examples=["Telegram"],
+        description="Telegram first name returned by the Login Widget.",
+    )
+    last_name: str | None = Field(
+        default=None,
+        max_length=255,
         examples=["User"],
-        description="Public display name shown in the site UI.",
+        description="Telegram last name returned by the Login Widget.",
     )
-    password: str = Field(
-        min_length=8,
-        examples=["StrongPass123!"],
-        description="Raw password provided during registration.",
+    username: str | None = Field(
+        default=None,
+        max_length=255,
+        examples=["telegram_user"],
+        description="Telegram username returned by the Login Widget.",
+    )
+    photo_url: str | None = Field(
+        default=None,
+        max_length=2048,
+        examples=["https://t.me/i/userpic/320/example.jpg"],
+        description="Telegram profile photo URL returned by the Login Widget.",
+    )
+    auth_date: int = Field(
+        gt=0,
+        examples=[1713950000],
+        description="Unix timestamp returned by the Login Widget.",
+    )
+    hash: str = Field(
+        examples=["0123456789abcdef"],
+        description="Telegram Login Widget integrity hash.",
     )
 
 
-class LoginRequest(BaseModel):
-    email: EmailStr = Field(
-        examples=["user@example.com"],
-        description="User email used for login.",
-    )
-    password: str = Field(
-        min_length=8,
-        examples=["StrongPass123!"],
-        description="Raw password for the account.",
+class TelegramLoginCodeExchangeRequest(BaseModel):
+    code: str = Field(
+        min_length=1,
+        examples=["opaque-login-code"],
+        description="One-time login code received from the Telegram redirect callback.",
     )
 
 
 class UserResponse(BaseModel):
     id: str = Field(description="Unique user identifier.")
-    email: EmailStr = Field(description="User email.")
+    telegram_id: str = Field(description="Telegram user identifier.")
+    telegram_username: str | None = Field(description="Telegram username.")
+    telegram_photo_url: str | None = Field(description="Telegram profile photo URL.")
     display_name: str = Field(description="Display name visible in the site UI.")
     is_active: bool = Field(description="Whether the account is active and allowed to sign in.")
 

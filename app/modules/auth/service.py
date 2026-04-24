@@ -1,29 +1,43 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.modules.auth.infrastructure.repositories import AuthSessionRepository, UserRepository
 from app.modules.auth.models import AuthSession, User
-from app.modules.auth.schemas import AuthSessionResponse, AuthTokensResponse, UserResponse
+from app.modules.auth.schemas import (
+    AuthSessionResponse,
+    AuthTokensResponse,
+    TelegramLoginCodeExchangeRequest,
+    TelegramLoginRequest,
+    UserResponse,
+)
 from app.modules.auth.security import (
     build_access_token,
     decode_access_token,
     generate_refresh_token,
-    hash_password,
     hash_refresh_token,
     refresh_token_expires_at,
-    verify_password,
+    verify_telegram_login_data,
 )
 
 
-class EmailAlreadyRegisteredError(Exception):
+class TelegramAuthNotConfiguredError(Exception):
     pass
 
 
-class InvalidCredentialsError(Exception):
+class TelegramDevLoginDisabledError(Exception):
+    pass
+
+
+class InvalidTelegramLoginError(Exception):
+    pass
+
+
+class InvalidTelegramLoginCodeError(Exception):
     pass
 
 
@@ -51,24 +65,14 @@ class AuthService:
         self.users = UserRepository(session)
         self.auth_sessions = AuthSessionRepository(session)
 
-    async def register(
+    async def telegram_login(
         self,
         *,
-        email: str,
-        display_name: str,
-        password: str,
+        payload: TelegramLoginRequest,
         user_agent: str | None,
         ip_address: str | None,
     ) -> tuple[AuthTokensResponse, str]:
-        existing_user = await self.users.get_by_email(email)
-        if existing_user is not None:
-            raise EmailAlreadyRegisteredError
-
-        user = User(
-            email=email,
-            display_name=display_name,
-            password_hash=hash_password(password),
-        )
+        user = await self._resolve_telegram_user(payload)
         auth_response, refresh_token = await self._create_session_response(
             user=user,
             user_agent=user_agent,
@@ -76,24 +80,103 @@ class AuthService:
         )
         return auth_response, refresh_token
 
-    async def login(
+    async def telegram_redirect_login(
         self,
         *,
-        email: str,
-        password: str,
+        payload: TelegramLoginRequest,
         user_agent: str | None,
         ip_address: str | None,
-    ) -> tuple[AuthTokensResponse, str]:
-        user = await self.users.get_by_email(email)
-        if user is None or not verify_password(password, user.password_hash) or not user.is_active:
-            raise InvalidCredentialsError
+    ) -> tuple[str, str]:
+        settings = get_settings()
+        if not settings.telegram_login_redirect_url:
+            raise TelegramAuthNotConfiguredError
 
-        auth_response, refresh_token = await self._create_session_response(
+        user = await self._resolve_telegram_user(payload)
+        raw_login_code = generate_refresh_token()
+        _, refresh_token = await self._create_session(
             user=user,
             user_agent=user_agent,
             ip_address=ip_address,
+            raw_login_code=raw_login_code,
         )
-        return auth_response, refresh_token
+        return raw_login_code, refresh_token
+
+    async def telegram_dev_redirect_login(
+        self,
+        *,
+        user_agent: str | None,
+        ip_address: str | None,
+    ) -> tuple[str, str]:
+        settings = get_settings()
+        if not settings.telegram_dev_login_enabled:
+            raise TelegramDevLoginDisabledError
+        if not settings.telegram_login_redirect_url:
+            raise TelegramAuthNotConfiguredError
+
+        telegram_id = str(settings.telegram_dev_user_id)
+        user = await self.users.get_by_telegram_id(telegram_id)
+        display_name = self._build_display_name_from_parts(
+            first_name=settings.telegram_dev_first_name,
+            last_name=settings.telegram_dev_last_name,
+            username=settings.telegram_dev_username,
+            fallback=telegram_id,
+        )
+        if user is None:
+            user = User(
+                telegram_id=telegram_id,
+                display_name=display_name,
+                telegram_username=settings.telegram_dev_username,
+                telegram_photo_url=settings.telegram_dev_photo_url,
+            )
+        else:
+            if not user.is_active:
+                raise InvalidTelegramLoginError
+            user.display_name = display_name
+            user.telegram_username = settings.telegram_dev_username
+            user.telegram_photo_url = settings.telegram_dev_photo_url
+
+        raw_login_code = generate_refresh_token()
+        _, refresh_token = await self._create_session(
+            user=user,
+            user_agent=user_agent,
+            ip_address=ip_address,
+            raw_login_code=raw_login_code,
+        )
+        return raw_login_code, refresh_token
+
+    async def exchange_telegram_login_code(
+        self,
+        *,
+        payload: TelegramLoginCodeExchangeRequest,
+    ) -> AuthTokensResponse:
+        auth_session = await self.auth_sessions.get_active_by_login_code_hash(
+            hash_refresh_token(payload.code),
+            with_user=True,
+        )
+        if auth_session is None:
+            raise InvalidTelegramLoginCodeError
+        if auth_session.login_code_used_at is not None:
+            raise InvalidTelegramLoginCodeError
+        if auth_session.login_code_expires_at is None:
+            raise InvalidTelegramLoginCodeError
+        if self._normalize_datetime(auth_session.login_code_expires_at) <= datetime.now(UTC):
+            raise InvalidTelegramLoginCodeError
+        if self._normalize_datetime(auth_session.expires_at) <= datetime.now(UTC):
+            raise InvalidTelegramLoginCodeError
+        if not auth_session.user.is_active:
+            raise InvalidTelegramLoginCodeError
+
+        auth_session.login_code_used_at = datetime.now(UTC)
+        await self.session.commit()
+        await self.session.refresh(auth_session)
+
+        return AuthTokensResponse(
+            user=UserResponse.model_validate(auth_session.user, from_attributes=True),
+            access_token=build_access_token(
+                user_id=auth_session.user.id,
+                session_id=auth_session.id,
+            ),
+        )
 
     async def refresh(self, *, raw_refresh_token: str) -> tuple[AuthTokensResponse, str]:
         auth_session = await self._load_active_session(raw_refresh_token)
@@ -202,10 +285,41 @@ class AuthService:
         user_agent: str | None,
         ip_address: str | None,
     ) -> tuple[AuthTokensResponse, str]:
+        auth_session, raw_refresh_token = await self._create_session(
+            user=user,
+            user_agent=user_agent,
+            ip_address=ip_address,
+        )
+
+        return (
+            AuthTokensResponse(
+                user=UserResponse.model_validate(user, from_attributes=True),
+                access_token=build_access_token(user_id=user.id, session_id=auth_session.id),
+            ),
+            raw_refresh_token,
+        )
+
+    async def _create_session(
+        self,
+        *,
+        user: User,
+        user_agent: str | None,
+        ip_address: str | None,
+        raw_login_code: str | None = None,
+    ) -> tuple[AuthSession, str]:
         raw_refresh_token = generate_refresh_token()
+        settings = get_settings()
         auth_session = AuthSession(
             user=user,
             refresh_token_hash=hash_refresh_token(raw_refresh_token),
+            login_code_hash=(
+                hash_refresh_token(raw_login_code) if raw_login_code is not None else None
+            ),
+            login_code_expires_at=(
+                datetime.now(UTC) + timedelta(seconds=settings.telegram_login_code_ttl_seconds)
+                if raw_login_code is not None
+                else None
+            ),
             expires_at=refresh_token_expires_at(),
             user_agent=user_agent,
             ip_address=ip_address,
@@ -216,13 +330,7 @@ class AuthService:
         await self.session.refresh(user)
         await self.session.refresh(auth_session)
 
-        return (
-            AuthTokensResponse(
-                user=UserResponse.model_validate(user, from_attributes=True),
-                access_token=build_access_token(user_id=user.id, session_id=auth_session.id),
-            ),
-            raw_refresh_token,
-        )
+        return auth_session, raw_refresh_token
 
     async def _load_active_session(self, raw_refresh_token: str) -> AuthSession:
         auth_session = await self.auth_sessions.get_active_by_refresh_token_hash(
@@ -234,6 +342,63 @@ class AuthService:
         if self._normalize_datetime(auth_session.expires_at) <= datetime.now(UTC):
             raise InvalidRefreshTokenError
         return auth_session
+
+    async def _resolve_telegram_user(self, payload: TelegramLoginRequest) -> User:
+        settings = get_settings()
+        if not settings.telegram_bot_token:
+            raise TelegramAuthNotConfiguredError
+
+        telegram_data = payload.model_dump(exclude_none=True)
+        if not verify_telegram_login_data(
+            telegram_data,
+            bot_token=settings.telegram_bot_token,
+            max_age_seconds=settings.telegram_login_max_age_seconds,
+        ):
+            raise InvalidTelegramLoginError
+
+        telegram_id = str(payload.id)
+        user = await self.users.get_by_telegram_id(telegram_id)
+        if user is None:
+            return User(
+                telegram_id=telegram_id,
+                display_name=self._build_display_name(payload),
+                telegram_username=payload.username,
+                telegram_photo_url=payload.photo_url,
+            )
+
+        if not user.is_active:
+            raise InvalidTelegramLoginError
+
+        user.display_name = self._build_display_name(payload)
+        user.telegram_username = payload.username
+        user.telegram_photo_url = payload.photo_url
+        return user
+
+    @staticmethod
+    def _build_display_name(payload: TelegramLoginRequest) -> str:
+        return AuthService._build_display_name_from_parts(
+            first_name=payload.first_name,
+            last_name=payload.last_name,
+            username=payload.username,
+            fallback=str(payload.id),
+        )
+
+    @staticmethod
+    def _build_display_name_from_parts(
+        *,
+        first_name: str,
+        last_name: str | None,
+        username: str | None,
+        fallback: str,
+    ) -> str:
+        display_name = " ".join(
+            part.strip() for part in (first_name, last_name) if part and part.strip()
+        )
+        if display_name:
+            return display_name[:255]
+        if username:
+            return username[:255]
+        return fallback[:255]
 
     @staticmethod
     def _normalize_datetime(value: datetime) -> datetime:

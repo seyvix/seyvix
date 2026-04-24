@@ -10,18 +10,17 @@ from app.modules.auth.models import AuthSession, User
 
 
 @pytest.mark.asyncio
-async def test_user_repository_returns_user_by_email() -> None:
+async def test_user_repository_returns_user_by_telegram_id() -> None:
     session = AsyncMock()
     user = User(
-        email="user@example.com",
+        telegram_id="100500",
         display_name="User",
-        password_hash="hashed-password",
     )
     session.scalar.return_value = user
 
     repository = UserRepository(session)
 
-    result = await repository.get_by_email("user@example.com")
+    result = await repository.get_by_telegram_id("100500")
 
     assert result is user
     session.scalar.assert_awaited_once()
@@ -32,9 +31,8 @@ async def test_auth_session_repository_lists_active_sessions_for_user() -> None:
     session = AsyncMock()
     auth_session = AuthSession(
         user=User(
-            email="user@example.com",
+            telegram_id="100500",
             display_name="User",
-            password_hash="hashed-password",
         ),
         refresh_token_hash="hash",
         expires_at=datetime.now(UTC),

@@ -1,6 +1,9 @@
 import asyncio
+import hashlib
+import hmac
 import os
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -8,8 +11,11 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
+from app.core.config import get_settings
 from app.core.database import Base, build_session_factory
 from app.main import app
+
+TELEGRAM_BOT_TOKEN = "123456:test-bot-token"
 
 
 async def _prepare_database(database_url: str) -> async_sessionmaker:
@@ -32,6 +38,8 @@ def _test_database_url() -> str:
 
 @pytest.fixture
 def content_client(tmp_path: Path) -> Iterator[TestClient]:
+    os.environ["TELEGRAM_BOT_TOKEN"] = TELEGRAM_BOT_TOKEN
+    get_settings.cache_clear()
     database_url = _test_database_url()
     try:
         app.state.session_factory = asyncio.run(_prepare_database(database_url))
@@ -41,18 +49,31 @@ def content_client(tmp_path: Path) -> Iterator[TestClient]:
     app.state.content_storage_root = tmp_path / "content-storage"
     with TestClient(app) as client:
         yield client
+    get_settings.cache_clear()
 
 
-def _auth_headers(client: TestClient, email: str = "user@example.com") -> dict[str, str]:
+def _telegram_payload(telegram_id: int = 100500) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "id": telegram_id,
+        "first_name": "User",
+        "auth_date": int(datetime.now(UTC).timestamp()),
+    }
+    check_string = "\n".join(f"{key}={value}" for key, value in sorted(payload.items()))
+    secret_key = hashlib.sha256(TELEGRAM_BOT_TOKEN.encode("utf-8")).digest()
+    payload["hash"] = hmac.new(
+        secret_key,
+        check_string.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return payload
+
+
+def _auth_headers(client: TestClient, telegram_id: int = 100500) -> dict[str, str]:
     response = client.post(
-        "/api/v1/auth/register",
-        json={
-            "email": email,
-            "display_name": "User",
-            "password": "StrongPass123!",
-        },
+        "/api/v1/auth/telegram-login",
+        json=_telegram_payload(telegram_id),
     )
-    assert response.status_code == 201
+    assert response.status_code == 200
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 

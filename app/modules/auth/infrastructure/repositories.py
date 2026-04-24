@@ -14,8 +14,8 @@ class UserRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def get_by_email(self, email: str) -> User | None:
-        query = select(User).where(User.email == email)
+    async def get_by_telegram_id(self, telegram_id: str) -> User | None:
+        query = select(User).where(User.telegram_id == telegram_id)
         return cast(User | None, await self.session.scalar(query))
 
     def add(self, user: User) -> None:
@@ -53,6 +53,20 @@ class AuthSessionRepository:
         query = select(AuthSession).where(
             AuthSession.id == session_id,
             AuthSession.user_id == user_id,
+            AuthSession.revoked_at.is_(None),
+        )
+        if with_user:
+            query = query.options(selectinload(AuthSession.user))
+        return cast(AuthSession | None, await self.session.scalar(query))
+
+    async def get_active_by_login_code_hash(
+        self,
+        login_code_hash: str,
+        *,
+        with_user: bool = False,
+    ) -> AuthSession | None:
+        query = select(AuthSession).where(
+            AuthSession.login_code_hash == login_code_hash,
             AuthSession.revoked_at.is_(None),
         )
         if with_user:

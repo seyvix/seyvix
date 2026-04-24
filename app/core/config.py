@@ -29,6 +29,16 @@ class Settings(BaseSettings):
     refresh_cookie_name: str = "refresh_token"
     refresh_cookie_secure: bool = False
     refresh_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
+    telegram_bot_token: str | None = None
+    telegram_login_max_age_seconds: int = 86400
+    telegram_login_redirect_url: str | None = None
+    telegram_login_code_ttl_seconds: int = 60
+    telegram_dev_login_enabled: bool = False
+    telegram_dev_user_id: int = 100500
+    telegram_dev_first_name: str = "Dev"
+    telegram_dev_last_name: str | None = "User"
+    telegram_dev_username: str | None = "dev_user"
+    telegram_dev_photo_url: str | None = None
     content_storage_root: str = "data/content"
     cors_allowed_origins: list[str] = Field(default_factory=list)
     cors_allow_origin_regex: str | None = None
