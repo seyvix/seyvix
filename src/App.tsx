@@ -32,6 +32,11 @@ function RequireGuest() {
 }
 
 const router = createBrowserRouter([
+  // Полностью открытый роут — обрабатывает Telegram redirect с ?code или ?error
+  {
+    path: '/auth/callback',
+    lazy: async () => ({ Component: (await import('./pages/AuthCallbackPage')).default }),
+  },
   // Публичный роут — без сайдбара
   {
     element: <RequireGuest />,

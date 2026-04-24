@@ -1,7 +1,7 @@
 import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { motion, useMotionValue, useTransform, useSpring } from 'framer-motion'
 import CircularText from '../components/CircularText/CircularText'
-import { useAuth } from '../contexts/AuthContext'
 import styles from './AuthPage.module.css'
 
 function TelegramLogo() {
@@ -45,7 +45,6 @@ function TelegramIcon3D({ onClick }: { onClick: () => void }) {
       onClick={onClick}
     >
       <TelegramLogo />
-      {/* 3D тень под иконкой */}
       <motion.div
         className={styles.iconShadow}
         style={{
@@ -57,16 +56,34 @@ function TelegramIcon3D({ onClick }: { onClick: () => void }) {
   )
 }
 
+const ERROR_MESSAGES: Record<string, string> = {
+  invalid_telegram_login: 'Ошибка подтверждения Telegram. Попробуй ещё раз.',
+  telegram_code_failed: 'Не удалось завершить вход. Попробуй ещё раз.',
+  telegram_auth_not_configured: 'Telegram-авторизация не настроена.',
+}
+
 export default function AuthPage() {
   const [loading, setLoading] = useState(false)
-  const { mockLogin } = useAuth()
+  const [searchParams] = useSearchParams()
+
+  const errorCode = searchParams.get('error')
+  const errorMessage = errorCode
+    ? (ERROR_MESSAGES[errorCode] ?? 'Что-то пошло не так. Попробуй ещё раз.')
+    : null
 
   function handleClick() {
     setLoading(true)
-    if (import.meta.env.DEV) {
-      mockLogin()
+    const botId = import.meta.env.VITE_TELEGRAM_BOT_ID
+    if (botId) {
+      const origin = window.location.origin
+      const returnTo = `${origin}/api/v1/auth/telegram-callback`
+      window.location.href =
+        `https://oauth.telegram.org/auth` +
+        `?bot_id=${encodeURIComponent(botId)}` +
+        `&origin=${encodeURIComponent(origin)}` +
+        `&return_to=${encodeURIComponent(returnTo)}`
     } else {
-      setTimeout(() => { window.location.href = '/api/v1/auth/telegram' }, 300)
+      window.location.href = '/api/v1/auth/telegram-dev-login'
     }
   }
 
@@ -93,6 +110,16 @@ export default function AuthPage() {
         >
           {loading ? 'переход в telegram…' : 'авторизоваться через telegram'}
         </motion.p>
+
+        {errorMessage && (
+          <motion.p
+            className={styles.error}
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+          >
+            {errorMessage}
+          </motion.p>
+        )}
       </div>
     </div>
   )

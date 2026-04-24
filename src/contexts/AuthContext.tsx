@@ -1,15 +1,15 @@
-import { createContext, useContext, useEffect, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { apiLogin, apiLogout, apiRefresh, apiRegister } from '../api/auth'
 import type { UserResponse } from '../api/auth'
 import { configureApiClient } from '../lib/apiClient'
 
 interface AuthContextValue {
   user: UserResponse | null
-  isReady: boolean   // bootstrap завершён
+  isReady: boolean
   login: (email: string, password: string) => Promise<void>
   register: (email: string, display_name: string, password: string) => Promise<void>
   logout: () => Promise<void>
-  mockLogin: () => void
+  loginWithTokens: (user: UserResponse, accessToken: string) => void
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -21,7 +21,7 @@ export function useAuth() {
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user,    setUser]    = useState<UserResponse | null>(null)
+  const [user, setUser] = useState<UserResponse | null>(null)
   const [isReady, setIsReady] = useState(false)
 
   // access_token живёт только в памяти
@@ -72,13 +72,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null)
   }
 
-  function mockLogin() {
-    tokenRef.current = 'mock-access-token'
-    setUser({ id: 'tg-mock-1', email: '', display_name: 'Telegram User', is_active: true })
-  }
+  // useCallback даёт стабильную ссылку — useEffect в AuthCallbackPage не зациклится
+  const loginWithTokens = useCallback((user: UserResponse, accessToken: string) => {
+    tokenRef.current = accessToken
+    setUser(user)
+  }, [])
 
   return (
-    <AuthContext.Provider value={{ user, isReady, login, register, logout, mockLogin }}>
+    <AuthContext.Provider value={{ user, isReady, login, register, logout, loginWithTokens }}>
       {children}
     </AuthContext.Provider>
   )

@@ -75,3 +75,11 @@
   margin: 0;
   transition: opacity 0.2s;
 }
+
+.error {
+  margin-top: 12px;
+  color: var(--color-error, #e05252);
+  font-size: 13px;
+  text-align: center;
+  max-width: 280px;
+}
