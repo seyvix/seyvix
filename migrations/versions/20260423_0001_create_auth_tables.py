@@ -7,9 +7,8 @@ Create Date: 2026-04-23 22:05:00
 
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision = "20260423_0001"
 down_revision = None
@@ -41,7 +40,12 @@ def upgrade() -> None:
         sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("user_agent", sa.String(length=512), nullable=True),
         sa.Column("ip_address", sa.String(length=64), nullable=True),
-        sa.ForeignKeyConstraint(["user_id"], ["users.id"], name=op.f("fk_auth_sessions_user_id_users"), ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(
+            ["user_id"],
+            ["users.id"],
+            name=op.f("fk_auth_sessions_user_id_users"),
+            ondelete="CASCADE",
+        ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_auth_sessions")),
     )
     op.create_index(

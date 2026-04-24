@@ -30,10 +30,13 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
         version=settings.app_version,
+        docs_url="/docs",
+        redoc_url="/redoc",
+        openapi_url="/openapi.json",
         lifespan=lifespan,
     )
     app.state.session_factory = build_session_factory(
-        settings.database_url,
+        settings.sqlalchemy_database_uri,
         echo=settings.sqlalchemy_echo,
     )
     configure_cors(app, settings)

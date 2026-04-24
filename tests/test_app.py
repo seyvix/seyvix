@@ -9,6 +9,14 @@ client = TestClient(app)
 
 def test_settings_read_cors_values_from_env(monkeypatch) -> None:
     get_settings.cache_clear()
+    monkeypatch.setenv("POSTGRES_HOST", "db.internal")
+    monkeypatch.setenv("POSTGRES_PORT", "5433")
+    monkeypatch.setenv("POSTGRES_DB", "vkr_api")
+    monkeypatch.setenv("POSTGRES_USER", "app")
+    monkeypatch.setenv("POSTGRES_PASSWORD", "secret")
+    monkeypatch.setenv("REDIS_HOST", "redis.internal")
+    monkeypatch.setenv("REDIS_PORT", "6380")
+    monkeypatch.setenv("REDIS_DB", "2")
     monkeypatch.setenv(
         "CORS_ALLOWED_ORIGINS",
         '["http://localhost:3000","http://127.0.0.1:5173"]',
@@ -25,6 +33,10 @@ def test_settings_read_cors_values_from_env(monkeypatch) -> None:
         "http://127.0.0.1:5173",
     ]
     assert settings.cors_allow_origin_regex == r"https://([a-zA-Z0-9-]+\.)*temaa\.space"
+    assert settings.sqlalchemy_database_uri == (
+        "postgresql+asyncpg://app:secret@db.internal:5433/vkr_api"
+    )
+    assert settings.redis_url == "redis://redis.internal:6380/2"
 
     get_settings.cache_clear()
 
@@ -91,6 +103,13 @@ def test_healthcheck() -> None:
     assert response.json() == {"status": "ok"}
 
 
+def test_swagger_ui_is_available() -> None:
+    response = client.get("/docs")
+
+    assert response.status_code == 200
+    assert "Swagger UI" in response.text
+
+
 def test_modules_overview_contains_expected_modules() -> None:
     response = client.get("/api/v1/modules")
 
@@ -118,12 +137,9 @@ def test_openapi_documents_auth_contracts() -> None:
     me_operation = schema["paths"]["/api/v1/auth/me"]["get"]
 
     assert register_operation["summary"] == "Register user"
+    assert register_operation["responses"]["409"]["description"] == "Email already exists."
     assert (
-        register_operation["responses"]["409"]["description"] == "Email already exists."
-    )
-    assert (
-        refresh_operation["responses"]["401"]["description"]
-        == "Missing or invalid refresh token."
+        refresh_operation["responses"]["401"]["description"] == "Missing or invalid refresh token."
     )
     assert me_operation["responses"]["401"]["description"] == "Missing or invalid access token."
     assert "RegisterRequest" in schema["components"]["schemas"]

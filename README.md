@@ -2,21 +2,38 @@
 
 ## Быстрый запуск
 
-1. Установить зависимости:
+1. Создать `.env` по примеру из `.env.example`.
+
+```bash
+cp .env.example .env
+```
+
+2. Поднять локальную инфраструктуру:
+
+```bash
+docker compose up -d postgres redis
+```
+
+3. Запустить API локально:
 
 ```bash
 uv sync
-```
-
-2. Заполнить `.env` по примеру из `.env.example`:
-
-3. Запустить API:
-
-```bash
 uv run uvicorn app.main:app --reload
 ```
 
-4. Прогнать проверки:
+4. Либо запустить всё в контейнерах:
+
+```bash
+docker compose up --build
+```
+
+5. Для dev-режима в контейнере с автоперезагрузкой:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+```
+
+6. Прогнать проверки:
 
 ```bash
 uv run pytest
@@ -38,11 +55,8 @@ uv run mypy app
 
 ### надо
 
-- [ ] Применить Alembic-миграции к реальной PostgreSQL базе, рассмотреть возможность использовать другие бд???? возможно
-- [ ] Добавить `docker-compose` для локального PostgreSQL/Redis
 - [ ] Добавить password policy и валидацию входных данных для auth
 - [ ] Добавить rate limiting на `register/login/refresh`
-- [ ] Добавить logout-all / session management для пользователя
 - [ ] Добавить интеграционные auth-тесты на PostgreSQL
 
 ### Модули
@@ -62,7 +76,6 @@ uv run mypy app
 
 ### когда-то позже
 
-- [ ] Нормализовать конфигурацию окружений и добавить `env`-документацию
 - [ ] Добавить наблюдаемость: structured logs, metrics, health/readiness checks
 - [ ] Ввести фоновые задачи и job processing для тяжёлых операций
 - [ ] Подготовить базовые контракты между модулями и правила расширения

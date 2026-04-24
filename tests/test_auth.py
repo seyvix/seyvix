@@ -1,5 +1,5 @@
 import asyncio
-from pathlib import Path
+import os
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,16 +12,28 @@ from app.main import app
 async def _prepare_database(database_url: str) -> async_sessionmaker:
     engine: AsyncEngine = create_async_engine(database_url)
     async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.drop_all)
         await connection.run_sync(Base.metadata.create_all)
     await engine.dispose()
     return build_session_factory(database_url)
 
 
+def _test_database_url() -> str:
+    user = os.getenv("POSTGRES_USER", "postgres")
+    password = os.getenv("POSTGRES_PASSWORD", "postgres")
+    host = os.getenv("POSTGRES_HOST", "localhost")
+    port = os.getenv("POSTGRES_PORT", "5432")
+    database = os.getenv("POSTGRES_DB", "vkr_api")
+    return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{database}"
+
+
 @pytest.fixture
-def auth_client(tmp_path: Path) -> TestClient:
-    database_path = tmp_path / "auth.sqlite3"
-    database_url = f"sqlite+aiosqlite:///{database_path}"
-    app.state.session_factory = asyncio.run(_prepare_database(database_url))
+def auth_client() -> TestClient:
+    database_url = _test_database_url()
+    try:
+        app.state.session_factory = asyncio.run(_prepare_database(database_url))
+    except OSError as exc:
+        pytest.skip(f"PostgreSQL is not available for auth tests: {exc}")
 
     with TestClient(app) as client:
         yield client

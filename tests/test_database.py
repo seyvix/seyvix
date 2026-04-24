@@ -11,7 +11,7 @@ def test_base_metadata_uses_stable_naming_convention() -> None:
 
 
 def test_build_session_factory_uses_async_sessions() -> None:
-    factory = build_session_factory("sqlite+aiosqlite:///:memory:")
+    factory = build_session_factory("postgresql+asyncpg://postgres:postgres@localhost:5432/vkr_api")
 
     assert isinstance(factory, async_sessionmaker)
     assert factory.kw["expire_on_commit"] is False
@@ -19,7 +19,7 @@ def test_build_session_factory_uses_async_sessions() -> None:
 
 @pytest.mark.asyncio
 async def test_get_session_yields_async_session() -> None:
-    factory = build_session_factory("sqlite+aiosqlite:///:memory:")
+    factory = build_session_factory("postgresql+asyncpg://postgres:postgres@localhost:5432/vkr_api")
 
     session_generator = get_session(factory)
     session = await anext(session_generator)
