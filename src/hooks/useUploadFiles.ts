@@ -1,13 +1,14 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { uploadFiles } from '../api/notes'
+import { useMutation } from '@tanstack/react-query'
+import { startUploadJob } from '../api/notes'
+import { useUploadContext } from '../contexts/UploadContext'
 
 export function useUploadFiles() {
-  const queryClient = useQueryClient()
+  const { addJob } = useUploadContext()
 
   return useMutation({
-    mutationFn: (files: File[]) => uploadFiles(files),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['notes'] })
+    mutationFn: ({ files, text }: { files: File[]; text?: string }) => startUploadJob(files, text),
+    onSuccess: ({ jobId, noteId }) => {
+      addJob({ jobId, noteId })
     },
   })
 }

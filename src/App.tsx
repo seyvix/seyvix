@@ -1,6 +1,9 @@
 import { createBrowserRouter, RouterProvider, Navigate } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import AppLayout from './components/AppLayout/AppLayout'
+import { UploadProvider } from './contexts/UploadContext'
+import { UploadToast } from './components/UploadToast/UploadToast'
+import { SettingsProvider } from './contexts/SettingsContext'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -46,7 +49,12 @@ const router = createBrowserRouter([
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      <SettingsProvider>
+        <UploadProvider>
+          <RouterProvider router={router} />
+          <UploadToast />
+        </UploadProvider>
+      </SettingsProvider>
     </QueryClientProvider>
   )
 }

@@ -1,4 +1,4 @@
-import type { Note, NotesParams } from '../types'
+import type { Note, NotesParams, UploadJob } from '../types'
 
 export async function fetchNotes(params: NotesParams = {}): Promise<Note[]> {
   const url = new URL('/api/notes', window.location.origin)
@@ -36,12 +36,19 @@ export async function addFilesToNote(noteId: string, files: File[]): Promise<Not
   return res.json() as Promise<Note>
 }
 
-export async function uploadFiles(files: File[]): Promise<Note> {
+export async function startUploadJob(files: File[], text?: string): Promise<{ jobId: string; noteId: string }> {
   const formData = new FormData()
   files.forEach(f => formData.append('files', f))
+  if (text) formData.append('text', text)
   const res = await fetch('/api/notes/upload', { method: 'POST', body: formData })
-  if (!res.ok) throw new Error('Failed to upload files')
-  return res.json() as Promise<Note>
+  if (!res.ok) throw new Error('Failed to start upload job')
+  return res.json() as Promise<{ jobId: string }>
+}
+
+export async function fetchUploadJob(jobId: string): Promise<UploadJob> {
+  const res = await fetch(`/api/notes/jobs/${jobId}`)
+  if (!res.ok) throw new Error('Failed to fetch job')
+  return res.json() as Promise<UploadJob>
 }
 
 export async function mergeNotes(sourceId: string, targetId: string): Promise<{ updated: Note; removedId: string }> {

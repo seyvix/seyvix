@@ -80,11 +80,14 @@
 }
 
 .title {
-  font-size: var(--font-size-sm);
+  font-size: var(--font-size-base);
   font-weight: var(--font-weight-semibold);
   color: var(--color-text-primary);
-  margin-bottom: var(--space-1);
   line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .excerpt {
@@ -106,11 +109,16 @@
 }
 
 .tag {
-  font-size: 10px;
-  padding: 2px var(--space-2);
+  font-size: 12px;
+  padding: 3px 10px;
   border-radius: 20px;
-  background: var(--color-border);
-  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: opacity var(--duration-fast);
+  line-height: 1.4;
+}
+
+.tag:hover {
+  opacity: 0.75;
 }
 
 /* === Collection — fixed 3:4, depth (слои со смещением) === */
@@ -252,12 +260,89 @@
 }
 
 .cardFooter {
-  padding: var(--space-3);
+  padding: 12px 14px;
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: 6px;
   border-top: 1px solid var(--color-border);
   flex-shrink: 0;
+}
+
+/* Rename after merge */
+.renameRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+}
+
+@keyframes underlineExpand {
+  from { transform: scaleX(0); }
+  to   { transform: scaleX(1); }
+}
+
+.renameInput {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-bottom: 1.5px solid var(--color-accent);
+  outline: none;
+  color: var(--color-text-primary);
+  font-size: var(--font-size-base);
+  font-family: var(--font-family);
+  font-weight: var(--font-weight-semibold);
+  line-height: 1.4;
+  padding: 0 0 3px;
+  min-width: 0;
+  box-shadow: 0 1px 0 0 rgba(99, 102, 241, 0.35);
+  animation: underlineExpand 0.25s cubic-bezier(0.22, 1, 0.36, 1) both;
+  transform-origin: center;
+}
+
+.renameInput::placeholder {
+  color: var(--color-text-tertiary, #555);
+  font-weight: var(--font-weight-normal, 400);
+}
+
+.renameSubmit {
+  all: unset;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent);
+  color: #fff;
+  cursor: pointer;
+  flex-shrink: 0;
+  font-size: 12px;
+  font-family: var(--font-family);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.02em;
+  transition: opacity var(--duration-fast), box-shadow var(--duration-fast);
+  box-shadow: 0 0 0 0 rgba(99, 102, 241, 0);
+}
+
+.renameSubmit:hover {
+  opacity: 0.9;
+  box-shadow: 0 0 8px rgba(99, 102, 241, 0.5);
+}
+
+.collectionStats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.collectionStat {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.03em;
 }
 
 .footerMeta {
@@ -266,51 +351,18 @@
   letter-spacing: 0.04em;
 }
 
-/* === Composite — fixed 4:3, flat mosaic (без глубины) === */
+/* === Composite === */
 .cardComposite {
-  aspect-ratio: 4 / 3;
+  aspect-ratio: 3 / 4;
 }
 
-.compositeGrid {
+.compositeCover {
   flex: 1;
-  display: grid;
-  gap: 2px;
   overflow: hidden;
-  /* border-radius пробрасывается через overflow: hidden на .card */
-}
-
-/* Панели — плоские, без теней, каждый тип своим оттенком */
-.panel {
-  overflow: hidden;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 0;
   min-height: 0;
 }
 
-.panelText {
-  background: #1c1c1c;
-  align-items: flex-start;
-  justify-content: flex-start;
-  padding: 8px 10px;
-}
-
-.panelTextContent {
-  font-size: 10px;
-  line-height: 1.5;
-  color: var(--color-text-secondary);
-  display: -webkit-box;
-  -webkit-line-clamp: 6;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.panelImage {
-  background: var(--color-border);
-}
-
-.panelImage img {
+.compositeCoverImg {
   width: 100%;
   height: 100%;
   object-fit: cover;
@@ -318,62 +370,137 @@
   pointer-events: none;
 }
 
-.panelLink {
-  background: #161820;
-  position: relative;
-}
-
-.panelFaviconWrap {
-  background-color: white;
-  border-radius: 10px;
-  padding: 3px;
-  display: inline-flex;
-}
-
-.panelFavicon {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  image-rendering: auto;
-  display: block;
-  pointer-events: none;
-}
-
-.panelLinkArrow {
-  position: absolute;
-  bottom: 8px;
-  right: 8px;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.08);
+.compositeCoverEmpty {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(160deg, #0d0f1a 0%, #151825 60%, #1a1420 100%);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--color-text-secondary);
+  padding: 20px;
 }
 
-.panelLinkIcon {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: rgba(99, 102, 241, 0.15);
+.compositeCoverText {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.2);
+  line-height: 1.7;
+  display: -webkit-box;
+  -webkit-line-clamp: 7;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-family: var(--font-family);
+}
+
+.compositeChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 2px;
+}
+
+/* Чип ссылки */
+.linkChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(20, 22, 42, 0.95);
+  border: 1px solid rgba(99, 102, 241, 0.22);
+  border-radius: 6px;
+  padding: 4px 8px 4px 4px;
+  max-width: 180px;
+  overflow: hidden;
+}
+
+.linkChipIcon {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  background: rgba(99, 102, 241, 0.12);
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--color-accent);
+  flex-shrink: 0;
 }
 
-.panelDocument {
-  background: #1a1614;
+.linkChipFavicon {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  display: block;
+  pointer-events: none;
 }
 
-.panelDocIcon {
-  display: flex;
-  flex-direction: column;
+.linkChipDomain {
+  font-size: 12px;
+  color: rgba(165, 168, 255, 0.85);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.linkChipArrow {
+  color: rgba(99, 102, 241, 0.45);
+  flex-shrink: 0;
+}
+
+/* Чип документа */
+.docChip {
+  display: inline-flex;
   align-items: center;
-  gap: 4px;
-  color: #6a5a4a;
+  gap: 5px;
+  background: rgba(28, 18, 10, 0.95);
+  border: 1px solid rgba(180, 110, 40, 0.22);
+  border-radius: 6px;
+  padding: 4px 8px 4px 4px;
+  max-width: 180px;
+  overflow: hidden;
+}
+
+.docChipCover {
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  object-fit: cover;
+  display: block;
+  pointer-events: none;
+  flex-shrink: 0;
+}
+
+.docChipIconWrap {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  background: rgba(180, 110, 40, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #c47830;
+  flex-shrink: 0;
+}
+
+.docChipName {
+  font-size: 12px;
+  color: rgba(200, 155, 90, 0.85);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.docChipExt {
+  font-size: 9px;
+  font-weight: var(--font-weight-semibold);
+  background: rgba(180, 110, 40, 0.18);
+  color: #c47830;
+  padding: 1px 4px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  flex-shrink: 0;
+  letter-spacing: 0.04em;
 }
 
 /* === Add card === */

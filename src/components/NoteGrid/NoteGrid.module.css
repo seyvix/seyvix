@@ -15,8 +15,4 @@
   min-width: 0;
 }
 
-/* Stagger offsets per column */
-.column:nth-child(1) { margin-top: 0; }
-.column:nth-child(2) { margin-top: 18px; }
-.column:nth-child(3) { margin-top: 26px; }
-.column:nth-child(4) { margin-top: 10px; }
+/* Stagger offsets задаются через inline style (количество колонок динамическое) */

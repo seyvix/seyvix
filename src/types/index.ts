@@ -41,3 +41,16 @@ export interface NotesParams {
   tags?: string[]
   folders?: string[]
 }
+
+export interface FileProgress {
+  name: string
+  status: 'pending' | 'processing' | 'done' | 'error'
+  progress: number  // 0–100
+}
+
+export interface UploadJob {
+  id: string
+  status: 'processing' | 'done' | 'error'
+  files: FileProgress[]
+  noteId?: string
+}

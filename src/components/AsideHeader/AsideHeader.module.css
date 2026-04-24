@@ -21,7 +21,7 @@
   gap: 12px;
   padding: 14px 16px;
   border-bottom: 1px solid var(--color-border);
-  min-height: 58px;
+  min-height: 70px;
   overflow: hidden;
 }
 
@@ -135,6 +135,60 @@
   flex-direction: column;
   gap: 2px;
   overflow: hidden;
+}
+
+/* Settings panel */
+.settingsPanel {
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  margin: 4px 0 2px;
+  overflow: hidden;
+}
+
+.settingsRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.settingsLabel {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.colsPicker {
+  display: flex;
+  gap: 3px;
+}
+
+.colsBtn {
+  all: unset;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xs);
+  font-family: var(--font-family);
+  color: var(--color-text-secondary);
+  background: var(--color-border);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--duration-fast), color var(--duration-fast);
+}
+
+.colsBtn:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.colsBtnActive {
+  background: var(--color-accent);
+  color: #fff;
 }
 
 /* Toggle button */

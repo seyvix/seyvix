@@ -1,0 +1,90 @@
+.bar {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-3);
+  padding: 0 20px;
+  min-height: 70px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg);
+  flex-shrink: 0;
+  cursor: text;
+}
+
+.icon {
+  color: #666;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  align-self: center;
+}
+
+.content {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 1;
+  padding: 12px 0;
+}
+
+.input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--color-text-primary);
+  font-size: 20px;
+  font-family: var(--font-family);
+  flex: 1;
+  min-width: 120px;
+  align-self: stretch;
+  cursor: text;
+}
+
+.input::placeholder {
+  color: #555;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 16px;
+  font-weight: var(--font-weight-semibold);
+  padding: 5px 10px 5px 14px;
+  border-radius: 20px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.chipRemove {
+  all: unset;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity var(--duration-fast);
+  margin-left: 2px;
+}
+
+.chipRemove:hover {
+  opacity: 1;
+}
+
+.clearBtn {
+  all: unset;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  width: 70px;
+  background: #dc2626;
+  color: #fff;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--duration-fast);
+  margin-right: -20px;
+}
+
+.clearBtn:hover {
+  background: #b91c1c;
+}

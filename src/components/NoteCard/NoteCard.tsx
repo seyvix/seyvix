@@ -1,22 +1,48 @@
 import { useRef, useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { ExternalLink, FileText, Plus, UploadCloud } from 'lucide-react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { ExternalLink, FileText, ImageIcon, Link2, AlignLeft, Plus, UploadCloud } from 'lucide-react'
 import { draggable, dropTargetForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter'
 import { dropTargetForExternal } from '@atlaskit/pragmatic-drag-and-drop/external/adapter'
 import { containsFiles, getFiles } from '@atlaskit/pragmatic-drag-and-drop/external/file'
-import type { Note, NoteObject } from '../../types'
+import type { Note, NoteObject, Tag } from '../../types'
+import { getTagColor } from '../../utils/tagColor'
 import { useMergeNotes } from '../../hooks/useMergeNotes'
 import { useUploadFiles } from '../../hooks/useUploadFiles'
 import { useAddFilesToNote } from '../../hooks/useAddFilesToNote'
 import { useCreateNote } from '../../hooks/useCreateNote'
+import { useUpdateNote } from '../../hooks/useUpdateNote'
 import { useDragContext } from '../../contexts/DragContext'
 import styles from './NoteCard.module.css'
 
 const FILE_HOVER_THRESHOLD_MS = 750
 
+// ─── Tags ─────────────────────────────────────────────────────────────────────
+
+function TagList({ tags, onTagClick }: { tags: Tag[]; onTagClick?: (name: string) => void }) {
+  if (tags.length === 0) return null
+  return (
+    <div className={styles.tags}>
+      {tags.map(tag => {
+        const { bg, text } = getTagColor(tag.name)
+        return (
+          <span
+            key={tag.id}
+            className={styles.tag}
+            style={{ background: bg, color: text }}
+            onClick={e => { e.preventDefault(); e.stopPropagation(); onTagClick?.(tag.name) }}
+          >
+            {tag.name}
+          </span>
+        )
+      })}
+    </div>
+  )
+}
+
 // ─── Simple ──────────────────────────────────────────────────────────────────
 
-function SimpleCard({ note }: { note: Note }) {
+function SimpleCard({ note, onTagClick }: { note: Note; onTagClick?: (name: string) => void }) {
   const imageObj = note.objects.find(o => o.type === 'image')
   const textObj  = note.objects.find(o => o.type === 'text')
 
@@ -34,11 +60,7 @@ function SimpleCard({ note }: { note: Note }) {
       {imageObj && <img className={styles.cover} src={imageObj.content} alt="" />}
       <div className={styles.title}>{note.title}</div>
       {textObj && <div className={styles.excerpt}>{textObj.content}</div>}
-      {note.tags.length > 0 && (
-        <div className={styles.tags}>
-          {note.tags.map(tag => <span key={tag.id} className={styles.tag}>{tag.name}</span>)}
-        </div>
-      )}
+      <TagList tags={note.tags} onTagClick={onTagClick} />
     </Link>
   )
 }
@@ -107,10 +129,35 @@ function LayerContent({ obj, fallback }: { obj: NoteObject | undefined; fallback
   return <div className={styles.collectionLayerBg} style={{ background: fallback }} />
 }
 
-function CollectionCard({ note }: { note: Note }) {
-  const count      = note.objects.length
-  // image, document, link — всё что можно показать в слоях
-  const visualObjs = note.objects.filter(o => o.type === 'image' || o.type === 'document' || o.type === 'link').slice(0, 5)
+const OBJECT_TYPE_ICON: Record<string, React.ReactNode> = {
+  image:    <ImageIcon size={11} />,
+  document: <FileText  size={11} />,
+  link:     <Link2     size={11} />,
+  text:     <AlignLeft size={11} />,
+}
+
+function CollectionStats({ objects }: { objects: Note['objects'] }) {
+  const counts = objects.reduce<Record<string, number>>((acc, o) => {
+    acc[o.type] = (acc[o.type] ?? 0) + 1
+    return acc
+  }, {})
+  const order = ['image', 'document', 'link', 'text']
+  const entries = order.filter(t => counts[t])
+
+  return (
+    <div className={styles.collectionStats}>
+      {entries.map(type => (
+        <span key={type} className={styles.collectionStat}>
+          {OBJECT_TYPE_ICON[type]}
+          {counts[type]}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClick?: (name: string) => void; titleNode?: React.ReactNode }) {
+  const visualObjs = note.objects.filter(o => o.type === 'image' || o.type === 'document').slice(0, 5)
   const fallback   = FALLBACK_COLORS[note.id.charCodeAt(0) % FALLBACK_COLORS.length]
 
   let visual: React.ReactNode
@@ -153,9 +200,6 @@ function CollectionCard({ note }: { note: Note }) {
           style={{ width: pos.width, height: pos.height, left: pos.left, top: pos.top, zIndex: pos.zIndex }}
         >
           <LayerContent obj={obj} fallback={fallback} />
-          {isFront && count > 1 && (
-            <div className={styles.collectionBadge}>{count}</div>
-          )}
         </div>
       )
     })
@@ -167,12 +211,9 @@ function CollectionCard({ note }: { note: Note }) {
         {visual}
       </div>
       <div className={styles.cardFooter}>
-        <div className={styles.title}>{note.title}</div>
-        {note.tags.length > 0 && (
-          <div className={styles.tags}>
-            {note.tags.map(tag => <span key={tag.id} className={styles.tag}>{tag.name}</span>)}
-          </div>
-        )}
+        <CollectionStats objects={note.objects} />
+        {titleNode}
+        <TagList tags={note.tags} onTagClick={onTagClick} />
       </div>
     </Link>
   )
@@ -180,94 +221,83 @@ function CollectionCard({ note }: { note: Note }) {
 
 // ─── Composite ────────────────────────────────────────────────────────────────
 
-function Panel({ obj, area }: { obj: NoteObject; area: string }) {
-  const style: React.CSSProperties = { gridArea: area }
-
-  if (obj.type === 'image') {
-    return (
-      <div className={`${styles.panel} ${styles.panelImage}`} style={style}>
-        <img src={obj.content} alt="" />
-      </div>
-    )
-  }
-
-  if (obj.type === 'text') {
-    return (
-      <div className={`${styles.panel} ${styles.panelText}`} style={style}>
-        <span className={styles.panelTextContent}>{obj.content}</span>
-      </div>
-    )
-  }
-
-  if (obj.type === 'link') {
-    let favicon: string | null = null
-    try {
-      const domain = new URL(obj.content).hostname
-      favicon = `https://www.google.com/s2/favicons?domain=${domain}&sz=64`
-    } catch {
-      // невалидный URL — покажем заглушку
-    }
-
-    return (
-      <div className={`${styles.panel} ${styles.panelLink}`} style={style}>
-        {favicon
-          ? <div className={styles.panelFaviconWrap}>
-              <img src={favicon} alt="" className={styles.panelFavicon} />
-            </div>
-          : <div className={styles.panelLinkIcon}>
-              <ExternalLink size={14} />
-            </div>
-        }
-        <div className={styles.panelLinkArrow}>
-          <ExternalLink size={9} />
-        </div>
-      </div>
-    )
-  }
-
-  if (obj.cover) {
-    return (
-      <div className={`${styles.panel} ${styles.panelImage}`} style={style}>
-        <img src={obj.cover} alt="" />
-      </div>
-    )
-  }
+function LinkChip({ obj }: { obj: NoteObject }) {
+  let favicon: string | null = null
+  let domain = ''
+  try {
+    const u = new URL(obj.content)
+    domain  = u.hostname.replace(/^www\./, '')
+    favicon = `https://www.google.com/s2/favicons?domain=${u.hostname}&sz=32`
+  } catch { /* ignore */ }
 
   return (
-    <div className={`${styles.panel} ${styles.panelDocument}`} style={style}>
-      <div className={styles.panelDocIcon}>
-        <FileText size={20} />
+    <div className={styles.linkChip}>
+      <div className={styles.linkChipIcon}>
+        {favicon
+          ? <img src={favicon} alt="" className={styles.linkChipFavicon} />
+          : <ExternalLink size={12} />
+        }
       </div>
+      <span className={styles.linkChipDomain}>{domain || obj.content}</span>
+      <ExternalLink size={9} className={styles.linkChipArrow} />
     </div>
   )
 }
 
-const GRID_TEMPLATES: Record<number, string> = {
-  1: '"a"',
-  2: '"a b"',
-  3: '"a b" "a c"',
-  4: '"a b" "c d"',
+function DocChip({ obj }: { obj: NoteObject }) {
+  const ext  = obj.content.includes('.') ? obj.content.split('.').pop()!.toUpperCase().slice(0, 4) : 'FILE'
+  const name = obj.content.replace(/\.[^.]+$/, '')
+
+  return (
+    <div className={styles.docChip}>
+      {obj.cover
+        ? <img src={obj.cover} alt="" className={styles.docChipCover} />
+        : <div className={styles.docChipIconWrap}><FileText size={13} /></div>
+      }
+      <span className={styles.docChipName}>{name}</span>
+      <span className={styles.docChipExt}>{ext}</span>
+    </div>
+  )
 }
 
-function CompositeCard({ note }: { note: Note }) {
-  const slots = note.objects.filter(o => o.type !== 'text').slice(0, 4)
-  const areas = GRID_TEMPLATES[Math.max(1, slots.length)] ?? GRID_TEMPLATES[4]
+function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick?: (name: string) => void; titleNode?: React.ReactNode }) {
+  const imageObj = note.objects.find(o => o.type === 'image')
+  const textObj  = note.objects.find(o => o.type === 'text')
+  const links    = note.objects.filter(o => o.type === 'link')
+  const docs     = note.objects.filter(o => o.type === 'document')
 
   return (
     <Link draggable={false} to={`/notes/${note.slug}`} className={`${styles.card} ${styles.cardComposite}`}>
-      <div className={styles.compositeGrid} style={{ gridTemplateAreas: areas }}>
-        {slots.map((obj, i) => (
-          <Panel key={obj.id} obj={obj} area={String.fromCharCode(97 + i)} />
-        ))}
+
+      {/* Cover */}
+      <div className={styles.compositeCover}>
+        {imageObj
+          ? <img src={imageObj.content} alt="" className={styles.compositeCoverImg} />
+          : <div className={styles.compositeCoverEmpty}>
+              {textObj && <span className={styles.compositeCoverText}>{textObj.content}</span>}
+            </div>
+        }
       </div>
+
+      {/* Footer */}
       <div className={styles.cardFooter}>
-        <div className={styles.footerMeta}>{note.objects.length} объектов</div>
-        <div className={styles.title}>{note.title}</div>
-        {note.tags.length > 0 && (
-          <div className={styles.tags}>
-            {note.tags.map(tag => <span key={tag.id} className={styles.tag}>{tag.name}</span>)}
+
+        {/* Ссылки */}
+        {links.length > 0 && (
+          <div className={styles.compositeChips}>
+            {links.map(o => <LinkChip key={o.id} obj={o} />)}
           </div>
         )}
+
+        {/* Документы */}
+        {docs.length > 0 && (
+          <div className={styles.compositeChips}>
+            {docs.map(o => <DocChip key={o.id} obj={o} />)}
+          </div>
+        )}
+
+        {titleNode}
+        <TagList tags={note.tags} onTagClick={onTagClick} />
       </div>
     </Link>
   )
@@ -277,11 +307,29 @@ function CompositeCard({ note }: { note: Note }) {
 
 const HIGHLIGHT_MS = 5000
 
-export function NoteCard({ note, isNew }: { note: Note; isNew?: boolean }) {
+export function NoteCard({ note, isNew, onTagClick }: { note: Note; isNew?: boolean; onTagClick?: (tag: string) => void }) {
   const wrapperRef = useRef<HTMLDivElement>(null)
   const [isDragging,     setIsDragging]     = useState(false)
   const [isOver,         setIsOver]         = useState(false)
   const [fileHoverState, setFileHoverState] = useState<'new' | 'merge' | null>(null)
+
+  // Rename after merge
+  const [renamePending, setRenamePending] = useState(false)
+  const [renameValue,   setRenameValue]   = useState('')
+  const { mutate: updateNote } = useUpdateNote()
+
+  // Стабильный ref для trigger-функции ренейма (используется внутри DnD useEffect)
+  const triggerRenameRef = useRef<(() => void) | null>(null)
+  triggerRenameRef.current = () => {
+    setRenameValue('')
+    setRenamePending(true)
+  }
+
+  function handleRenameSubmit() {
+    const title = renameValue.trim() || note.title
+    updateNote({ slug: note.slug, data: { title } })
+    setRenamePending(false)
+  }
 
   // Подсветка: если заметка создана меньше HIGHLIGHT_MS назад — подсвечиваем
   const age = Date.now() - new Date(note.createdAt).getTime()
@@ -329,7 +377,10 @@ export function NoteCard({ note, isNew }: { note: Note; isNew?: boolean }) {
       onDragLeave: () => setIsOver(false),
       onDrop: ({ source }) => {
         setIsOver(false)
-        mergeRef.current({ sourceId: source.data.noteId as string, targetId: note.id })
+        mergeRef.current(
+          { sourceId: source.data.noteId as string, targetId: note.id },
+          { onSuccess: () => triggerRenameRef.current?.() },
+        )
       },
     })
 
@@ -352,7 +403,7 @@ export function NoteCard({ note, isNew }: { note: Note; isNew?: boolean }) {
         setFileHoverState(null)
         if (files.length === 0) return
         if (elapsed < FILE_HOVER_THRESHOLD_MS) {
-          uploadRef.current(files)
+          uploadRef.current({ files })
         } else {
           addFilesRef.current({ noteId: note.id, files })
         }
@@ -375,11 +426,57 @@ export function NoteCard({ note, isNew }: { note: Note; isNew?: boolean }) {
     highlighted                ? styles.isHighlighted   : '',
   ].filter(Boolean).join(' ')
 
+  const titleNode = (
+    <AnimatePresence mode="wait" initial={false}>
+      {renamePending ? (
+        <motion.div
+          key="input"
+          className={styles.renameRow}
+          onClick={e => e.preventDefault()}
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -4 }}
+          transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+        >
+          <input
+            autoFocus
+            className={styles.renameInput}
+            value={renameValue}
+            onChange={e => setRenameValue(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') handleRenameSubmit()
+              if (e.key === 'Escape') setRenamePending(false)
+            }}
+            placeholder="Название коллекции…"
+          />
+          <button className={styles.renameSubmit} onClick={e => { e.preventDefault(); handleRenameSubmit() }}>
+            ↵
+          </button>
+        </motion.div>
+      ) : (
+        <motion.div
+          key="title"
+          className={styles.title}
+          initial={{ opacity: 0, y: -4 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+        >
+          {note.title}
+        </motion.div>
+      )}
+    </AnimatePresence>
+  )
+
   return (
     <div ref={wrapperRef} className={cls}>
-      {note.type === 'collection' ? <CollectionCard note={note} />
-      : note.type === 'composite'  ? <CompositeCard  note={note} />
-      :                              <SimpleCard      note={note} />}
+      {note.type === 'collection' ? (
+        <CollectionCard note={note} onTagClick={onTagClick} titleNode={titleNode} />
+      ) : note.type === 'composite' ? (
+        <CompositeCard  note={note} onTagClick={onTagClick} titleNode={titleNode} />
+      ) : (
+        <SimpleCard note={note} onTagClick={onTagClick} />
+      )}
     </div>
   )
 }
@@ -411,7 +508,7 @@ export function AddNoteCard({ onClick }: { onClick?: () => void }) {
         setIsOver(false)
         // DnD-дроп всегда создаёт новую заметку сразу
         const dropped = getFiles({ source })
-        if (dropped.length > 0) upload(dropped)
+        if (dropped.length > 0) upload({ files: dropped })
       },
     })
   }, [upload])
@@ -438,9 +535,10 @@ export function AddNoteCard({ onClick }: { onClick?: () => void }) {
     if (!trimmed && !hasFiles) { handleCancel(); return }
 
     if (hasFiles) {
-      upload(files)
-    }
-    if (trimmed) {
+      // Файлы (возможно + текст) → один джоб
+      upload({ files, text: trimmed || undefined })
+    } else {
+      // Только текст → обычное создание
       const title = trimmed.split('\n')[0].slice(0, 60) || 'Новая заметка'
       create({
         title,

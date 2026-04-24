@@ -171,7 +171,6 @@ export const noteFixtures: Note[] = [
     folderId: 'f1',
     objects: [
       { id: 'o9a', type: 'text',     content: 'EXPLAIN ANALYZE покажет где запрос теряет время. Partial indexes ускоряют фильтрацию.', createdAt: '2026-04-09T10:00:00Z' },
-      { id: 'o9b', type: 'document', content: 'postgres-notes.pdf', cover: 'https://images.unsplash.com/photo-1558494949-ef010cbdcc31?w=600&h=800&fit=crop', createdAt: '2026-04-09T10:01:00Z' },
       { id: 'o9c', type: 'image',    content: 'https://images.unsplash.com/photo-1544383835-bda2bc66a55d?w=400&h=300&fit=crop', createdAt: '2026-04-09T10:02:00Z' },
       { id: 'o9d', type: 'link',     content: 'https://explain.dalibo.com', createdAt: '2026-04-09T10:03:00Z' },
     ],

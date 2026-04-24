@@ -1,5 +1,7 @@
+import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import { useLocalStorage } from '../../hooks/useLocalStorage'
+import { useSettings } from '../../contexts/SettingsContext'
 import styles from './AsideHeader.module.css'
 
 const STORAGE_KEY = 'seyvix:sidebar-expanded'
@@ -59,6 +61,8 @@ function IconChevronLeft() {
 
 export default function AsideHeader() {
   const [expanded, setExpanded] = useLocalStorage(STORAGE_KEY, false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const { cols, setCols } = useSettings()
 
   const sidebarClass = [styles.sidebar, expanded ? styles.expanded : ''].filter(Boolean).join(' ')
 
@@ -94,10 +98,32 @@ export default function AsideHeader() {
       </nav>
 
       <div className={styles.bottom}>
-        <button className={styles.navItem}>
+        <button
+          className={[styles.navItem, settingsOpen ? styles.active : ''].filter(Boolean).join(' ')}
+          onClick={() => setSettingsOpen(v => !v)}
+        >
           <span className={styles.navIcon}><IconSettings /></span>
           <span className={styles.navLabel}>Настройки</span>
         </button>
+
+        {settingsOpen && (
+          <div className={styles.settingsPanel}>
+            <div className={styles.settingsRow}>
+              <span className={styles.settingsLabel}>Колонки</span>
+              <div className={styles.colsPicker}>
+                {[3, 4, 5].map(n => (
+                  <button
+                    key={n}
+                    className={[styles.colsBtn, cols === n ? styles.colsBtnActive : ''].filter(Boolean).join(' ')}
+                    onClick={() => setCols(n)}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
         <button className={styles.navItem}>
           <span className={styles.navIcon}><IconProfile /></span>
           <span className={styles.navLabel}>Профиль</span>
