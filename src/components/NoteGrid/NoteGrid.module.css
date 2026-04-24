@@ -1,0 +1,22 @@
+.grid {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+  padding: var(--space-4);
+  overflow-y: auto;
+  flex: 1;
+}
+
+.column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* Stagger offsets per column */
+.column:nth-child(1) { margin-top: 0; }
+.column:nth-child(2) { margin-top: 18px; }
+.column:nth-child(3) { margin-top: 26px; }
+.column:nth-child(4) { margin-top: 10px; }

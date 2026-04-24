@@ -1,0 +1,116 @@
+import { NavLink } from 'react-router-dom'
+import { useLocalStorage } from '../../hooks/useLocalStorage'
+import styles from './AsideHeader.module.css'
+
+const STORAGE_KEY = 'seyvix:sidebar-expanded'
+
+function IconNotes() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="2" width="12" height="12" rx="2"/>
+      <line x1="5" y1="6" x2="11" y2="6"/>
+      <line x1="5" y1="9" x2="11" y2="9"/>
+      <line x1="5" y1="12" x2="8" y2="12"/>
+    </svg>
+  )
+}
+
+function IconFolders() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2 4a1 1 0 0 1 1-1h3.586a1 1 0 0 1 .707.293L8.414 4.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4z"/>
+    </svg>
+  )
+}
+
+function IconSettings() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="8" cy="8" r="2.5"/>
+      <path d="M8 1.5v1M8 13.5v1M1.5 8h1M13.5 8h1M3.4 3.4l.7.7M11.9 11.9l.7.7M3.4 12.6l.7-.7M11.9 4.1l.7-.7"/>
+    </svg>
+  )
+}
+
+function IconProfile() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="8" cy="5.5" r="2.5"/>
+      <path d="M2.5 13.5c0-3 2.5-4.5 5.5-4.5s5.5 1.5 5.5 4.5"/>
+    </svg>
+  )
+}
+
+function IconChevronRight() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="4,2 8,6 4,10"/>
+    </svg>
+  )
+}
+
+function IconChevronLeft() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="8,2 4,6 8,10"/>
+    </svg>
+  )
+}
+
+export default function AsideHeader() {
+  const [expanded, setExpanded] = useLocalStorage(STORAGE_KEY, false)
+
+  const sidebarClass = [styles.sidebar, expanded ? styles.expanded : ''].filter(Boolean).join(' ')
+
+  return (
+    <aside className={sidebarClass}>
+      <div className={styles.top}>
+        <div className={styles.logoIcon}>S</div>
+        <span className={styles.logoText}>Seyvix</span>
+      </div>
+
+      <nav className={styles.nav}>
+        <NavLink
+          to="/notes"
+          className={({ isActive }) =>
+            [styles.navItem, isActive ? styles.active : ''].filter(Boolean).join(' ')
+          }
+        >
+          <span className={styles.navIcon}><IconNotes /></span>
+          <span className={styles.navLabel}>Заметки</span>
+          <span className={styles.navDot} />
+        </NavLink>
+
+        <NavLink
+          to="/folders"
+          className={({ isActive }) =>
+            [styles.navItem, isActive ? styles.active : ''].filter(Boolean).join(' ')
+          }
+        >
+          <span className={styles.navIcon}><IconFolders /></span>
+          <span className={styles.navLabel}>Папки</span>
+          <span className={styles.navDot} />
+        </NavLink>
+      </nav>
+
+      <div className={styles.bottom}>
+        <button className={styles.navItem}>
+          <span className={styles.navIcon}><IconSettings /></span>
+          <span className={styles.navLabel}>Настройки</span>
+        </button>
+        <button className={styles.navItem}>
+          <span className={styles.navIcon}><IconProfile /></span>
+          <span className={styles.navLabel}>Профиль</span>
+        </button>
+      </div>
+
+      <button
+        className={styles.toggleBtn}
+        onClick={() => setExpanded(!expanded)}
+        aria-label={expanded ? 'Свернуть меню' : 'Развернуть меню'}
+      >
+        {expanded ? <IconChevronLeft /> : <IconChevronRight />}
+      </button>
+    </aside>
+  )
+}

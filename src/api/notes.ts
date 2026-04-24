@@ -27,6 +27,33 @@ export async function createNote(data: Partial<Note>): Promise<Note> {
   return res.json() as Promise<Note>
 }
 
+export async function addFilesToNote(noteId: string, files: File[]): Promise<Note> {
+  const formData = new FormData()
+  formData.append('noteId', noteId)
+  files.forEach(f => formData.append('files', f))
+  const res = await fetch('/api/notes/add-files', { method: 'POST', body: formData })
+  if (!res.ok) throw new Error('Failed to add files to note')
+  return res.json() as Promise<Note>
+}
+
+export async function uploadFiles(files: File[]): Promise<Note> {
+  const formData = new FormData()
+  files.forEach(f => formData.append('files', f))
+  const res = await fetch('/api/notes/upload', { method: 'POST', body: formData })
+  if (!res.ok) throw new Error('Failed to upload files')
+  return res.json() as Promise<Note>
+}
+
+export async function mergeNotes(sourceId: string, targetId: string): Promise<{ updated: Note; removedId: string }> {
+  const res = await fetch('/api/notes/merge', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sourceId, targetId }),
+  })
+  if (!res.ok) throw new Error('Failed to merge notes')
+  return res.json()
+}
+
 export async function updateNote(slug: string, data: Partial<Note>): Promise<Note> {
   const res = await fetch(`/api/notes/${slug}`, {
     method: 'PATCH',

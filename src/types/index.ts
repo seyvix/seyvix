@@ -19,6 +19,7 @@ export interface NoteObject {
   id: string
   type: NoteObjectType
   content: string
+  cover?: string   // скриншот/превью — только для type === 'document'
   createdAt: string
 }
 
