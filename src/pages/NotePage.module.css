@@ -1,0 +1,362 @@
+/* ── Page shell ── */
+.page {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg);
+}
+
+/* ── Top bar ── */
+.topBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--color-border);
+  position: sticky;
+  top: 0;
+  background: var(--color-bg);
+  z-index: 10;
+  gap: 12px;
+}
+
+.backBtn {
+  all: unset;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-family);
+  transition: background var(--duration-fast), color var(--duration-fast);
+}
+
+.backBtn:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.topBarActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.editBtn {
+  all: unset;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  font-family: var(--font-family);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  padding: 6px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  transition: background var(--duration-fast), color var(--duration-fast), border-color var(--duration-fast);
+}
+
+.editBtn:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+  border-color: #555;
+}
+
+.saveBtn {
+  all: unset;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  font-family: var(--font-family);
+  color: #fff;
+  background: var(--color-accent);
+  cursor: pointer;
+  padding: 6px 16px;
+  border-radius: var(--radius-sm);
+  transition: opacity var(--duration-fast);
+}
+
+.saveBtn:hover {
+  opacity: 0.85;
+}
+
+/* ── Content ── */
+.content {
+  flex: 1;
+  padding: 0 0 80px;
+}
+
+
+/* ── Metadata ── */
+.meta {
+  padding: 28px 32px 24px;
+}
+
+.title {
+  font-size: var(--font-size-2xl);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+  line-height: 1.3;
+  margin: 0 0 12px;
+}
+
+.titleInput {
+  font-size: var(--font-size-2xl);
+  font-weight: var(--font-weight-semibold);
+  font-family: var(--font-family);
+  color: var(--color-text-primary);
+  background: transparent;
+  border: none;
+  border-bottom: 1.5px solid var(--color-accent);
+  outline: none;
+  width: 100%;
+  line-height: 1.3;
+  margin-bottom: 12px;
+  padding: 0 0 4px;
+  box-shadow: 0 1px 0 0 rgba(99, 102, 241, 0.3);
+  box-sizing: border-box;
+}
+
+.metaRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tag {
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 20px;
+  line-height: 1.4;
+}
+
+.date {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  letter-spacing: 0.04em;
+}
+
+/* ── Object stream ── */
+.stream {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 0 32px;
+}
+
+/* Wrapper for edit-mode delete button */
+.objWrapper {
+  position: relative;
+}
+
+.objDeleteBtn {
+  all: unset;
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.7);
+  color: var(--color-text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 1;
+  transition: background var(--duration-fast), color var(--duration-fast);
+}
+
+.objDeleteBtn:hover {
+  background: var(--color-danger);
+  color: #fff;
+}
+
+/* Image */
+.objImage {
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  cursor: zoom-in;
+  align-self: flex-start; /* не растягиваться на всю ширину flex-колонки */
+  min-width: 50%;
+  max-width: 100%;
+}
+
+.objImage img {
+  display: block;
+  width: 100%;
+  height: auto;
+  pointer-events: none;
+}
+
+/* Text */
+.objText {
+  font-size: var(--font-size-base);
+  color: var(--color-text-primary);
+  line-height: 1.75;
+  white-space: pre-wrap;
+  margin: 0;
+}
+
+.objTextarea {
+  font-size: var(--font-size-base);
+  font-family: var(--font-family);
+  color: var(--color-text-primary);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  outline: none;
+  width: 100%;
+  min-height: 120px;
+  resize: vertical;
+  line-height: 1.75;
+  padding: 12px 16px;
+  box-sizing: border-box;
+  transition: border-color var(--duration-fast);
+}
+
+.objTextarea:focus {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+}
+
+/* Link — iframe snapshot */
+.objLinkFrame {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--color-surface);
+}
+
+/* Mini browser chrome */
+.objLinkChrome {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.objLinkFavicon {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  display: block;
+  flex-shrink: 0;
+}
+
+.objLinkChromeDomain {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.objLinkChromeOpen {
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  transition: color var(--duration-fast);
+}
+
+.objLinkChromeOpen:hover {
+  color: var(--color-text-primary);
+}
+
+.objLinkIframe {
+  width: 100%;
+  height: 420px;
+  border: none;
+  display: block;
+  /* Scale down the page to fit */
+  transform-origin: top left;
+}
+
+/* Document */
+.objDoc {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  transition: border-color var(--duration-fast);
+}
+
+.objDocCover {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  flex-shrink: 0;
+  display: block;
+}
+
+.objDocIconWrap {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-sm);
+  background: rgba(180, 110, 40, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #c47830;
+  flex-shrink: 0;
+}
+
+.objDocMeta {
+  flex: 1;
+  min-width: 0;
+}
+
+.objDocName {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.objDocExt {
+  font-size: 9px;
+  font-weight: var(--font-weight-semibold);
+  background: rgba(180, 110, 40, 0.18);
+  color: #c47830;
+  padding: 1px 4px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-top: 3px;
+  display: inline-block;
+}
+
+.objDocDownload {
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+  transition: color var(--duration-fast);
+  cursor: pointer;
+}
+
+.objDocDownload:hover {
+  color: var(--color-text-primary);
+}
+
+/* Not found / loading */
+.notFound {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-base);
+}
