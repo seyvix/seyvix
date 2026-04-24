@@ -2,7 +2,9 @@ const BASE = '/api/v1/auth'
 
 export interface UserResponse {
   id: string
-  email: string
+  telegram_id: string
+  telegram_username: string | null
+  telegram_photo_url: string | null
   display_name: string
   is_active: boolean
 }
@@ -82,4 +84,15 @@ export async function apiLogout(): Promise<void> {
     method: 'POST',
     credentials: 'include',
   })
+}
+
+export async function apiTelegramCode(code: string): Promise<AuthTokensResponse> {
+  const res = await fetch(`${BASE}/telegram-code`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+    credentials: 'include',
+  })
+  if (!res.ok) throw await parseError(res)
+  return res.json()
 }
