@@ -40,6 +40,22 @@
   font-family: var(--font-family);
 }
 
+.avatar {
+  width: 32px;
+  height: 32px;
+  background: var(--color-accent);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: var(--font-weight-semibold);
+  color: white;
+  flex-shrink: 0;
+  font-family: var(--font-family);
+  letter-spacing: 0.02em;
+}
+
 .logoText {
   font-size: var(--font-size-base);
   font-weight: var(--font-weight-semibold);

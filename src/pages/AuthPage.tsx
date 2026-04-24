@@ -1,133 +1,98 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { motion, useMotionValue, useTransform, useSpring } from 'framer-motion'
+import CircularText from '../components/CircularText/CircularText'
 import { useAuth } from '../contexts/AuthContext'
-import { AuthApiError } from '../api/auth'
 import styles from './AuthPage.module.css'
 
-const ERROR_MESSAGES: Record<string, string> = {
-  invalid_credentials:     'Неверный email или пароль.',
-  email_already_registered: 'Этот email уже зарегистрирован.',
-  validation_error:         'Проверьте правильность заполнения полей.',
+function TelegramLogo() {
+  return (
+    <img
+      src="/telegramLogo.svg"
+      alt="Telegram"
+      className={styles.logo}
+      draggable={false}
+    />
+  )
 }
 
-function errorMessage(err: unknown): string {
-  if (err instanceof AuthApiError) {
-    return ERROR_MESSAGES[err.code] ?? err.message
+function TelegramIcon3D({ onClick }: { onClick: () => void }) {
+  const mouseX = useMotionValue(0)
+  const mouseY = useMotionValue(0)
+
+  const rotateX = useSpring(useTransform(mouseY, [-0.5, 0.5], [18, -18]), { stiffness: 300, damping: 30 })
+  const rotateY = useSpring(useTransform(mouseX, [-0.5, 0.5], [-18, 18]), { stiffness: 300, damping: 30 })
+
+  function handleMouseMove(e: React.MouseEvent<HTMLDivElement>) {
+    const rect = e.currentTarget.getBoundingClientRect()
+    mouseX.set((e.clientX - rect.left) / rect.width - 0.5)
+    mouseY.set((e.clientY - rect.top) / rect.height - 0.5)
   }
-  return 'Что-то пошло не так. Попробуйте ещё раз.'
+
+  function handleMouseLeave() {
+    mouseX.set(0)
+    mouseY.set(0)
+  }
+
+  return (
+    <motion.div
+      className={styles.iconWrapper}
+      style={{ rotateX, rotateY, transformStyle: 'preserve-3d' }}
+      onMouseMove={handleMouseMove}
+      onMouseLeave={handleMouseLeave}
+      whileTap={{ scale: 0.93 }}
+      whileHover={{ scale: 1.06 }}
+      transition={{ type: 'spring', stiffness: 300, damping: 20 }}
+      onClick={onClick}
+    >
+      <TelegramLogo />
+      {/* 3D тень под иконкой */}
+      <motion.div
+        className={styles.iconShadow}
+        style={{
+          rotateX: useTransform(rotateX, v => -v * 0.5),
+          rotateY: useTransform(rotateY, v => -v * 0.5),
+        }}
+      />
+    </motion.div>
+  )
 }
 
 export default function AuthPage() {
-  const [mode, setMode] = useState<'login' | 'register'>('login')
-
-  const [email,       setEmail]       = useState('')
-  const [displayName, setDisplayName] = useState('')
-  const [password,    setPassword]    = useState('')
-
-  const [error,   setError]   = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const { mockLogin } = useAuth()
 
-  const { login, register } = useAuth()
-  const navigate = useNavigate()
-
-  function switchMode(m: 'login' | 'register') {
-    setMode(m)
-    setError(null)
-  }
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    setError(null)
+  function handleClick() {
     setLoading(true)
-    try {
-      if (mode === 'login') {
-        await login(email, password)
-      } else {
-        await register(email, displayName, password)
-      }
-      navigate('/notes', { replace: true })
-    } catch (err) {
-      setError(errorMessage(err))
-    } finally {
-      setLoading(false)
+    if (import.meta.env.DEV) {
+      mockLogin()
+    } else {
+      setTimeout(() => { window.location.href = '/api/v1/auth/telegram' }, 300)
     }
   }
 
   return (
     <div className={styles.page}>
-      <div className={styles.card}>
-        <div className={styles.logo}>
-          <div className={styles.logoIcon}>S</div>
-          <span className={styles.logoText}>Seyvix</span>
+      <div className={styles.container}>
+        <div className={styles.ring} onClick={handleClick}>
+          <CircularText
+            text="АВТОРИЗОВАТЬСЯ В TELEGRAM • "
+            radius={118}
+            fontSize={13}
+            spinDuration={14}
+            onHover="speedUp"
+            className={styles.circularText}
+          />
+          <div className={styles.iconCenter}>
+            <TelegramIcon3D onClick={handleClick} />
+          </div>
         </div>
 
-        <div className={styles.tabs}>
-          <button
-            className={[styles.tab, mode === 'login'    ? styles.tabActive : ''].join(' ')}
-            onClick={() => switchMode('login')}
-          >
-            Войти
-          </button>
-          <button
-            className={[styles.tab, mode === 'register' ? styles.tabActive : ''].join(' ')}
-            onClick={() => switchMode('register')}
-          >
-            Регистрация
-          </button>
-        </div>
-
-        <form className={styles.form} onSubmit={handleSubmit} noValidate>
-          <div className={styles.field}>
-            <label className={styles.label}>Email</label>
-            <input
-              className={[styles.input, error ? styles.inputError : ''].join(' ')}
-              type="email"
-              placeholder="you@example.com"
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-              required
-              autoComplete="email"
-              autoFocus
-            />
-          </div>
-
-          {mode === 'register' && (
-            <div className={styles.field}>
-              <label className={styles.label}>Имя</label>
-              <input
-                className={styles.input}
-                type="text"
-                placeholder="Как вас зовут?"
-                value={displayName}
-                onChange={e => setDisplayName(e.target.value)}
-                required
-                autoComplete="name"
-              />
-            </div>
-          )}
-
-          <div className={styles.field}>
-            <label className={styles.label}>Пароль</label>
-            <input
-              className={[styles.input, error ? styles.inputError : ''].join(' ')}
-              type="password"
-              placeholder={mode === 'register' ? 'Минимум 8 символов' : ''}
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              required
-              autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-            />
-          </div>
-
-          {error && <div className={styles.errorBox}>{error}</div>}
-
-          <button className={styles.submitBtn} type="submit" disabled={loading}>
-            {loading
-              ? 'Загрузка…'
-              : mode === 'login' ? 'Войти' : 'Создать аккаунт'
-            }
-          </button>
-        </form>
+        <motion.p
+          className={styles.subtitle}
+          animate={{ opacity: loading ? 0.4 : 1 }}
+        >
+          {loading ? 'переход в telegram…' : 'авторизоваться через telegram'}
+        </motion.p>
       </div>
     </div>
   )

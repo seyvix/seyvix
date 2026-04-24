@@ -9,6 +9,7 @@ interface AuthContextValue {
   login: (email: string, password: string) => Promise<void>
   register: (email: string, display_name: string, password: string) => Promise<void>
   logout: () => Promise<void>
+  mockLogin: () => void
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -71,8 +72,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null)
   }
 
+  function mockLogin() {
+    tokenRef.current = 'mock-access-token'
+    setUser({ id: 'tg-mock-1', email: '', display_name: 'Telegram User', is_active: true })
+  }
+
   return (
-    <AuthContext.Provider value={{ user, isReady, login, register, logout }}>
+    <AuthContext.Provider value={{ user, isReady, login, register, logout, mockLogin }}>
       {children}
     </AuthContext.Provider>
   )

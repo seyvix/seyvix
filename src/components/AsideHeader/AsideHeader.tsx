@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import { useLocalStorage } from '../../hooks/useLocalStorage'
 import { useSettings } from '../../contexts/SettingsContext'
+import { useAuth } from '../../contexts/AuthContext'
 import styles from './AsideHeader.module.css'
 
 const STORAGE_KEY = 'seyvix:sidebar-expanded'
@@ -63,14 +64,18 @@ export default function AsideHeader() {
   const [expanded, setExpanded] = useLocalStorage(STORAGE_KEY, false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const { cols, setCols } = useSettings()
+  const { user } = useAuth()
 
   const sidebarClass = [styles.sidebar, expanded ? styles.expanded : ''].filter(Boolean).join(' ')
+  const initials = user?.display_name
+    ? user.display_name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
+    : 'U'
 
   return (
     <aside className={sidebarClass}>
       <div className={styles.top}>
-        <div className={styles.logoIcon}>S</div>
-        <span className={styles.logoText}>Seyvix</span>
+        <div className={styles.avatar}>{initials}</div>
+        <span className={styles.logoText}>{user?.display_name ?? 'Пользователь'}</span>
       </div>
 
       <nav className={styles.nav}>
