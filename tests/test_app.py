@@ -146,3 +146,25 @@ def test_openapi_documents_auth_contracts() -> None:
     assert "AuthTokensResponse" in schema["components"]["schemas"]
     assert "ErrorResponse" in schema["components"]["schemas"]
     assert "ErrorDetail" in schema["components"]["schemas"]
+
+
+def test_openapi_uses_bearer_security_scheme_for_authorized_routes() -> None:
+    response = client.get("/openapi.json")
+
+    assert response.status_code == 200
+    schema = response.json()
+    security_schemes = schema["components"]["securitySchemes"]
+    me_operation = schema["paths"]["/api/v1/auth/me"]["get"]
+    notes_operation = schema["paths"]["/api/v1/notes"]["get"]
+
+    assert security_schemes["BearerAuth"] == {
+        "type": "http",
+        "scheme": "bearer",
+    }
+    assert me_operation["security"] == [{"BearerAuth": []}]
+    assert notes_operation["security"] == [{"BearerAuth": []}]
+    for operation in (me_operation, notes_operation):
+        assert not any(
+            parameter["in"] == "header" and parameter["name"].lower() == "authorization"
+            for parameter in operation.get("parameters", [])
+        )

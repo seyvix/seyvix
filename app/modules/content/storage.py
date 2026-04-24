@@ -74,6 +74,28 @@ class ContentStorage:
             size_bytes=path.stat().st_size,
         )
 
+    def write_temp_file(
+        self,
+        *,
+        owner_user_id: str,
+        upload_id: str,
+        filename: str,
+        data: bytes,
+    ) -> StoredFile:
+        upload_dir = self.root / owner_user_id / ".uploads" / upload_id
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        safe_filename = safe_file_name(filename)
+        path = upload_dir / safe_filename
+        path.write_bytes(data)
+        return StoredFile(
+            filename=safe_filename,
+            relative_path=self._relative(path),
+            size_bytes=path.stat().st_size,
+        )
+
+    def read_relative_file(self, relative_path: str) -> bytes:
+        return (self.root / relative_path).read_bytes()
+
     def write_manifest(self, *, directory: Path, manifest: dict[str, object]) -> None:
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / "manifest.json"
@@ -104,6 +126,14 @@ class ContentStorage:
         path = self.root / content_object.storage_path
         if path.exists():
             shutil.rmtree(path)
+
+    def remove_relative_file_parent(self, relative_path: str) -> None:
+        path = self.root / relative_path
+        if path.exists():
+            path.unlink()
+        parent = path.parent
+        if parent.exists() and parent != self.root:
+            shutil.rmtree(parent)
 
     def _relative(self, path: Path) -> str:
         return path.relative_to(self.root).as_posix()

@@ -69,11 +69,27 @@ class NoteListResponse(BaseModel):
     items: list[NoteCardResponse]
 
 
-class CreateTextNoteRequest(BaseModel):
-    text: str = Field(min_length=1)
+class CreateNoteRequest(BaseModel):
+    media_type: ContentMediaType | None = None
+    text: str | None = Field(default=None, min_length=1)
     title: str | None = Field(default=None, max_length=512)
     folder_path: str | None = Field(default=None, max_length=1024)
     tag_names: list[str] = Field(default_factory=list)
+    file_upload_ids: list[str] = Field(default_factory=list)
+
+
+class UploadedFileResponse(BaseModel):
+    id: str
+    source_filename: str
+    media_type: ContentMediaType
+    mime_type: str | None
+    size_bytes: int
+    expires_at: datetime
+
+
+class FileUploadResponse(BaseModel):
+    files: list[UploadedFileResponse]
+    object: NoteCardResponse | None
 
 
 class FavoriteNoteRequest(BaseModel):
@@ -89,8 +105,9 @@ class ReorderNotesRequest(BaseModel):
     items: list[ReorderNoteItem] = Field(min_length=1)
 
 
-class MergeCollectionRequest(BaseModel):
-    source_slugs: list[str] = Field(min_length=2)
+class MergeNotesRequest(BaseModel):
+    target_slug: str
+    source_slugs: list[str] = Field(min_length=1)
     title: str | None = Field(default=None, max_length=512)
 
 

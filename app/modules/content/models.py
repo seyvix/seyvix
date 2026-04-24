@@ -181,3 +181,20 @@ class ContentCollectionItem(Base):
         foreign_keys=[content_object_id],
         back_populates="collection_memberships",
     )
+
+
+class ContentFileUpload(Base):
+    __tablename__ = "content_file_uploads"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    owner_user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    source_filename: Mapped[str] = mapped_column(String(512))
+    mime_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    media_type: Mapped[str] = mapped_column(String(32), index=True)
+    size_bytes: Mapped[int] = mapped_column(Integer())
+    storage_path: Mapped[str] = mapped_column(String(2048))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

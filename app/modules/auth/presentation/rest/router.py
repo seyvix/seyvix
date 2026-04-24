@@ -1,6 +1,7 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, Request, Response, status
+from fastapi import APIRouter, Depends, Request, Response, Security, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_db_session
@@ -25,6 +26,7 @@ from app.modules.auth.service import (
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+bearer_auth_scheme = HTTPBearer(scheme_name="BearerAuth", auto_error=False)
 
 
 def get_auth_service(
@@ -35,16 +37,19 @@ def get_auth_service(
 
 async def get_auth_context(
     service: Annotated[AuthService, Depends(get_auth_service)],
-    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+    authorization: Annotated[
+        HTTPAuthorizationCredentials | None,
+        Security(bearer_auth_scheme),
+    ] = None,
 ) -> AuthContext:
-    if not authorization or not authorization.startswith("Bearer "):
+    if not authorization or not authorization.credentials:
         raise AppError(
             status_code=status.HTTP_401_UNAUTHORIZED,
             code="missing_access_token",
             message="Missing access token.",
         )
 
-    access_token = authorization.removeprefix("Bearer ").strip()
+    access_token = authorization.credentials.strip()
     try:
         return await service.get_auth_context(access_token)
     except InvalidAccessTokenError as exc:

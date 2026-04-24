@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,17 +10,20 @@ from app.core.config import get_settings
 from app.modules.content.infrastructure.repositories import (
     CategoryRepository,
     ContentRepository,
+    FileUploadRepository,
     TagRepository,
 )
 from app.modules.content.models import (
     ContentAsset,
     ContentCategory,
     ContentCollectionItem,
+    ContentFileUpload,
     ContentObject,
     ContentTag,
 )
 from app.modules.content.schemas import (
     CollectionParentResponse,
+    FileUploadResponse,
     FolderDetailResponse,
     FolderResponse,
     FolderTreeItem,
@@ -28,6 +32,7 @@ from app.modules.content.schemas import (
     NoteCardResponse,
     NoteListResponse,
     TagResponse,
+    UploadedFileResponse,
 )
 from app.modules.content.storage import ContentStorage, slugify
 
@@ -37,10 +42,6 @@ class NoteNotFoundError(Exception):
 
 
 class FolderNotFoundError(Exception):
-    pass
-
-
-class CollectionMergeConflictError(Exception):
     pass
 
 
@@ -57,67 +58,64 @@ class ContentService:
         self.content = ContentRepository(session)
         self.categories = CategoryRepository(session)
         self.tags = TagRepository(session)
+        self.file_uploads = FileUploadRepository(session)
         self.storage = ContentStorage(storage_root or Path("data/content"))
         self.api_prefix = get_settings().api_prefix
 
-    async def create_text_note(
+    async def create_note(
         self,
         *,
         owner_user_id: str,
-        text: str,
+        media_type: str | None,
+        text: str | None,
         title: str | None,
         folder_path: str | None,
         tag_names: list[str],
+        file_upload_ids: list[str],
     ) -> NoteCardResponse:
-        normalized_title = title or text.strip().splitlines()[0][:80]
-        category = await self._get_or_create_category(owner_user_id, folder_path)
-        tags = await self._get_or_create_tags(owner_user_id, tag_names)
-        slug = await self._unique_slug(owner_user_id, normalized_title)
-        sort_order = await self.content.get_max_sort_order(owner_user_id=owner_user_id) + 10
-        directory = self.storage.object_directory(
-            owner_user_id=owner_user_id,
-            folder_path=category.path if category else None,
-            slug=slug,
-            kind="simple",
-        )
-        stored_file = self.storage.write_text_object(
-            directory=directory,
-            title=normalized_title,
-            text=text,
-        )
-        content_object = ContentObject(
-            owner_user_id=owner_user_id,
-            category=category,
-            slug=slug,
-            title=normalized_title,
-            kind="simple",
-            media_type="text",
-            source_filename=stored_file.filename,
-            mime_type="text/markdown",
-            size_bytes=stored_file.size_bytes,
-            storage_path=directory.relative_to(self.storage.root).as_posix(),
-            sort_order=sort_order,
-            tags=tags,
-        )
-        content_object.assets.append(
-            ContentAsset(
-                role="original",
-                media_type="text",
-                filename=stored_file.filename,
-                mime_type="text/markdown",
-                size_bytes=stored_file.size_bytes,
-                storage_path=stored_file.relative_path,
-                text_content=text,
-            ),
-        )
-        self.content.add(content_object)
-        await self.session.commit()
-        loaded = await self._load_note(owner_user_id=owner_user_id, slug=slug)
-        self.storage.write_manifest(
-            directory=directory,
-            manifest=self._manifest(loaded, items=[]),
-        )
-        return await self._to_card(loaded)
+        await self._cleanup_expired_uploads(owner_user_id)
+        if file_upload_ids:
+            uploads: list[ContentFileUpload] = []
+            for upload_id in file_upload_ids:
+                upload = await self.file_uploads.get_available_by_id(
+                    owner_user_id=owner_user_id,
+                    upload_id=upload_id,
+                )
+                if upload is None:
+                    raise NoteNotFoundError
+                uploads.append(upload)
+
+            card = await self._create_from_uploaded_files(
+                owner_user_id=owner_user_id,
+                files=[
+                    UploadedContent(
+                        filename=upload.source_filename,
+                        content_type=upload.mime_type,
+                        data=self.storage.read_relative_file(upload.storage_path),
+                    )
+                    for upload in uploads
+                ],
+                title=title,
+                folder_path=folder_path,
+                tag_names=tag_names,
+                object_id=None,
+            )
+            now = datetime.now(UTC)
+            for upload in uploads:
+                upload.consumed_at = now
+            await self.session.commit()
+            return card
+
+        if media_type in (None, "text") and text is not None:
+            return await self._create_text_note(
+                owner_user_id=owner_user_id,
+                text=text,
+                title=title,
+                folder_path=folder_path,
+                tag_names=tag_names,
+            )
+
+        raise NoteNotFoundError
 
     async def upload_files(
         self,
@@ -127,63 +125,59 @@ class ContentService:
         title: str | None,
         folder_path: str | None,
         tag_names: list[str],
-    ) -> NoteCardResponse:
-        if len(files) == 1:
-            uploaded = files[0]
-            content_object = await self._create_uploaded_object(
+        create_or_attach_object: bool,
+        object_id: str | None,
+    ) -> NoteCardResponse | FileUploadResponse:
+        await self._cleanup_expired_uploads(owner_user_id)
+        if create_or_attach_object:
+            return await self._create_from_uploaded_files(
                 owner_user_id=owner_user_id,
-                uploaded=uploaded,
+                files=files,
+                title=title,
                 folder_path=folder_path,
                 tag_names=tag_names,
+                object_id=object_id,
             )
-            await self.session.commit()
-            loaded = await self._load_note(owner_user_id=owner_user_id, slug=content_object.slug)
-            self.storage.write_manifest(
-                directory=self.storage.root / loaded.storage_path,
-                manifest=self._manifest(loaded, items=[]),
-            )
-            return await self._to_card(loaded)
 
-        collection_title = title or "Imported collection"
-        collection = await self._create_collection(
-            owner_user_id=owner_user_id,
-            title=collection_title,
-            folder_path=folder_path,
-            tag_names=tag_names,
-        )
-        child_objects: list[ContentObject] = []
-        for position, uploaded in enumerate(files, start=10):
-            child = await self._create_uploaded_object(
+        expires_at = datetime.now(UTC) + timedelta(hours=24)
+        uploads: list[ContentFileUpload] = []
+        for uploaded in files:
+            upload = ContentFileUpload(
                 owner_user_id=owner_user_id,
-                uploaded=uploaded,
-                folder_path=folder_path,
-                tag_names=tag_names,
+                source_filename=uploaded.filename,
+                mime_type=uploaded.content_type,
+                media_type=self._media_type(uploaded.filename, uploaded.content_type),
+                size_bytes=len(uploaded.data),
+                storage_path="pending",
+                expires_at=expires_at,
             )
-            self.content.add_collection_item(
-                ContentCollectionItem(
-                    collection=collection,
-                    content_object=child,
-                    position=position,
-                ),
+            self.file_uploads.add(upload)
+            await self.session.flush()
+            stored_file = self.storage.write_temp_file(
+                owner_user_id=owner_user_id,
+                upload_id=upload.id,
+                filename=uploaded.filename,
+                data=uploaded.data,
             )
-            child_objects.append(child)
+            upload.storage_path = stored_file.relative_path
+            upload.size_bytes = stored_file.size_bytes
+            uploads.append(upload)
 
         await self.session.commit()
-        for child in child_objects:
-            loaded_child = await self._load_note(owner_user_id=owner_user_id, slug=child.slug)
-            self.storage.write_manifest(
-                directory=self.storage.root / loaded_child.storage_path,
-                manifest=self._manifest(loaded_child, items=[]),
-            )
-        loaded = await self._load_note(owner_user_id=owner_user_id, slug=collection.slug)
-        loaded_items = [
-            item.content_object for item in await self.content.list_collection_items(loaded.id)
-        ]
-        self.storage.write_manifest(
-            directory=self.storage.root / loaded.storage_path,
-            manifest=self._manifest(loaded, items=loaded_items),
+        return FileUploadResponse(
+            files=[
+                UploadedFileResponse(
+                    id=upload.id,
+                    source_filename=upload.source_filename,
+                    media_type=upload.media_type,  # type: ignore[arg-type]
+                    mime_type=upload.mime_type,
+                    size_bytes=upload.size_bytes,
+                    expires_at=upload.expires_at,
+                )
+                for upload in uploads
+            ],
+            object=None,
         )
-        return await self._to_card(loaded)
 
     async def list_notes(
         self,
@@ -263,48 +257,36 @@ class ContentService:
             content_object.sort_order = positions[content_object.slug]
         await self.session.commit()
 
-    async def merge_collection(
+    async def merge_notes(
         self,
         *,
         owner_user_id: str,
+        target_slug: str,
         source_slugs: list[str],
         title: str | None,
-    ) -> tuple[NoteCardResponse, int]:
-        objects = await self.content.list_by_slugs(owner_user_id=owner_user_id, slugs=source_slugs)
-        if len(objects) != len(set(source_slugs)):
+    ) -> NoteCardResponse:
+        target = await self._load_note(owner_user_id=owner_user_id, slug=target_slug)
+        unique_source_slugs = [slug for slug in dict.fromkeys(source_slugs) if slug != target_slug]
+        sources = await self.content.list_by_slugs(
+            owner_user_id=owner_user_id,
+            slugs=unique_source_slugs,
+        )
+        if len(sources) != len(unique_source_slugs):
             raise NoteNotFoundError
 
-        by_slug = {content_object.slug: content_object for content_object in objects}
-        ordered = [by_slug[slug] for slug in source_slugs]
-        collections = [
-            content_object for content_object in ordered if content_object.kind == "collection"
-        ]
-        if len(collections) > 1:
-            raise CollectionMergeConflictError
-
-        if collections:
-            collection = collections[0]
-            status_code = 200
-            incoming = [
-                content_object for content_object in ordered if content_object.kind != "collection"
-            ]
-        else:
-            first_category = ordered[0].category.path if ordered[0].category else None
-            collection = await self._create_collection(
-                owner_user_id=owner_user_id,
-                title=title or "Merged collection",
-                folder_path=first_category,
-                tag_names=[],
-            )
-            status_code = 201
-            incoming = ordered
-
-        current_items = await self.content.list_collection_items(collection.id)
-        next_position = max((item.position for item in current_items), default=0) + 10
-        for content_object in incoming:
-            if content_object.kind == "collection":
-                raise CollectionMergeConflictError
-            existing_membership = await self.content.get_membership(content_object.id)
+        by_slug = {content_object.slug: content_object for content_object in sources}
+        collection = await self._ensure_collection(target, title=title)
+        next_position = await self._next_collection_position(collection)
+        for slug in unique_source_slugs:
+            source = by_slug[slug]
+            if source.kind == "collection":
+                source_items = await self.content.list_collection_items(source.id)
+                for item in source_items:
+                    item.collection = collection
+                    item.position = next_position
+                    next_position += 10
+                continue
+            existing_membership = await self.content.get_membership(source.id)
             if existing_membership is not None:
                 existing_membership.collection = collection
                 existing_membership.position = next_position
@@ -312,22 +294,17 @@ class ContentService:
                 self.content.add_collection_item(
                     ContentCollectionItem(
                         collection=collection,
-                        content_object=content_object,
+                        content_object=source,
                         position=next_position,
                     ),
                 )
             next_position += 10
 
         await self.session.commit()
-        loaded = await self._load_note(owner_user_id=owner_user_id, slug=collection.slug)
-        item_objects = [
-            item.content_object for item in await self.content.list_collection_items(loaded.id)
-        ]
-        self.storage.write_manifest(
-            directory=self.storage.root / loaded.storage_path,
-            manifest=self._manifest(loaded, items=item_objects),
+        return await self._reload_write_manifest_and_card(
+            owner_user_id=owner_user_id,
+            slug=collection.slug,
         )
-        return await self._to_card(loaded), status_code
 
     async def list_folders(self, *, owner_user_id: str) -> FolderTreeResponse:
         categories = await self.categories.list_all(owner_user_id=owner_user_id)
@@ -374,6 +351,141 @@ class ContentService:
             notes=notes.items,
         )
 
+    async def _create_text_note(
+        self,
+        *,
+        owner_user_id: str,
+        text: str,
+        title: str | None,
+        folder_path: str | None,
+        tag_names: list[str],
+    ) -> NoteCardResponse:
+        normalized_title = title or text.strip().splitlines()[0][:80]
+        category = await self._get_or_create_category(owner_user_id, folder_path)
+        tags = await self._get_or_create_tags(owner_user_id, tag_names)
+        slug = await self._unique_slug(owner_user_id, normalized_title)
+        sort_order = await self.content.get_max_sort_order(owner_user_id=owner_user_id) + 10
+        directory = self.storage.object_directory(
+            owner_user_id=owner_user_id,
+            folder_path=category.path if category else None,
+            slug=slug,
+            kind="simple",
+        )
+        stored_file = self.storage.write_text_object(
+            directory=directory,
+            title=normalized_title,
+            text=text,
+        )
+        content_object = ContentObject(
+            owner_user_id=owner_user_id,
+            category=category,
+            slug=slug,
+            title=normalized_title,
+            kind="simple",
+            media_type="text",
+            source_filename=stored_file.filename,
+            mime_type="text/markdown",
+            size_bytes=stored_file.size_bytes,
+            storage_path=directory.relative_to(self.storage.root).as_posix(),
+            sort_order=sort_order,
+            tags=tags,
+        )
+        content_object.assets.append(
+            ContentAsset(
+                role="original",
+                media_type="text",
+                filename=stored_file.filename,
+                mime_type="text/markdown",
+                size_bytes=stored_file.size_bytes,
+                storage_path=stored_file.relative_path,
+                text_content=text,
+            ),
+        )
+        self.content.add(content_object)
+        await self.session.commit()
+        return await self._reload_write_manifest_and_card(owner_user_id=owner_user_id, slug=slug)
+
+    async def _create_from_uploaded_files(
+        self,
+        *,
+        owner_user_id: str,
+        files: list[UploadedContent],
+        title: str | None,
+        folder_path: str | None,
+        tag_names: list[str],
+        object_id: str | None,
+    ) -> NoteCardResponse:
+        existing = (
+            await self.content.get_by_id(owner_user_id=owner_user_id, object_id=object_id)
+            if object_id is not None
+            else None
+        )
+        if existing is not None:
+            collection = await self._ensure_collection(existing, title=title)
+            next_position = await self._next_collection_position(collection)
+            for uploaded in files:
+                child = await self._create_uploaded_object(
+                    owner_user_id=owner_user_id,
+                    uploaded=uploaded,
+                    folder_path=collection.category.path if collection.category else folder_path,
+                    tag_names=tag_names,
+                )
+                self.content.add_collection_item(
+                    ContentCollectionItem(
+                        collection=collection,
+                        content_object=child,
+                        position=next_position,
+                    ),
+                )
+                next_position += 10
+            await self.session.commit()
+            return await self._reload_write_manifest_and_card(
+                owner_user_id=owner_user_id,
+                slug=collection.slug,
+            )
+
+        if len(files) == 1:
+            content_object = await self._create_uploaded_object(
+                owner_user_id=owner_user_id,
+                uploaded=files[0],
+                folder_path=folder_path,
+                tag_names=tag_names,
+                object_id=object_id,
+                title=title,
+            )
+            await self.session.commit()
+            return await self._reload_write_manifest_and_card(
+                owner_user_id=owner_user_id,
+                slug=content_object.slug,
+            )
+
+        collection = await self._create_collection(
+            owner_user_id=owner_user_id,
+            title=title or "Imported collection",
+            folder_path=folder_path,
+            tag_names=tag_names,
+            object_id=object_id,
+        )
+        for position, uploaded in enumerate(files, start=10):
+            child = await self._create_uploaded_object(
+                owner_user_id=owner_user_id,
+                uploaded=uploaded,
+                folder_path=folder_path,
+                tag_names=tag_names,
+            )
+            self.content.add_collection_item(
+                ContentCollectionItem(
+                    collection=collection,
+                    content_object=child,
+                    position=position,
+                ),
+            )
+        await self.session.commit()
+        return await self._reload_write_manifest_and_card(
+            owner_user_id=owner_user_id,
+            slug=collection.slug,
+        )
+
     async def _create_uploaded_object(
         self,
         *,
@@ -381,14 +493,17 @@ class ContentService:
         uploaded: UploadedContent,
         folder_path: str | None,
         tag_names: list[str],
+        object_id: str | None = None,
+        title: str | None = None,
     ) -> ContentObject:
         category = await self._get_or_create_category(owner_user_id, folder_path)
         tags = await self._get_or_create_tags(owner_user_id, tag_names)
         media_type = self._media_type(uploaded.filename, uploaded.content_type)
         kind = "complex" if media_type == "document" else "simple"
-        title = uploaded.filename
+        normalized_title = title or uploaded.filename
         slug = await self._unique_slug(
-            owner_user_id, Path(uploaded.filename).stem or uploaded.filename
+            owner_user_id,
+            Path(uploaded.filename).stem or normalized_title,
         )
         sort_order = await self.content.get_max_sort_order(owner_user_id=owner_user_id) + 10
         directory = self.storage.object_directory(
@@ -404,10 +519,11 @@ class ContentService:
         )
         text_content = self._decode_text(uploaded.data) if media_type == "text" else None
         content_object = ContentObject(
+            id=object_id or None,
             owner_user_id=owner_user_id,
             category=category,
             slug=slug,
-            title=title,
+            title=normalized_title,
             kind=kind,
             media_type=media_type,
             source_filename=stored_file.filename,
@@ -438,22 +554,25 @@ class ContentService:
         title: str,
         folder_path: str | None,
         tag_names: list[str],
+        object_id: str | None = None,
+        slug: str | None = None,
     ) -> ContentObject:
         category = await self._get_or_create_category(owner_user_id, folder_path)
         tags = await self._get_or_create_tags(owner_user_id, tag_names)
-        slug = await self._unique_slug(owner_user_id, title)
+        normalized_slug = slug or await self._unique_slug(owner_user_id, title)
         sort_order = await self.content.get_max_sort_order(owner_user_id=owner_user_id) + 10
         directory = self.storage.object_directory(
             owner_user_id=owner_user_id,
             folder_path=category.path if category else None,
-            slug=slug,
+            slug=normalized_slug,
             kind="collection",
         )
         directory.mkdir(parents=True, exist_ok=True)
         collection = ContentObject(
+            id=object_id or None,
             owner_user_id=owner_user_id,
             category=category,
-            slug=slug,
+            slug=normalized_slug,
             title=title,
             kind="collection",
             media_type=None,
@@ -463,6 +582,84 @@ class ContentService:
         )
         self.content.add(collection)
         return collection
+
+    async def _ensure_collection(
+        self,
+        content_object: ContentObject,
+        *,
+        title: str | None,
+    ) -> ContentObject:
+        if content_object.kind == "collection":
+            if title:
+                content_object.title = title
+            return content_object
+
+        child_slug = await self._unique_slug(
+            content_object.owner_user_id,
+            f"{content_object.slug}-item",
+        )
+        child = ContentObject(
+            owner_user_id=content_object.owner_user_id,
+            category=content_object.category,
+            slug=child_slug,
+            title=content_object.title,
+            kind=content_object.kind,
+            media_type=content_object.media_type,
+            source_filename=content_object.source_filename,
+            mime_type=content_object.mime_type,
+            size_bytes=content_object.size_bytes,
+            storage_path=content_object.storage_path,
+            sort_order=content_object.sort_order,
+            tags=list(content_object.tags),
+        )
+        for asset in list(content_object.assets):
+            asset.content_object = child
+
+        collection_dir = self.storage.object_directory(
+            owner_user_id=content_object.owner_user_id,
+            folder_path=content_object.category.path if content_object.category else None,
+            slug=content_object.slug,
+            kind="collection",
+        )
+        collection_dir.mkdir(parents=True, exist_ok=True)
+        content_object.title = title or content_object.title
+        content_object.kind = "collection"
+        content_object.media_type = None
+        content_object.source_filename = None
+        content_object.mime_type = None
+        content_object.size_bytes = None
+        content_object.storage_path = collection_dir.relative_to(self.storage.root).as_posix()
+        self.content.add(child)
+        self.content.add_collection_item(
+            ContentCollectionItem(collection=content_object, content_object=child, position=10),
+        )
+        return content_object
+
+    async def _next_collection_position(self, collection: ContentObject) -> int:
+        current_items = await self.content.list_collection_items(collection.id)
+        return max((item.position for item in current_items), default=0) + 10
+
+    async def _reload_write_manifest_and_card(
+        self,
+        *,
+        owner_user_id: str,
+        slug: str,
+    ) -> NoteCardResponse:
+        loaded = await self._load_note(owner_user_id=owner_user_id, slug=slug)
+        items = [
+            item.content_object for item in await self.content.list_collection_items(loaded.id)
+        ]
+        self.storage.write_manifest(
+            directory=self.storage.root / loaded.storage_path,
+            manifest=self._manifest(loaded, items=items),
+        )
+        if loaded.kind == "collection":
+            for item in items:
+                self.storage.write_manifest(
+                    directory=self.storage.root / item.storage_path,
+                    manifest=self._manifest(item, items=[]),
+                )
+        return await self._to_card(loaded)
 
     async def _get_or_create_category(
         self,
@@ -495,6 +692,17 @@ class ContentService:
                 await self.session.flush()
             parent = category
         return parent
+
+    async def _cleanup_expired_uploads(self, owner_user_id: str) -> None:
+        expired_uploads = await self.file_uploads.list_expired(
+            owner_user_id=owner_user_id,
+            now=datetime.now(UTC),
+        )
+        for upload in expired_uploads:
+            self.storage.remove_relative_file_parent(upload.storage_path)
+            await self.session.delete(upload)
+        if expired_uploads:
+            await self.session.flush()
 
     async def _get_or_create_tags(
         self, owner_user_id: str, tag_names: list[str]

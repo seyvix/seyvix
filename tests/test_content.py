@@ -2,6 +2,7 @@ import asyncio
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -65,9 +66,10 @@ def _create_text_note(
     tag_names: list[str] | None = None,
 ) -> dict[str, object]:
     response = client.post(
-        "/api/v1/notes/text",
+        "/api/v1/notes",
         headers=headers,
         json={
+            "media_type": "text",
             "title": title,
             "text": text,
             "folder_path": folder_path,
@@ -113,23 +115,39 @@ def test_create_text_note_persists_manifest_and_downloads_archive(
     assert len(download_response.content) > 100
 
 
-def test_upload_multiple_files_creates_collection_with_child_objects(
+def test_upload_single_files_with_same_object_id_creates_collection(
     content_client: TestClient,
 ) -> None:
     headers = _auth_headers(content_client)
+    object_id = str(uuid4())
 
-    response = content_client.post(
-        "/api/v1/notes/upload",
+    first_response = content_client.post(
+        "/api/v1/notes/file/upload",
         headers=headers,
-        data={"title": "Batch import", "folder_path": "imports"},
-        files=[
-            ("files", ("alpha.txt", b"Alpha body", "text/plain")),
-            ("files", ("cover.png", b"not a real image", "image/png")),
-        ],
+        data={
+            "object_id": object_id,
+            "title": "Batch import",
+            "folder_path": "imports",
+        },
+        files={"file": ("alpha.txt", b"Alpha body", "text/plain")},
+    )
+    second_response = content_client.post(
+        "/api/v1/notes/file/upload",
+        headers=headers,
+        data={
+            "object_id": object_id,
+            "title": "Batch import",
+            "folder_path": "imports",
+        },
+        files={"file": ("cover.png", b"not a real image", "image/png")},
     )
 
-    assert response.status_code == 201
-    payload = response.json()
+    assert first_response.status_code == 201
+    assert first_response.json()["id"] == object_id
+    assert first_response.json()["kind"] == "simple"
+    assert second_response.status_code == 201
+    payload = second_response.json()
+    assert payload["id"] == object_id
     assert payload["kind"] == "collection"
     assert payload["title"] == "Batch import"
     assert payload["folder"]["path"] == "imports"
@@ -141,14 +159,18 @@ def test_search_expands_collections_to_matching_child_objects(
     content_client: TestClient,
 ) -> None:
     headers = _auth_headers(content_client)
-    collection_response = content_client.post(
-        "/api/v1/notes/upload",
+    object_id = str(uuid4())
+    content_client.post(
+        "/api/v1/notes/file/upload",
         headers=headers,
-        data={"title": "Batch import"},
-        files=[
-            ("files", ("alpha.txt", b"Alpha body", "text/plain")),
-            ("files", ("beta.txt", b"Beta body", "text/plain")),
-        ],
+        data={"object_id": object_id, "title": "Batch import"},
+        files={"file": ("alpha.txt", b"Alpha body", "text/plain")},
+    )
+    collection_response = content_client.post(
+        "/api/v1/notes/file/upload",
+        headers=headers,
+        data={"object_id": object_id, "title": "Batch import"},
+        files={"file": ("beta.txt", b"Beta body", "text/plain")},
     )
     collection_slug = collection_response.json()["slug"]
 
@@ -197,54 +219,148 @@ def test_favorite_and_custom_order_are_exposed_in_note_list(
     ]
 
 
-def test_merge_objects_into_collection_and_reject_collection_to_collection_merge(
+def test_upload_file_without_object_id_stays_temporary_until_note_creation(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client)
+
+    upload_response = content_client.post(
+        "/api/v1/notes/file/upload",
+        headers=headers,
+        files={"file": ("draft.txt", b"Draft body", "text/plain")},
+    )
+    assert upload_response.status_code == 201
+    upload_payload = upload_response.json()
+    assert upload_payload["object"] is None
+    assert upload_payload["files"][0]["source_filename"] == "draft.txt"
+    assert not list(content_client.app.state.content_storage_root.rglob("manifest.json"))
+
+    create_response = content_client.post(
+        "/api/v1/notes",
+        headers=headers,
+        json={
+            "title": "Created from upload",
+            "file_upload_ids": [upload_payload["files"][0]["id"]],
+            "folder_path": "inbox",
+        },
+    )
+    assert create_response.status_code == 201
+    payload = create_response.json()
+    assert payload["kind"] == "simple"
+    assert payload["source_filename"] == "draft.txt"
+    assert payload["folder"]["path"] == "inbox"
+    assert list(content_client.app.state.content_storage_root.rglob("manifest.json"))
+
+
+def test_upload_file_with_create_object_flag_uses_server_generated_object_id(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client)
+
+    first_response = content_client.post(
+        "/api/v1/notes/file/upload",
+        headers=headers,
+        data={"create_object": "true", "title": "Server object"},
+        files={"file": ("one.txt", b"One", "text/plain")},
+    )
+    second_response = content_client.post(
+        "/api/v1/notes/file/upload",
+        headers=headers,
+        data={"create_object": "true", "title": "Another object"},
+        files={"file": ("two.txt", b"Two", "text/plain")},
+    )
+
+    assert first_response.status_code == 201
+    assert second_response.status_code == 201
+    assert first_response.json()["kind"] == "simple"
+    assert second_response.json()["kind"] == "simple"
+    assert first_response.json()["id"] != second_response.json()["id"]
+    assert first_response.json()["source_filename"] == "one.txt"
+    assert second_response.json()["source_filename"] == "two.txt"
+
+
+def test_repeated_upload_with_object_id_extends_same_object_as_collection(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client)
+    object_id = str(uuid4())
+
+    first_response = content_client.post(
+        "/api/v1/notes/file/upload",
+        headers=headers,
+        data={"object_id": object_id, "title": "Target"},
+        files={"file": ("one.txt", b"One", "text/plain")},
+    )
+    second_response = content_client.post(
+        "/api/v1/notes/file/upload",
+        headers=headers,
+        data={"object_id": object_id, "title": "Target"},
+        files={"file": ("two.txt", b"Two", "text/plain")},
+    )
+
+    assert first_response.status_code == 201
+    assert first_response.json()["id"] == object_id
+    assert first_response.json()["kind"] == "simple"
+    assert second_response.status_code == 201
+    payload = second_response.json()
+    assert payload["id"] == object_id
+    assert payload["kind"] == "collection"
+    assert [item["source_filename"] for item in payload["items"]] == ["one.txt", "two.txt"]
+
+
+def test_merge_moves_objects_and_collections_into_target_collection(
     content_client: TestClient,
 ) -> None:
     headers = _auth_headers(content_client)
     first = _create_text_note(content_client, headers, title="First", text="First body")
     second = _create_text_note(content_client, headers, title="Second", text="Second body")
-    third = _create_text_note(content_client, headers, title="Third", text="Third body")
 
     merge_response = content_client.post(
-        "/api/v1/notes/collections/merge",
+        "/api/v1/notes/merge",
         headers=headers,
-        json={"source_slugs": [first["slug"], second["slug"]], "title": "Merged"},
+        json={"target_slug": first["slug"], "source_slugs": [second["slug"]], "title": "Merged"},
     )
-    assert merge_response.status_code == 201
+    assert merge_response.status_code == 200
     collection = merge_response.json()
     assert collection["kind"] == "collection"
-    assert [item["slug"] for item in collection["items"]] == [first["slug"], second["slug"]]
-
-    transfer_response = content_client.post(
-        "/api/v1/notes/collections/merge",
-        headers=headers,
-        json={"source_slugs": [collection["slug"], third["slug"]]},
-    )
-    assert transfer_response.status_code == 200
-    assert [item["slug"] for item in transfer_response.json()["items"]] == [
-        first["slug"],
-        second["slug"],
-        third["slug"],
+    assert collection["slug"] == first["slug"]
+    assert [item["source_filename"] for item in collection["items"]] == [
+        "content.md",
+        "content.md",
     ]
 
     other_collection = content_client.post(
-        "/api/v1/notes/upload",
+        "/api/v1/notes/file/upload",
         headers=headers,
-        data={"title": "Other collection"},
-        files=[
-            ("files", ("one.txt", b"One", "text/plain")),
-            ("files", ("two.txt", b"Two", "text/plain")),
-        ],
+        data={
+            "object_id": (other_collection_id := str(uuid4())),
+            "title": "Other collection",
+        },
+        files={"file": ("one.txt", b"One", "text/plain")},
+    )
+    other_collection = content_client.post(
+        "/api/v1/notes/file/upload",
+        headers=headers,
+        data={
+            "object_id": other_collection_id,
+            "title": "Other collection",
+        },
+        files={"file": ("two.txt", b"Two", "text/plain")},
     ).json()
 
-    conflict_response = content_client.post(
-        "/api/v1/notes/collections/merge",
+    collection_merge_response = content_client.post(
+        "/api/v1/notes/merge",
         headers=headers,
-        json={"source_slugs": [collection["slug"], other_collection["slug"]]},
+        json={"target_slug": collection["slug"], "source_slugs": [other_collection["slug"]]},
     )
 
-    assert conflict_response.status_code == 409
-    assert conflict_response.json()["error"]["code"] == "collection_merge_conflict"
+    assert collection_merge_response.status_code == 200
+    assert [item["source_filename"] for item in collection_merge_response.json()["items"]] == [
+        "content.md",
+        "content.md",
+        "one.txt",
+        "two.txt",
+    ]
 
 
 def test_folder_tree_and_folder_tags_are_available(content_client: TestClient) -> None:

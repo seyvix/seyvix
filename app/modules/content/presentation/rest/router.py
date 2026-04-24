@@ -14,18 +14,18 @@ from app.api.schemas import ErrorResponse
 from app.modules.auth.presentation.rest.router import get_auth_context
 from app.modules.auth.service import AuthContext
 from app.modules.content.schemas import (
-    CreateTextNoteRequest,
+    CreateNoteRequest,
     FavoriteNoteRequest,
+    FileUploadResponse,
     FolderDetailResponse,
     FolderTreeResponse,
-    MergeCollectionRequest,
+    MergeNotesRequest,
     NoteCardResponse,
     NoteListResponse,
     NoteSort,
     ReorderNotesRequest,
 )
 from app.modules.content.service import (
-    CollectionMergeConflictError,
     ContentService,
     FolderNotFoundError,
     NoteNotFoundError,
@@ -52,71 +52,86 @@ def _not_found(exc: Exception) -> AppError:
 
 
 @router.post(
-    "/notes/text",
+    "/notes",
     response_model=NoteCardResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Create text note",
+    summary="Create note object",
     description=(
-        "Creates a simple text content object, stores it as an object directory with "
-        "content.md and manifest.json, and returns the card contract used by the UI."
+        "Creates a content object from text or from previously uploaded temporary files. "
+        "Multiple file uploads create a collection with separate child objects."
     ),
     responses={
-        201: {"description": "Text note created."},
+        201: {"description": "Note object created."},
         401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
+        404: {"model": ErrorResponse, "description": "Uploaded file not found."},
         422: {"model": ErrorResponse, "description": "Validation error in input payload."},
     },
 )
-async def create_text_note(
-    payload: CreateTextNoteRequest,
+async def create_note(
+    payload: CreateNoteRequest,
     context: Annotated[AuthContext, Depends(get_auth_context)],
     service: Annotated[ContentService, Depends(get_content_service)],
 ) -> NoteCardResponse:
-    return await service.create_text_note(
-        owner_user_id=context.user.id,
-        text=payload.text,
-        title=payload.title,
-        folder_path=payload.folder_path,
-        tag_names=payload.tag_names,
-    )
+    try:
+        return await service.create_note(
+            owner_user_id=context.user.id,
+            media_type=payload.media_type,
+            text=payload.text,
+            title=payload.title,
+            folder_path=payload.folder_path,
+            tag_names=payload.tag_names,
+            file_upload_ids=payload.file_upload_ids,
+        )
+    except NoteNotFoundError as exc:
+        raise _not_found(exc) from exc
 
 
 @router.post(
-    "/notes/upload",
-    response_model=NoteCardResponse,
+    "/notes/file/upload",
     status_code=status.HTTP_201_CREATED,
     summary="Upload note files",
     description=(
-        "Uploads one or more files. A single file becomes one content object; multiple files "
-        "become separate objects grouped into a new collection."
+        "Uploads one file into temporary storage by default. If object_id is provided, the file "
+        "is added to that object, creating it when needed. If create_object=true is provided "
+        "without object_id, the server creates a new object id for this file."
     ),
     responses={
-        201: {"description": "Object or collection created."},
+        201: {
+            "description": "Temporary upload metadata or created object returned.",
+            "model": FileUploadResponse,
+        },
         401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
         422: {"model": ErrorResponse, "description": "Validation error in input payload."},
     },
 )
-async def upload_notes(
+async def upload_note_files(
     context: Annotated[AuthContext, Depends(get_auth_context)],
     service: Annotated[ContentService, Depends(get_content_service)],
-    files: Annotated[list[UploadFile], File(description="Files to ingest as content objects.")],
+    file: Annotated[UploadFile, File(description="File to upload.")],
+    create_object: Annotated[bool, Form()] = False,
+    object_id: Annotated[str | None, Form(max_length=36)] = None,
     title: Annotated[str | None, Form(max_length=512)] = None,
     folder_path: Annotated[str | None, Form(max_length=1024)] = None,
     tag_names: Annotated[list[str] | None, Form()] = None,
-) -> NoteCardResponse:
-    uploaded_files = [
-        UploadedContent(
-            filename=file.filename or "file",
-            content_type=file.content_type,
-            data=await file.read(),
-        )
-        for file in files
-    ]
-    return await service.upload_files(
+) -> Response:
+    uploaded_file = UploadedContent(
+        filename=file.filename or "file",
+        content_type=file.content_type,
+        data=await file.read(),
+    )
+    result = await service.upload_files(
         owner_user_id=context.user.id,
-        files=uploaded_files,
+        files=[uploaded_file],
         title=title,
         folder_path=folder_path,
         tag_names=tag_names or [],
+        create_or_attach_object=create_object or object_id is not None,
+        object_id=object_id,
+    )
+    return Response(
+        content=result.model_dump_json(),
+        media_type="application/json",
+        status_code=status.HTTP_201_CREATED,
     )
 
 
@@ -253,46 +268,34 @@ async def reorder_notes(
 
 
 @router.post(
-    "/notes/collections/merge",
+    "/notes/merge",
     response_model=NoteCardResponse,
-    summary="Merge notes into collection",
+    summary="Merge notes",
     description=(
-        "Creates a new collection from two or more non-collection objects, or moves "
-        "non-collection objects into an existing collection. Collection-to-collection merge "
-        "is rejected."
+        "Moves source objects or collection items into the target object. If the target is not "
+        "a collection yet, it is converted into one while preserving its previous content as the "
+        "first child object."
     ),
     responses={
-        200: {"description": "Object moved into existing collection."},
-        201: {"description": "New collection created."},
+        200: {"description": "Sources moved into target collection."},
         401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
         404: {"model": ErrorResponse, "description": "One or more notes were not found."},
-        409: {"model": ErrorResponse, "description": "Collection-to-collection merge conflict."},
     },
 )
-async def merge_collection(
-    payload: MergeCollectionRequest,
+async def merge_notes(
+    payload: MergeNotesRequest,
     context: Annotated[AuthContext, Depends(get_auth_context)],
     service: Annotated[ContentService, Depends(get_content_service)],
-) -> Response:
+) -> NoteCardResponse:
     try:
-        card, status_code = await service.merge_collection(
+        return await service.merge_notes(
             owner_user_id=context.user.id,
+            target_slug=payload.target_slug,
             source_slugs=payload.source_slugs,
             title=payload.title,
         )
     except NoteNotFoundError as exc:
         raise _not_found(exc) from exc
-    except CollectionMergeConflictError as exc:
-        raise AppError(
-            status_code=status.HTTP_409_CONFLICT,
-            code="collection_merge_conflict",
-            message="Collection cannot be merged with another collection.",
-        ) from exc
-    return Response(
-        content=card.model_dump_json(),
-        media_type="application/json",
-        status_code=status_code,
-    )
 
 
 @router.get(

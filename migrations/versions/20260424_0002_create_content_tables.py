@@ -152,6 +152,45 @@ def upgrade() -> None:
     )
 
     op.create_table(
+        "content_file_uploads",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("owner_user_id", sa.String(length=36), nullable=False),
+        sa.Column("source_filename", sa.String(length=512), nullable=False),
+        sa.Column("mime_type", sa.String(length=255), nullable=True),
+        sa.Column("media_type", sa.String(length=32), nullable=False),
+        sa.Column("size_bytes", sa.Integer(), nullable=False),
+        sa.Column("storage_path", sa.String(length=2048), nullable=False),
+        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("consumed_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["owner_user_id"],
+            ["users.id"],
+            name=op.f("fk_content_file_uploads_owner_user_id_users"),
+            ondelete="CASCADE",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_content_file_uploads")),
+    )
+    op.create_index(
+        op.f("ix_content_file_uploads_expires_at"),
+        "content_file_uploads",
+        ["expires_at"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_content_file_uploads_media_type"),
+        "content_file_uploads",
+        ["media_type"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_content_file_uploads_owner_user_id"),
+        "content_file_uploads",
+        ["owner_user_id"],
+        unique=False,
+    )
+
+    op.create_table(
         "content_assets",
         sa.Column("id", sa.String(length=36), nullable=False),
         sa.Column("content_object_id", sa.String(length=36), nullable=False),
@@ -241,6 +280,10 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("content_object_tags")
+    op.drop_index(op.f("ix_content_file_uploads_owner_user_id"), table_name="content_file_uploads")
+    op.drop_index(op.f("ix_content_file_uploads_media_type"), table_name="content_file_uploads")
+    op.drop_index(op.f("ix_content_file_uploads_expires_at"), table_name="content_file_uploads")
+    op.drop_table("content_file_uploads")
     op.drop_index(
         op.f("ix_content_collection_items_content_object_id"),
         table_name="content_collection_items",

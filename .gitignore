@@ -56,3 +56,6 @@ coverage.xml
 *.swo
 .DS_Store
 Thumbs.db
+
+# --- Папки локальные для проекта ---
+data/

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import cast
 
 from sqlalchemy import select
@@ -11,6 +12,7 @@ from app.modules.content.models import (
     ContentAsset,
     ContentCategory,
     ContentCollectionItem,
+    ContentFileUpload,
     ContentObject,
     ContentTag,
 )
@@ -54,6 +56,14 @@ class ContentRepository:
             select(ContentObject)
             .options(*content_object_load_options())
             .where(ContentObject.owner_user_id == owner_user_id, ContentObject.slug == slug)
+        )
+        return cast(ContentObject | None, await self.session.scalar(query))
+
+    async def get_by_id(self, *, owner_user_id: str, object_id: str) -> ContentObject | None:
+        query = (
+            select(ContentObject)
+            .options(*content_object_load_options())
+            .where(ContentObject.owner_user_id == owner_user_id, ContentObject.id == object_id)
         )
         return cast(ContentObject | None, await self.session.scalar(query))
 
@@ -158,5 +168,39 @@ class TagRepository:
             select(ContentTag)
             .where(ContentTag.owner_user_id == owner_user_id)
             .order_by(ContentTag.name.asc())
+        )
+        return list(await self.session.scalars(query))
+
+
+class FileUploadRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    def add(self, upload: ContentFileUpload) -> None:
+        self.session.add(upload)
+
+    async def get_available_by_id(
+        self,
+        *,
+        owner_user_id: str,
+        upload_id: str,
+    ) -> ContentFileUpload | None:
+        query = select(ContentFileUpload).where(
+            ContentFileUpload.owner_user_id == owner_user_id,
+            ContentFileUpload.id == upload_id,
+            ContentFileUpload.consumed_at.is_(None),
+        )
+        return cast(ContentFileUpload | None, await self.session.scalar(query))
+
+    async def list_expired(
+        self,
+        *,
+        owner_user_id: str,
+        now: datetime,
+    ) -> list[ContentFileUpload]:
+        query = select(ContentFileUpload).where(
+            ContentFileUpload.owner_user_id == owner_user_id,
+            ContentFileUpload.expires_at <= now,
+            ContentFileUpload.consumed_at.is_(None),
         )
         return list(await self.session.scalars(query))
