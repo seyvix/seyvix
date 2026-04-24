@@ -27,7 +27,7 @@ uv run uvicorn app.main:app --reload
 docker compose up --build
 ```
 
-5. Для dev-режима в контейнере с автоперезагрузкой:
+5. Для dev-режима в контейнере с автоперезагрузкой: ИСПОЛЬЗУЙ ЭТОТ ВАРИАНТ!!!!  ЕСЛИ БУДЕШЬ ТЕСТИТЬ
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build

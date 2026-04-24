@@ -39,6 +39,7 @@ def create_app() -> FastAPI:
         settings.sqlalchemy_database_uri,
         echo=settings.sqlalchemy_echo,
     )
+    app.state.content_storage_root = settings.content_storage_root
     configure_cors(app, settings)
     install_error_handlers(app)
     app.include_router(api_router, prefix=settings.api_prefix)

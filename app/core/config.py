@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     refresh_cookie_name: str = "refresh_token"
     refresh_cookie_secure: bool = False
     refresh_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
+    content_storage_root: str = "data/content"
     cors_allowed_origins: list[str] = Field(default_factory=list)
     cors_allow_origin_regex: str | None = None
 
