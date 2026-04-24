@@ -3,10 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
+from app.modules.auth.infrastructure.repositories import AuthSessionRepository, UserRepository
 from app.modules.auth.models import AuthSession, User
 from app.modules.auth.schemas import AuthSessionResponse, AuthTokensResponse, UserResponse
 from app.modules.auth.security import (
@@ -49,6 +48,8 @@ class AuthContext:
 class AuthService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+        self.users = UserRepository(session)
+        self.auth_sessions = AuthSessionRepository(session)
 
     async def register(
         self,
@@ -59,7 +60,7 @@ class AuthService:
         user_agent: str | None,
         ip_address: str | None,
     ) -> tuple[AuthTokensResponse, str]:
-        existing_user = await self.session.scalar(select(User).where(User.email == email))
+        existing_user = await self.users.get_by_email(email)
         if existing_user is not None:
             raise EmailAlreadyRegisteredError
 
@@ -83,7 +84,7 @@ class AuthService:
         user_agent: str | None,
         ip_address: str | None,
     ) -> tuple[AuthTokensResponse, str]:
-        user = await self.session.scalar(select(User).where(User.email == email))
+        user = await self.users.get_by_email(email)
         if user is None or not verify_password(password, user.password_hash) or not user.is_active:
             raise InvalidCredentialsError
 
@@ -119,11 +120,9 @@ class AuthService:
         if not raw_refresh_token:
             return
 
-        query = select(AuthSession).where(
-            AuthSession.refresh_token_hash == hash_refresh_token(raw_refresh_token),
-            AuthSession.revoked_at.is_(None),
+        auth_session = await self.auth_sessions.get_active_by_refresh_token_hash(
+            hash_refresh_token(raw_refresh_token),
         )
-        auth_session = await self.session.scalar(query)
         if auth_session is None:
             return
 
@@ -142,15 +141,12 @@ class AuthService:
 
         session_id = str(payload["sid"])
         user_id = str(payload["sub"])
-        query = (
-            select(AuthSession)
-            .options(selectinload(AuthSession.user))
-            .where(AuthSession.id == session_id, AuthSession.user_id == user_id)
+        auth_session = await self.auth_sessions.get_active_by_id_and_user_id(
+            session_id=session_id,
+            user_id=user_id,
+            with_user=True,
         )
-        auth_session = await self.session.scalar(query)
         if auth_session is None:
-            raise InvalidAccessTokenError
-        if auth_session.revoked_at is not None:
             raise InvalidAccessTokenError
         if self._normalize_datetime(auth_session.expires_at) <= datetime.now(UTC):
             raise InvalidAccessTokenError
@@ -165,12 +161,7 @@ class AuthService:
         user_id: str,
         current_session_id: str,
     ) -> list[AuthSessionResponse]:
-        query = (
-            select(AuthSession)
-            .where(AuthSession.user_id == user_id, AuthSession.revoked_at.is_(None))
-            .order_by(AuthSession.created_at.desc())
-        )
-        sessions = list(await self.session.scalars(query))
+        sessions = await self.auth_sessions.list_active_for_user(user_id)
         return [
             AuthSessionResponse(
                 id=session.id,
@@ -189,23 +180,15 @@ class AuthService:
         ]
 
     async def logout_all(self, *, user_id: str) -> None:
-        query = select(AuthSession).where(
-            AuthSession.user_id == user_id,
-            AuthSession.revoked_at.is_(None),
-        )
-        sessions = list(await self.session.scalars(query))
         now = datetime.now(UTC)
-        for session in sessions:
-            session.revoked_at = now
+        await self.auth_sessions.revoke_all_for_user(user_id=user_id, revoked_at=now)
         await self.session.commit()
 
     async def revoke_session(self, *, user_id: str, session_id: str) -> None:
-        query = select(AuthSession).where(
-            AuthSession.id == session_id,
-            AuthSession.user_id == user_id,
-            AuthSession.revoked_at.is_(None),
+        auth_session = await self.auth_sessions.get_active_by_id_and_user_id(
+            session_id=session_id,
+            user_id=user_id,
         )
-        auth_session = await self.session.scalar(query)
         if auth_session is None:
             raise SessionNotFoundError
 
@@ -227,7 +210,8 @@ class AuthService:
             user_agent=user_agent,
             ip_address=ip_address,
         )
-        self.session.add_all([user, auth_session])
+        self.users.add(user)
+        self.auth_sessions.add(auth_session)
         await self.session.commit()
         await self.session.refresh(user)
         await self.session.refresh(auth_session)
@@ -241,15 +225,10 @@ class AuthService:
         )
 
     async def _load_active_session(self, raw_refresh_token: str) -> AuthSession:
-        query = (
-            select(AuthSession)
-            .options(selectinload(AuthSession.user))
-            .where(
-                AuthSession.refresh_token_hash == hash_refresh_token(raw_refresh_token),
-                AuthSession.revoked_at.is_(None),
-            )
+        auth_session = await self.auth_sessions.get_active_by_refresh_token_hash(
+            hash_refresh_token(raw_refresh_token),
+            with_user=True,
         )
-        auth_session = await self.session.scalar(query)
         if auth_session is None:
             raise InvalidRefreshTokenError
         if self._normalize_datetime(auth_session.expires_at) <= datetime.now(UTC):
