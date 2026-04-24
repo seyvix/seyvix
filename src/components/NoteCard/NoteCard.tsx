@@ -319,9 +319,9 @@ export function NoteCard({ note, isNew, onTagClick }: { note: Note; isNew?: bool
   const { mutate: updateNote } = useUpdateNote()
 
   // Стабильный ref для trigger-функции ренейма (используется внутри DnD useEffect)
-  const triggerRenameRef = useRef<(() => void) | null>(null)
-  triggerRenameRef.current = () => {
-    setRenameValue('')
+  const triggerRenameRef = useRef<((initialValue?: string) => void) | null>(null)
+  triggerRenameRef.current = (initialValue = '') => {
+    setRenameValue(initialValue)
     setRenamePending(true)
   }
 
@@ -364,7 +364,7 @@ export function NoteCard({ note, isNew, onTagClick }: { note: Note; isNew?: bool
 
     const cleanupDrag = draggable({
       element: el,
-      getInitialData: () => ({ type: 'note', noteId: note.id }),
+      getInitialData: () => ({ type: 'note', noteId: note.id, noteType: note.type, noteTitle: note.title }),
       onDragStart: () => setIsDragging(true),
       onDrop: () => setIsDragging(false),
     })
@@ -377,9 +377,21 @@ export function NoteCard({ note, isNew, onTagClick }: { note: Note; isNew?: bool
       onDragLeave: () => setIsOver(false),
       onDrop: ({ source }) => {
         setIsOver(false)
+        const sourceType  = source.data.noteType  as string
+        const sourceTitle = source.data.noteTitle as string
         mergeRef.current(
           { sourceId: source.data.noteId as string, targetId: note.id },
-          { onSuccess: () => triggerRenameRef.current?.() },
+          {
+            onSuccess: () => {
+              // object+collection или collection+object → pre-fill с названием коллекции
+              // object+object или collection+collection → пустой инпут
+              const isMixed = (sourceType === 'collection') !== (note.type === 'collection')
+              const prefill = isMixed
+                ? (note.type === 'collection' ? note.title : sourceTitle)
+                : ''
+              triggerRenameRef.current?.(prefill)
+            },
+          },
         )
       },
     })

@@ -205,29 +205,30 @@ export const noteHandlers = [
 
     let updated: Note
 
-    if (target.type === 'collection') {
-      // X становится элементом коллекции Y
-      updated = {
-        ...target,
-        tags: [...target.tags, ...source.tags.filter(st => !target.tags.some(tt => tt.id === st.id))],
-        objects: [...target.objects, ...source.objects],
-        updatedAt: new Date().toISOString(),
-      }
-      notes = notes.map(n => n.id === target.id ? updated : n).filter(n => n.id !== source.id)
+    const mergedTags = [...target.tags, ...source.tags.filter(st => !target.tags.some(tt => tt.id === st.id))]
+    const mergedObjects = [...target.objects, ...source.objects]
+
+    // Определяем заголовок результирующей коллекции:
+    // object+collection или collection+object → берём название коллекции
+    // object+object или collection+collection → фронт запросит название; ставим плейсхолдер
+    let mergedTitle: string
+    if (target.type === 'collection' && source.type !== 'collection') {
+      mergedTitle = target.title                  // object → collection: имя коллекции (цели)
+    } else if (source.type === 'collection' && target.type !== 'collection') {
+      mergedTitle = source.title                  // collection → object: имя коллекции (источника)
     } else {
-      // Создаём новую коллекцию [X, Y] на месте Y — сохраняем id/slug цели,
-      // чтобы карточка осталась в той же колонке грида
-      const textObj = source.objects.find(o => o.type === 'text') ?? target.objects.find(o => o.type === 'text')
-      updated = {
-        ...target,
-        type: 'collection',
-        title: textObj?.content.slice(0, 40) ?? 'Новая коллекция',
-        tags: [...target.tags, ...source.tags.filter(st => !target.tags.some(tt => tt.id === st.id))],
-        objects: [...target.objects, ...source.objects],
-        updatedAt: new Date().toISOString(),
-      }
-      notes = notes.map(n => n.id === target.id ? updated : n).filter(n => n.id !== source.id)
+      mergedTitle = 'Новая коллекция'             // object+object или collection+collection: фронт переименует
     }
+
+    updated = {
+      ...target,
+      type: 'collection',
+      title: mergedTitle,
+      tags: mergedTags,
+      objects: mergedObjects,
+      updatedAt: new Date().toISOString(),
+    }
+    notes = notes.map(n => n.id === target.id ? updated : n).filter(n => n.id !== source.id)
 
     return HttpResponse.json({ updated, removedId: source.id })
   }),
