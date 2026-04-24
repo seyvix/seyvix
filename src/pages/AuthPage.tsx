@@ -75,12 +75,15 @@ export default function AuthPage() {
     setLoading(true)
     const botId = import.meta.env.VITE_TELEGRAM_BOT_ID
     if (botId) {
-      const origin = window.location.origin
-      const returnTo = `${origin}/api/v1/auth/telegram-callback`
+      const frontendOrigin = window.location.origin
+      // VITE_API_URL allows pointing return_to at a separate API host in production.
+      // In dev the Vite proxy handles /api/* so the frontend origin works as-is.
+      const apiOrigin = import.meta.env.VITE_API_URL ?? frontendOrigin
+      const returnTo = `${apiOrigin}/api/v1/auth/telegram-callback`
       window.location.href =
         `https://oauth.telegram.org/auth` +
         `?bot_id=${encodeURIComponent(botId)}` +
-        `&origin=${encodeURIComponent(origin)}` +
+        `&origin=${encodeURIComponent(frontendOrigin)}` +
         `&return_to=${encodeURIComponent(returnTo)}`
     } else {
       window.location.href = '/api/v1/auth/telegram-dev-login'
