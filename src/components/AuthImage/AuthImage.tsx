@@ -7,7 +7,7 @@ interface AuthImageProps extends React.ImgHTMLAttributes<HTMLImageElement> {
 
 const cache = new Map<string, string>()
 
-export default function AuthImage({ src, ...rest }: AuthImageProps) {
+export default function AuthImage({ src, style, ...rest }: AuthImageProps) {
   const [blobUrl, setBlobUrl] = useState<string | null>(() => cache.get(src) ?? null)
 
   useEffect(() => {
@@ -17,28 +17,35 @@ export default function AuthImage({ src, ...rest }: AuthImageProps) {
       return
     }
 
-    let revoked = false
+    // Keep old blobUrl visible while loading the new src — avoids flicker on src change
+    let cancelled = false
     apiFetch(src)
       .then(res => {
         if (!res.ok) throw new Error('fetch failed')
         return res.blob()
       })
       .then(blob => {
-        if (revoked) return
+        if (cancelled) return
         const url = URL.createObjectURL(blob)
         cache.set(src, url)
         setBlobUrl(url)
       })
       .catch(() => {
-        if (!revoked) setBlobUrl(src) // fallback: try without auth
+        if (!cancelled) setBlobUrl(src) // fallback: try without auth
       })
 
     return () => {
-      revoked = true
+      cancelled = true
     }
   }, [src])
 
-  if (!blobUrl) return null
+  // Always render the element to avoid layout shifts; hide until ready
   // eslint-disable-next-line jsx-a11y/alt-text
-  return <img {...rest} src={blobUrl} />
+  return (
+    <img
+      {...rest}
+      src={blobUrl ?? ''}
+      style={blobUrl ? style : { ...style, visibility: 'hidden' }}
+    />
+  )
 }

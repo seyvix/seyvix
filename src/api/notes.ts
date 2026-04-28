@@ -105,8 +105,9 @@ function mapNote(b: BackendNote): Note {
 export async function fetchNotes(params: NotesParams = {}): Promise<Note[]> {
   const url = new URL(BASE, window.location.origin)
   if (params.search)          url.searchParams.set('search', params.search)
-  if (params.tags?.length)    url.searchParams.set('tags', params.tags.join(','))
-  if (params.folders?.length) url.searchParams.set('folders', params.folders.join(','))
+  // FastAPI list[str] expects repeated params: ?tags=a&tags=b
+  params.tags?.forEach(t    => url.searchParams.append('tags',    t))
+  params.folders?.forEach(f => url.searchParams.append('folders', f))
 
   const res = await apiFetch(url.toString())
   if (!res.ok) throw new Error('Failed to fetch notes')
@@ -204,6 +205,15 @@ export async function mergeNotes(sourceSlug: string, targetSlug: string, title?:
   })
   if (!res.ok) throw new Error('Failed to merge notes')
   return mapNote(await res.json())
+}
+
+export async function removeCollectionItems(collectionSlug: string, itemSlugs: string[]): Promise<void> {
+  const res = await apiFetch(`${BASE}/${collectionSlug}/items`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ item_slugs: itemSlugs }),
+  })
+  if (!res.ok) throw new Error('Failed to remove collection items')
 }
 
 export async function deleteNotes(slugs: string[]): Promise<void> {
