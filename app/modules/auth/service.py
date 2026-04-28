@@ -114,26 +114,20 @@ class AuthService:
             raise TelegramAuthNotConfiguredError
 
         telegram_id = str(settings.telegram_dev_user_id)
-        user = await self.users.get_by_telegram_id(telegram_id)
         display_name = self._build_display_name_from_parts(
             first_name=settings.telegram_dev_first_name,
             last_name=settings.telegram_dev_last_name,
             username=settings.telegram_dev_username,
             fallback=telegram_id,
         )
+        user = await self.users.upsert_active_telegram_profile(
+            telegram_id=telegram_id,
+            display_name=display_name,
+            telegram_username=settings.telegram_dev_username,
+            telegram_photo_url=settings.telegram_dev_photo_url,
+        )
         if user is None:
-            user = User(
-                telegram_id=telegram_id,
-                display_name=display_name,
-                telegram_username=settings.telegram_dev_username,
-                telegram_photo_url=settings.telegram_dev_photo_url,
-            )
-        else:
-            if not user.is_active:
-                raise InvalidTelegramLoginError
-            user.display_name = display_name
-            user.telegram_username = settings.telegram_dev_username
-            user.telegram_photo_url = settings.telegram_dev_photo_url
+            raise InvalidTelegramLoginError
 
         raw_login_code = generate_refresh_token()
         _, refresh_token = await self._create_session(
@@ -357,21 +351,15 @@ class AuthService:
             raise InvalidTelegramLoginError
 
         telegram_id = str(payload.id)
-        user = await self.users.get_by_telegram_id(telegram_id)
+        user = await self.users.upsert_active_telegram_profile(
+            telegram_id=telegram_id,
+            display_name=self._build_display_name(payload),
+            telegram_username=payload.username,
+            telegram_photo_url=payload.photo_url,
+        )
         if user is None:
-            return User(
-                telegram_id=telegram_id,
-                display_name=self._build_display_name(payload),
-                telegram_username=payload.username,
-                telegram_photo_url=payload.photo_url,
-            )
-
-        if not user.is_active:
             raise InvalidTelegramLoginError
 
-        user.display_name = self._build_display_name(payload)
-        user.telegram_username = payload.username
-        user.telegram_photo_url = payload.photo_url
         return user
 
     @staticmethod

@@ -3,8 +3,9 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
-from typing import Any, Mapping
+from typing import Any
 
 import jwt
 
@@ -38,7 +39,7 @@ def verify_telegram_login_data(
     if not hmac.compare_digest(expected_hash, received_hash):
         return False
 
-    auth_date = datetime.fromtimestamp(int(data["auth_date"]), UTC)
+    auth_date = datetime.fromtimestamp(int(str(data["auth_date"])), UTC)
     age_seconds = (datetime.now(UTC) - auth_date).total_seconds()
     return 0 <= age_seconds <= max_age_seconds
 

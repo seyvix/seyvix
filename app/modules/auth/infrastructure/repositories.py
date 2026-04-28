@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import cast
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -17,6 +18,36 @@ class UserRepository:
     async def get_by_telegram_id(self, telegram_id: str) -> User | None:
         query = select(User).where(User.telegram_id == telegram_id)
         return cast(User | None, await self.session.scalar(query))
+
+    async def upsert_active_telegram_profile(
+        self,
+        *,
+        telegram_id: str,
+        display_name: str,
+        telegram_username: str | None,
+        telegram_photo_url: str | None,
+    ) -> User | None:
+        statement = (
+            postgresql_insert(User)
+            .values(
+                telegram_id=telegram_id,
+                display_name=display_name,
+                telegram_username=telegram_username,
+                telegram_photo_url=telegram_photo_url,
+            )
+            .on_conflict_do_update(
+                index_elements=[User.telegram_id],
+                set_={
+                    "display_name": display_name,
+                    "telegram_username": telegram_username,
+                    "telegram_photo_url": telegram_photo_url,
+                },
+                where=User.is_active.is_(True),
+            )
+            .returning(User)
+            .execution_options(populate_existing=True)
+        )
+        return cast(User | None, await self.session.scalar(statement))
 
     def add(self, user: User) -> None:
         self.session.add(user)

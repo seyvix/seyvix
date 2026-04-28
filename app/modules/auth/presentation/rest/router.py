@@ -208,7 +208,8 @@ async def telegram_dev_login(
     description=(
         "Receives Telegram Login Widget redirect data, verifies it, starts a session, "
         "sets the refresh cookie, and redirects to the frontend with a one-time login code. "
-        "Accepts either tgAuthResult (base64 JSON from oauth.telegram.org) or individual query params."
+        "Accepts either tgAuthResult (base64 JSON from oauth.telegram.org) or individual "
+        "query params."
     ),
     responses={
         307: {"description": "Redirects to the configured frontend Telegram callback URL."},
