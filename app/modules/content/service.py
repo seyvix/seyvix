@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+import io
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from sqlalchemy import delete as sql_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -34,7 +37,14 @@ from app.modules.content.schemas import (
     TagResponse,
     UploadedFileResponse,
 )
+from app.core.logging import get_logger
 from app.modules.content.storage import ContentStorage, slugify
+
+logger = get_logger(__name__)
+
+# Keeps strong references to background asyncio tasks so the GC doesn't collect them
+# before they finish (Python docs: "save a reference to the result of create_task").
+_background_tasks: set[asyncio.Task[None]] = set()
 
 
 class NoteNotFoundError(Exception):
@@ -42,6 +52,10 @@ class NoteNotFoundError(Exception):
 
 
 class FolderNotFoundError(Exception):
+    pass
+
+
+class ThumbnailPendingError(Exception):
     pass
 
 
@@ -85,21 +99,37 @@ class ContentService:
                     raise NoteNotFoundError
                 uploads.append(upload)
 
-            card = await self._create_from_uploaded_files(
-                owner_user_id=owner_user_id,
-                files=[
-                    UploadedContent(
+            if text is not None and len(uploads) == 1:
+                # Single file + text → composite note with both assets
+                upload = uploads[0]
+                card = await self._create_composite_note(
+                    owner_user_id=owner_user_id,
+                    uploaded=UploadedContent(
                         filename=upload.source_filename,
                         content_type=upload.mime_type,
                         data=self.storage.read_relative_file(upload.storage_path),
-                    )
-                    for upload in uploads
-                ],
-                title=title,
-                folder_path=folder_path,
-                tag_names=tag_names,
-                object_id=None,
-            )
+                    ),
+                    text=text,
+                    title=title,
+                    folder_path=folder_path,
+                    tag_names=tag_names,
+                )
+            else:
+                card = await self._create_from_uploaded_files(
+                    owner_user_id=owner_user_id,
+                    files=[
+                        UploadedContent(
+                            filename=upload.source_filename,
+                            content_type=upload.mime_type,
+                            data=self.storage.read_relative_file(upload.storage_path),
+                        )
+                        for upload in uploads
+                    ],
+                    title=title,
+                    folder_path=folder_path,
+                    tag_names=tag_names,
+                    object_id=None,
+                )
             now = datetime.now(UTC)
             for upload in uploads:
                 upload.consumed_at = now
@@ -129,6 +159,13 @@ class ContentService:
         object_id: str | None,
     ) -> NoteCardResponse | FileUploadResponse:
         await self._cleanup_expired_uploads(owner_user_id)
+        logger.info(
+            "content.upload.received",
+            file_count=len(files),
+            create_or_attach_object=create_or_attach_object,
+            object_id=object_id,
+            media_types=[self._media_type(file.filename, file.content_type) for file in files],
+        )
         if create_or_attach_object:
             return await self._create_from_uploaded_files(
                 owner_user_id=owner_user_id,
@@ -227,6 +264,37 @@ class ContentService:
         content_object = await self._load_note(owner_user_id=owner_user_id, slug=slug)
         return self.storage.build_archive(content_object)
 
+    async def get_asset_file(
+        self, *, owner_user_id: str, slug: str, asset_id: str
+    ) -> tuple[Path, str]:
+        """Returns (absolute_path, mime_type) for the asset file."""
+        content_object = await self._load_note(owner_user_id=owner_user_id, slug=slug)
+        asset = next((a for a in content_object.assets if a.id == asset_id), None)
+        if asset is None:
+            raise NoteNotFoundError
+        path = self.storage.root / asset.storage_path
+        if not path.exists():
+            raise NoteNotFoundError
+        mime = asset.mime_type or "application/octet-stream"
+        return path, mime
+
+    async def update_note(
+        self,
+        *,
+        owner_user_id: str,
+        slug: str,
+        title: str | None,
+        tag_names: list[str] | None,
+    ) -> NoteCardResponse:
+        content_object = await self._load_note(owner_user_id=owner_user_id, slug=slug)
+        if title is not None:
+            content_object.title = title
+        if tag_names is not None:
+            content_object.tags = await self._get_or_create_tags(owner_user_id, tag_names)
+        await self.session.commit()
+        loaded = await self._load_note(owner_user_id=owner_user_id, slug=slug)
+        return await self._to_card(loaded)
+
     async def set_favorite(
         self,
         *,
@@ -305,6 +373,36 @@ class ContentService:
             owner_user_id=owner_user_id,
             slug=collection.slug,
         )
+
+    async def delete_notes(self, *, owner_user_id: str, slugs: list[str]) -> None:
+        objects = await self.content.list_by_slugs(
+            owner_user_id=owner_user_id,
+            slugs=slugs,
+        )
+        # Collect all objects to delete, including nested collection items
+        to_delete: dict[str, ContentObject] = {}
+        queue = list(objects)
+        while queue:
+            obj = queue.pop()
+            if obj.id in to_delete:
+                continue
+            to_delete[obj.id] = obj
+            if obj.kind == "collection":
+                items = await self.content.list_collection_items(obj.id)
+                queue.extend(item.content_object for item in items)
+
+        # Remove storage directories first
+        for obj in to_delete.values():
+            self.storage.remove_directory(obj)
+
+        # Bulk DELETE via raw SQL — avoids ORM cascade conflicts when both
+        # a collection and its items are deleted in the same session.
+        # DB-level ondelete="CASCADE" on ContentCollectionItem and ContentAsset
+        # handles join/asset row cleanup automatically.
+        await self.session.execute(
+            sql_delete(ContentObject).where(ContentObject.id.in_(list(to_delete.keys())))
+        )
+        await self.session.commit()
 
     async def list_folders(self, *, owner_user_id: str) -> FolderTreeResponse:
         categories = await self.categories.list_all(owner_user_id=owner_user_id)
@@ -398,6 +496,77 @@ class ContentService:
                 mime_type="text/markdown",
                 size_bytes=stored_file.size_bytes,
                 storage_path=stored_file.relative_path,
+                text_content=text,
+            ),
+        )
+        self.content.add(content_object)
+        await self.session.commit()
+        return await self._reload_write_manifest_and_card(owner_user_id=owner_user_id, slug=slug)
+
+    async def _create_composite_note(
+        self,
+        *,
+        owner_user_id: str,
+        uploaded: UploadedContent,
+        text: str,
+        title: str | None,
+        folder_path: str | None,
+        tag_names: list[str],
+    ) -> NoteCardResponse:
+        category = await self._get_or_create_category(owner_user_id, folder_path)
+        tags = await self._get_or_create_tags(owner_user_id, tag_names)
+        file_media_type = self._media_type(uploaded.filename, uploaded.content_type)
+        normalized_title = title or text.strip().splitlines()[0][:80] or uploaded.filename
+        slug = await self._unique_slug(owner_user_id, normalized_title)
+        sort_order = await self.content.get_max_sort_order(owner_user_id=owner_user_id) + 10
+        directory = self.storage.object_directory(
+            owner_user_id=owner_user_id,
+            folder_path=category.path if category else None,
+            slug=slug,
+            kind="complex",
+        )
+        stored_file = self.storage.write_binary_object(
+            directory=directory,
+            filename=uploaded.filename,
+            data=uploaded.data,
+        )
+        stored_text = self.storage.write_text_object(
+            directory=directory,
+            title=normalized_title,
+            text=text,
+        )
+        content_object = ContentObject(
+            owner_user_id=owner_user_id,
+            category=category,
+            slug=slug,
+            title=normalized_title,
+            kind="complex",
+            media_type=file_media_type,
+            source_filename=stored_file.filename,
+            mime_type=uploaded.content_type,
+            size_bytes=stored_file.size_bytes,
+            storage_path=directory.relative_to(self.storage.root).as_posix(),
+            sort_order=sort_order,
+            tags=tags,
+        )
+        content_object.assets.append(
+            ContentAsset(
+                role="original",
+                media_type=file_media_type,
+                filename=stored_file.filename,
+                mime_type=uploaded.content_type,
+                size_bytes=stored_file.size_bytes,
+                storage_path=stored_file.relative_path,
+            ),
+        )
+        content_object.assets.append(
+            ContentAsset(
+                role="text",
+                media_type="text",
+                filename=stored_text.filename,
+                mime_type="text/markdown",
+                size_bytes=stored_text.size_bytes,
+                storage_path=stored_text.relative_path,
                 text_content=text,
             ),
         )
@@ -659,7 +828,91 @@ class ContentService:
                     directory=self.storage.root / item.storage_path,
                     manifest=self._manifest(item, items=[]),
                 )
+        # Schedule async thumbnail generation for any document assets
+        all_objects = [loaded, *items] if loaded.kind == "collection" else [loaded]
+        logger.info(
+            "thumbnail.scan",
+            slug=loaded.slug,
+            object_count=len(all_objects),
+            asset_count=sum(len(obj.assets) for obj in all_objects),
+        )
+        for obj in all_objects:
+            for asset in obj.assets:
+                if asset.media_type == "document":
+                    asset_path = self.storage.root / asset.storage_path
+                    thumb_path = self._thumbnail_path(asset_path)
+                    if not thumb_path.exists():
+                        task = asyncio.create_task(
+                            self._generate_thumbnail_async(asset_path, thumb_path)
+                        )
+                        _background_tasks.add(task)
+                        task.add_done_callback(_background_tasks.discard)
         return await self._to_card(loaded)
+
+    def _thumbnail_path(self, asset_path: Path) -> Path:
+        """Returns the path where the thumbnail image for an asset should be stored."""
+        thumb_dir = asset_path.parent / "thumbnails"
+        return thumb_dir / f"{asset_path.stem}.jpg"
+
+    @staticmethod
+    def _render_pdf_thumbnail(asset_path: Path, thumb_path: Path) -> None:
+        """Renders the top half of the first page of a PDF as a JPEG thumbnail (sync, blocking)."""
+        log = get_logger(__name__)
+        log.info("thumbnail.render.start", asset=str(asset_path), thumb=str(thumb_path))
+        try:
+            import fitz  # type: ignore[import-untyped]
+        except ImportError:
+            log.warning("thumbnail.render.skip", reason="pymupdf not installed")
+            return
+        try:
+            doc = fitz.open(str(asset_path))
+            if doc.page_count == 0:
+                log.warning("thumbnail.render.skip", reason="empty document", asset=str(asset_path))
+                return
+            page = doc[0]
+            # Crop to top half
+            rect = page.rect
+            clip = fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y0 + rect.height / 2)
+            mat = fitz.Matrix(2.0, 2.0)  # 2x zoom for decent resolution
+            pix = page.get_pixmap(matrix=mat, clip=clip)
+            thumb_path.parent.mkdir(parents=True, exist_ok=True)
+            # Convert to JPEG via PIL if available, otherwise save directly
+            try:
+                from PIL import Image  # type: ignore[import-untyped]
+                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=80, optimize=True)
+                thumb_path.write_bytes(buf.getvalue())
+            except ImportError:
+                pix.save(str(thumb_path))
+            log.info(
+                "thumbnail.render.done",
+                asset=str(asset_path),
+                thumb=str(thumb_path),
+                size_bytes=thumb_path.stat().st_size,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.error("thumbnail.render.error", asset=str(asset_path), error=str(exc), exc_info=True)
+
+    async def _generate_thumbnail_async(self, asset_path: Path, thumb_path: Path) -> None:
+        """Runs PDF thumbnail generation in a thread pool executor."""
+        logger.info("thumbnail.scheduled", asset=str(asset_path))
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._render_pdf_thumbnail, asset_path, thumb_path)
+
+    async def get_asset_thumbnail(
+        self, *, owner_user_id: str, slug: str, asset_id: str
+    ) -> Path:
+        """Returns path to thumbnail JPEG, or raises ThumbnailPendingError if not ready yet."""
+        content_object = await self._load_note(owner_user_id=owner_user_id, slug=slug)
+        asset = next((a for a in content_object.assets if a.id == asset_id), None)
+        if asset is None:
+            raise NoteNotFoundError
+        asset_path = self.storage.root / asset.storage_path
+        thumb_path = self._thumbnail_path(asset_path)
+        if not thumb_path.exists():
+            raise ThumbnailPendingError
+        return thumb_path
 
     async def _get_or_create_category(
         self,
@@ -780,6 +1033,16 @@ class ContentService:
                     filename=asset.filename,
                     mime_type=asset.mime_type,
                     size_bytes=asset.size_bytes,
+                    url=f"{self.api_prefix}/notes/{content_object.slug}/asset/{asset.id}",
+                    text_content=asset.text_content,
+                    thumbnail_url=(
+                        f"{self.api_prefix}/notes/{content_object.slug}/asset/{asset.id}/thumbnail"
+                        if asset.media_type == "document"
+                        and self._thumbnail_path(
+                            self.storage.root / asset.storage_path
+                        ).exists()
+                        else None
+                    ),
                 )
                 for asset in content_object.assets
             ],

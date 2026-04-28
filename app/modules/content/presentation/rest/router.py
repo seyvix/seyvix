@@ -14,6 +14,7 @@ from app.api.schemas import ErrorResponse
 from app.modules.auth.presentation.rest.router import get_auth_context
 from app.modules.auth.service import AuthContext
 from app.modules.content.schemas import (
+    BulkDeleteRequest,
     CreateNoteRequest,
     FavoriteNoteRequest,
     FileUploadResponse,
@@ -24,11 +25,13 @@ from app.modules.content.schemas import (
     NoteListResponse,
     NoteSort,
     ReorderNotesRequest,
+    UpdateNoteRequest,
 )
 from app.modules.content.service import (
     ContentService,
     FolderNotFoundError,
     NoteNotFoundError,
+    ThumbnailPendingError,
     UploadedContent,
 )
 
@@ -107,21 +110,24 @@ async def create_note(
 async def upload_note_files(
     context: Annotated[AuthContext, Depends(get_auth_context)],
     service: Annotated[ContentService, Depends(get_content_service)],
-    file: Annotated[UploadFile, File(description="File to upload.")],
+    files: Annotated[list[UploadFile], File(description="Files to upload.")],
     create_object: Annotated[bool, Form()] = False,
     object_id: Annotated[str | None, Form(max_length=36)] = None,
     title: Annotated[str | None, Form(max_length=512)] = None,
     folder_path: Annotated[str | None, Form(max_length=1024)] = None,
     tag_names: Annotated[list[str] | None, Form()] = None,
 ) -> Response:
-    uploaded_file = UploadedContent(
-        filename=file.filename or "file",
-        content_type=file.content_type,
-        data=await file.read(),
-    )
+    uploaded_files = [
+        UploadedContent(
+            filename=f.filename or "file",
+            content_type=f.content_type,
+            data=await f.read(),
+        )
+        for f in files
+    ]
     result = await service.upload_files(
         owner_user_id=context.user.id,
-        files=[uploaded_file],
+        files=uploaded_files,
         title=title,
         folder_path=folder_path,
         tag_names=tag_names or [],
@@ -163,6 +169,28 @@ async def list_notes(
     )
 
 
+@router.delete(
+    "/notes",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Bulk delete notes",
+    description="Permanently deletes the specified notes and their storage files.",
+    responses={
+        204: {"description": "Notes deleted."},
+        401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
+    },
+)
+async def bulk_delete_notes(
+    payload: BulkDeleteRequest,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[ContentService, Depends(get_content_service)],
+) -> Response:
+    await service.delete_notes(
+        owner_user_id=context.user.id,
+        slugs=payload.slugs,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.get(
     "/notes/{note_slug}",
     response_model=NoteCardResponse,
@@ -180,6 +208,34 @@ async def get_note(
 ) -> NoteCardResponse:
     try:
         return await service.get_note(owner_user_id=context.user.id, slug=note_slug)
+    except NoteNotFoundError as exc:
+        raise _not_found(exc) from exc
+
+
+@router.patch(
+    "/notes/{note_slug}",
+    response_model=NoteCardResponse,
+    summary="Update note",
+    description="Updates mutable fields of a note: title and/or tags.",
+    responses={
+        200: {"description": "Updated note returned."},
+        401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
+        404: {"model": ErrorResponse, "description": "Note not found."},
+    },
+)
+async def update_note(
+    note_slug: str,
+    payload: UpdateNoteRequest,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[ContentService, Depends(get_content_service)],
+) -> NoteCardResponse:
+    try:
+        return await service.update_note(
+            owner_user_id=context.user.id,
+            slug=note_slug,
+            title=payload.title,
+            tag_names=payload.tag_names,
+        )
     except NoteNotFoundError as exc:
         raise _not_found(exc) from exc
 
@@ -212,6 +268,59 @@ async def download_note(
         filename=f"{note_slug}.zip",
         background=BackgroundTask(archive_path.unlink, missing_ok=True),
     )
+
+
+@router.get(
+    "/notes/{note_slug}/asset/{asset_id}",
+    summary="Get asset file",
+    description="Streams the raw file for a specific asset (image, document, etc.).",
+    responses={
+        200: {"description": "Asset file returned."},
+        401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
+        404: {"model": ErrorResponse, "description": "Note or asset not found."},
+    },
+)
+async def get_asset_file(
+    note_slug: str,
+    asset_id: str,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[ContentService, Depends(get_content_service)],
+) -> FileResponse:
+    try:
+        path, mime = await service.get_asset_file(
+            owner_user_id=context.user.id, slug=note_slug, asset_id=asset_id
+        )
+    except NoteNotFoundError as exc:
+        raise _not_found(exc) from exc
+    return FileResponse(path, media_type=mime)
+
+
+@router.get(
+    "/notes/{note_slug}/asset/{asset_id}/thumbnail",
+    summary="Get asset thumbnail",
+    description="Returns the generated thumbnail JPEG for a document asset. Returns 202 if thumbnail is not yet ready.",
+    responses={
+        200: {"description": "Thumbnail JPEG returned."},
+        202: {"description": "Thumbnail not yet ready."},
+        401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
+        404: {"model": ErrorResponse, "description": "Note or asset not found."},
+    },
+)
+async def get_asset_thumbnail(
+    note_slug: str,
+    asset_id: str,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[ContentService, Depends(get_content_service)],
+) -> Response:
+    try:
+        path = await service.get_asset_thumbnail(
+            owner_user_id=context.user.id, slug=note_slug, asset_id=asset_id
+        )
+    except NoteNotFoundError as exc:
+        raise _not_found(exc) from exc
+    except ThumbnailPendingError:
+        return Response(status_code=status.HTTP_202_ACCEPTED)
+    return FileResponse(path, media_type="image/jpeg")
 
 
 @router.patch(

@@ -1,7 +1,9 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TelegramLoginRequest(BaseModel):
+    # extra="allow" so tgAuthResult JSON extra fields are preserved for hash verification
+    model_config = ConfigDict(extra="allow")
     id: int = Field(
         gt=0,
         examples=[100500],
@@ -39,6 +41,13 @@ class TelegramLoginRequest(BaseModel):
     hash: str = Field(
         examples=["0123456789abcdef"],
         description="Telegram Login Widget integrity hash.",
+    )
+
+
+class TelegramAuthResultRequest(BaseModel):
+    tg_auth_result: str = Field(
+        min_length=1,
+        description="base64url-encoded JSON auth result from oauth.telegram.org redirect.",
     )
 
 

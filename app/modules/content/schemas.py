@@ -44,6 +44,9 @@ class NoteAssetResponse(BaseModel):
     filename: str
     mime_type: str | None
     size_bytes: int
+    url: str | None = None
+    text_content: str | None = None
+    thumbnail_url: str | None = None
 
 
 class NoteCardResponse(BaseModel):
@@ -92,6 +95,11 @@ class FileUploadResponse(BaseModel):
     object: NoteCardResponse | None
 
 
+class UpdateNoteRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=512)
+    tag_names: list[str] | None = None
+
+
 class FavoriteNoteRequest(BaseModel):
     is_favorite: bool
 
@@ -103,6 +111,10 @@ class ReorderNoteItem(BaseModel):
 
 class ReorderNotesRequest(BaseModel):
     items: list[ReorderNoteItem] = Field(min_length=1)
+
+
+class BulkDeleteRequest(BaseModel):
+    slugs: list[str] = Field(min_length=1)
 
 
 class MergeNotesRequest(BaseModel):

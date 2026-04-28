@@ -1,3 +1,5 @@
+import base64
+import json
 from typing import Annotated
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -13,6 +15,7 @@ from app.core.config import get_settings
 from app.modules.auth.schemas import (
     AuthSessionResponse,
     AuthTokensResponse,
+    TelegramAuthResultRequest,
     TelegramLoginCodeExchangeRequest,
     TelegramLoginRequest,
     UserResponse,
@@ -104,6 +107,71 @@ def _build_telegram_redirect_url(**params: str) -> str:
 
 
 @router.get(
+    "/telegram-login",
+    include_in_schema=False,
+    summary="Initiate Telegram login",
+)
+async def telegram_login_redirect(
+    request: Request,
+    service: Annotated[AuthService, Depends(get_auth_service)],
+) -> RedirectResponse:
+    """
+    Единая точка входа для авторизации через Telegram.
+    В dev-режиме делегирует в telegram-dev-login.
+    В prod-режиме строит редирект на oauth.telegram.org.
+    """
+    settings = get_settings()
+
+    if settings.telegram_dev_login_enabled:
+        try:
+            login_code, refresh_token = await service.telegram_dev_redirect_login(
+                user_agent=request.headers.get("user-agent"),
+                ip_address=request.client.host if request.client else None,
+            )
+        except TelegramDevLoginDisabledError as exc:
+            raise AppError(
+                status_code=status.HTTP_404_NOT_FOUND,
+                code="telegram_dev_login_disabled",
+                message="Telegram dev login is disabled.",
+            ) from exc
+        except TelegramAuthNotConfiguredError as exc:
+            raise AppError(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                code="telegram_auth_not_configured",
+                message="Telegram authentication is not configured.",
+            ) from exc
+
+        response = RedirectResponse(_build_telegram_redirect_url(code=login_code))
+        _set_refresh_cookie(response, refresh_token)
+        return response
+
+    if not settings.telegram_bot_token:
+        raise AppError(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            code="telegram_auth_not_configured",
+            message="Telegram authentication is not configured.",
+        )
+    if not settings.telegram_login_redirect_url:
+        raise AppError(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            code="telegram_auth_not_configured",
+            message="Telegram login redirect URL is not configured.",
+        )
+
+    bot_id = settings.telegram_bot_token.split(":")[0]
+
+    # Берём origin фронтенда из TELEGRAM_LOGIN_REDIRECT_URL
+    redirect_parts = urlsplit(settings.telegram_login_redirect_url)
+    frontend_origin = f"{redirect_parts.scheme}://{redirect_parts.netloc}"
+
+    # Telegram appends #tgAuthResult=... as fragment — frontend reads it and calls /telegram-result
+    return_to = f"{frontend_origin}/auth/callback"
+
+    params = urlencode({"bot_id": bot_id, "origin": frontend_origin, "return_to": return_to})
+    return RedirectResponse(f"https://oauth.telegram.org/auth?{params}")
+
+
+@router.get(
     "/telegram-dev-login",
     include_in_schema=False,
 )
@@ -139,52 +207,59 @@ async def telegram_dev_login(
     summary="Telegram redirect callback",
     description=(
         "Receives Telegram Login Widget redirect data, verifies it, starts a session, "
-        "sets the refresh cookie, and redirects to the frontend with a one-time login code."
+        "sets the refresh cookie, and redirects to the frontend with a one-time login code. "
+        "Accepts either tgAuthResult (base64 JSON from oauth.telegram.org) or individual query params."
     ),
     responses={
         307: {"description": "Redirects to the configured frontend Telegram callback URL."},
         503: {"model": ErrorResponse, "description": "Telegram authentication is not configured."},
-        422: {"model": ErrorResponse, "description": "Validation error in query parameters."},
     },
 )
 async def telegram_callback(
     request: Request,
     service: Annotated[AuthService, Depends(get_auth_service)],
-    telegram_id: Annotated[int, Query(alias="id", gt=0)],
-    first_name: Annotated[str, Query(min_length=1, max_length=255)],
-    auth_date: Annotated[int, Query(gt=0)],
-    telegram_hash: Annotated[str, Query(alias="hash")],
+    tg_auth_result: Annotated[str | None, Query(alias="tgAuthResult")] = None,
+    telegram_id: Annotated[int | None, Query(alias="id", gt=0)] = None,
+    first_name: Annotated[str | None, Query(min_length=1, max_length=255)] = None,
+    auth_date: Annotated[int | None, Query(gt=0)] = None,
+    telegram_hash: Annotated[str | None, Query(alias="hash")] = None,
     last_name: Annotated[str | None, Query(max_length=255)] = None,
     username: Annotated[str | None, Query(max_length=255)] = None,
     photo_url: Annotated[str | None, Query(max_length=2048)] = None,
 ) -> RedirectResponse:
-    payload = TelegramLoginRequest(
-        id=telegram_id,
-        first_name=first_name,
-        last_name=last_name,
-        username=username,
-        photo_url=photo_url,
-        auth_date=auth_date,
-        hash=telegram_hash,
-    )
-    try:
-        login_code, refresh_token = await service.telegram_redirect_login(
-            payload=payload,
-            user_agent=request.headers.get("user-agent"),
-            ip_address=request.client.host if request.client else None,
+    # Only handles the Login Widget individual-param redirect (not oauth.telegram.org flow).
+    # The oauth.telegram.org flow sends #tgAuthResult in fragment — handled on the frontend
+    # via POST /telegram-result.
+    if telegram_id and first_name and auth_date and telegram_hash:
+        payload = TelegramLoginRequest(
+            id=telegram_id,
+            first_name=first_name,
+            last_name=last_name,
+            username=username,
+            photo_url=photo_url,
+            auth_date=auth_date,
+            hash=telegram_hash,
         )
-    except InvalidTelegramLoginError:
-        return RedirectResponse(_build_telegram_redirect_url(error="invalid_telegram_login"))
-    except TelegramAuthNotConfiguredError as exc:
-        raise AppError(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            code="telegram_auth_not_configured",
-            message="Telegram authentication is not configured.",
-        ) from exc
+        try:
+            login_code, refresh_token = await service.telegram_redirect_login(
+                payload=payload,
+                user_agent=request.headers.get("user-agent"),
+                ip_address=request.client.host if request.client else None,
+            )
+        except InvalidTelegramLoginError:
+            return RedirectResponse(_build_telegram_redirect_url(error="invalid_telegram_login"))
+        except TelegramAuthNotConfiguredError as exc:
+            raise AppError(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                code="telegram_auth_not_configured",
+                message="Telegram authentication is not configured.",
+            ) from exc
 
-    response = RedirectResponse(_build_telegram_redirect_url(code=login_code))
-    _set_refresh_cookie(response, refresh_token)
-    return response
+        response = RedirectResponse(_build_telegram_redirect_url(code=login_code))
+        _set_refresh_cookie(response, refresh_token)
+        return response
+
+    return RedirectResponse(_build_telegram_redirect_url(error="invalid_telegram_login"))
 
 
 @router.post(
@@ -212,6 +287,62 @@ async def telegram_login(
     try:
         auth_response, refresh_token = await service.telegram_login(
             payload=payload,
+            user_agent=request.headers.get("user-agent"),
+            ip_address=request.client.host if request.client else None,
+        )
+    except InvalidTelegramLoginError as exc:
+        raise AppError(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            code="invalid_telegram_login",
+            message="Invalid Telegram login data.",
+        ) from exc
+    except TelegramAuthNotConfiguredError as exc:
+        raise AppError(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            code="telegram_auth_not_configured",
+            message="Telegram authentication is not configured.",
+        ) from exc
+
+    _set_refresh_cookie(response, refresh_token)
+    return auth_response
+
+
+@router.post(
+    "/telegram-result",
+    response_model=AuthTokensResponse,
+    summary="Exchange tgAuthResult from oauth.telegram.org",
+    description=(
+        "Decodes the base64url tgAuthResult fragment set by oauth.telegram.org, verifies the "
+        "Telegram signature, creates or updates the user, starts a session, and returns tokens."
+    ),
+    responses={
+        200: {"description": "User authenticated."},
+        401: {"model": ErrorResponse, "description": "Invalid or expired Telegram auth result."},
+        503: {"model": ErrorResponse, "description": "Telegram authentication is not configured."},
+    },
+)
+async def exchange_telegram_auth_result(
+    payload: TelegramAuthResultRequest,
+    request: Request,
+    response: Response,
+    service: Annotated[AuthService, Depends(get_auth_service)],
+) -> AuthTokensResponse:
+    try:
+        padding = (4 - len(payload.tg_auth_result) % 4) % 4
+        raw_data = json.loads(
+            base64.urlsafe_b64decode(payload.tg_auth_result + "=" * padding)
+        )
+        tg_payload = TelegramLoginRequest(**raw_data)
+    except Exception as exc:
+        raise AppError(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            code="invalid_telegram_result",
+            message="Invalid Telegram auth result.",
+        ) from exc
+
+    try:
+        auth_response, refresh_token = await service.telegram_login(
+            payload=tg_payload,
             user_agent=request.headers.get("user-agent"),
             ip_address=request.client.host if request.client else None,
         )
