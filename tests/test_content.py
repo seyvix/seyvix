@@ -9,11 +9,15 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
 from app.core.database import Base, build_session_factory
 from app.main import app
+from app.modules.auth.models import User
+from app.modules.content.models import ContentCategory, ContentObject, ContentTag
+from app.modules.content.service import ContentService
 
 TELEGRAM_BOT_TOKEN = "123456:test-bot-token"
 
@@ -28,12 +32,10 @@ async def _prepare_database(database_url: str) -> async_sessionmaker:
 
 
 def _test_database_url() -> str:
-    user = os.getenv("POSTGRES_USER", "postgres")
-    password = os.getenv("POSTGRES_PASSWORD", "postgres")
-    host = os.getenv("POSTGRES_HOST", "localhost")
-    port = os.getenv("POSTGRES_PORT", "5432")
-    database = os.getenv("POSTGRES_DB", "vkr_api")
-    return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{database}"
+    database_url = os.getenv("TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("Set TEST_DATABASE_URL to a disposable database for DB-resetting tests.")
+    return database_url
 
 
 @pytest.fixture
@@ -134,6 +136,53 @@ def test_create_text_note_persists_manifest_and_downloads_archive(
     assert download_response.status_code == 200
     assert download_response.headers["content-type"] == "application/zip"
     assert len(download_response.content) > 100
+
+
+def test_concurrent_notes_reuse_folder_and_tags_and_allocate_unique_slugs(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        session_factory = await _prepare_database(_test_database_url())
+        async with session_factory() as session:
+            user = User(telegram_id="100500", display_name="User")
+            session.add(user)
+            await session.commit()
+            await session.refresh(user)
+            owner_user_id = user.id
+
+        async def create_note_once(text: str) -> str:
+            async with session_factory() as session:
+                service = ContentService(session, tmp_path / "content-storage")
+                card = await service.create_note(
+                    owner_user_id=owner_user_id,
+                    media_type="text",
+                    text=text,
+                    title="Same title",
+                    folder_path="projects/ai",
+                    tag_names=["AI"],
+                    file_upload_ids=[],
+                )
+                return card.slug
+
+        slugs = await asyncio.gather(
+            create_note_once("First note body"),
+            create_note_once("Second note body"),
+        )
+
+        async with session_factory() as session:
+            categories = list(await session.scalars(select(ContentCategory)))
+            tags = list(await session.scalars(select(ContentTag)))
+            notes = list(await session.scalars(select(ContentObject)))
+
+        assert sorted(slugs) == ["same-title", "same-title-2"]
+        assert sorted(category.path for category in categories) == ["projects", "projects/ai"]
+        assert [tag.slug for tag in tags] == ["ai"]
+        assert len(notes) == 2
+
+    try:
+        asyncio.run(scenario())
+    except OSError as exc:
+        pytest.skip(f"PostgreSQL is not available for content tests: {exc}")
 
 
 def test_upload_single_files_with_same_object_id_creates_collection(
@@ -271,6 +320,20 @@ def test_upload_file_without_object_id_stays_temporary_until_note_creation(
     assert payload["source_filename"] == "draft.txt"
     assert payload["folder"]["path"] == "inbox"
     assert list(content_client.app.state.content_storage_root.rglob("manifest.json"))
+
+
+def test_upload_accepts_files_field_alias(content_client: TestClient) -> None:
+    headers = _auth_headers(content_client)
+
+    for field_name in ("files", "files[]"):
+        upload_response = content_client.post(
+            "/api/v1/notes/file/upload",
+            headers=headers,
+            files={field_name: ("draft.txt", b"Draft body", "text/plain")},
+        )
+
+        assert upload_response.status_code == 201
+        assert upload_response.json()["files"][0]["source_filename"] == "draft.txt"
 
 
 def test_upload_file_with_create_object_flag_uses_server_generated_object_id(

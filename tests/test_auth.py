@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 from app.core.config import get_settings
 from app.core.database import Base, build_session_factory
 from app.main import app
+from app.modules.auth.schemas import TelegramLoginRequest
+from app.modules.auth.service import AuthService
 
 TELEGRAM_BOT_TOKEN = "123456:test-bot-token"
 
@@ -25,12 +27,10 @@ async def _prepare_database(database_url: str) -> async_sessionmaker:
 
 
 def _test_database_url() -> str:
-    user = os.getenv("POSTGRES_USER", "postgres")
-    password = os.getenv("POSTGRES_PASSWORD", "postgres")
-    host = os.getenv("POSTGRES_HOST", "localhost")
-    port = os.getenv("POSTGRES_PORT", "5432")
-    database = os.getenv("POSTGRES_DB", "vkr_api")
-    return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{database}"
+    database_url = os.getenv("TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("Set TEST_DATABASE_URL to a disposable database for DB-resetting tests.")
+    return database_url
 
 
 @pytest.fixture
@@ -243,6 +243,29 @@ def test_telegram_login_updates_existing_user_profile(auth_client: TestClient) -
     assert payload["user"]["telegram_username"] == "updated"
     assert payload["user"]["display_name"] == "Updated"
     assert auth_client.cookies.get("refresh_token")
+
+
+def test_concurrent_telegram_logins_for_new_user_are_idempotent(
+    auth_client: TestClient,
+) -> None:
+    async def login_once() -> dict[str, object]:
+        async with app.state.session_factory() as session:
+            service = AuthService(session)
+            auth_response, _ = await service.telegram_login(
+                payload=TelegramLoginRequest(**_telegram_payload()),
+                user_agent="testclient",
+                ip_address="127.0.0.1",
+            )
+            return auth_response.model_dump()
+
+    async def login_twice() -> list[dict[str, object]]:
+        first, second = await asyncio.gather(login_once(), login_once())
+        return [first, second]
+
+    results = asyncio.run(login_twice())
+
+    assert [result["user"]["telegram_id"] for result in results] == ["100500", "100500"]
+    assert all(result["access_token"] for result in results)
 
 
 def test_telegram_login_rejects_invalid_hash(auth_client: TestClient) -> None:

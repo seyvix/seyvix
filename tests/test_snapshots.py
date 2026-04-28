@@ -1,13 +1,34 @@
 from __future__ import annotations
 
+import struct
 import zipfile
+import zlib
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.modules.content.models import ContentAsset, ContentObject
-from app.modules.snapshots.artifacts import SnapshotArtifactGenerator
-from tests.test_content import _auth_headers, content_client
+from app.modules.snapshots.artifacts import SnapshotArtifactGenerator, UnsupportedSnapshotError
+from app.platform.events.models import EventOutbox
+from tests.test_content import _auth_headers
+
+
+def _png_bytes(width: int, height: int, color: tuple[int, int, int]) -> bytes:
+    scanline = b"\x00" + bytes(color) * width
+    image_data = zlib.compress(scanline * height)
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        checksum = zlib.crc32(kind + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", checksum)
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", image_data)
+        + chunk(b"IEND", b"")
+    )
 
 
 def test_snapshot_settings_defaults_and_user_overrides(content_client: TestClient) -> None:
@@ -61,7 +82,7 @@ def test_snapshot_settings_defaults_and_user_overrides(content_client: TestClien
     assert reload_response.json()["overrides"]["archive_org"] is True
 
 
-def test_upload_preserves_display_filename_and_queues_snapshot_jobs(
+def test_upload_preserves_display_filename_and_writes_content_event(
     content_client: TestClient,
 ) -> None:
     headers = _auth_headers(content_client)
@@ -79,22 +100,17 @@ def test_upload_preserves_display_filename_and_queues_snapshot_jobs(
     assert payload["assets"][0]["filename"] == "résumé final.txt"
     assert payload["assets"][0]["thumbnail_url"] is None
 
-    jobs_response = content_client.get(
-        "/api/v1/snapshots/jobs",
-        headers=headers,
-        params={"content_object_id": payload["id"]},
-    )
+    async def load_outbox_events() -> list[EventOutbox]:
+        async with content_client.app.state.session_factory() as session:
+            result = await session.scalars(
+                select(EventOutbox).where(EventOutbox.entity_id == payload["id"])
+            )
+            return list(result)
 
-    assert jobs_response.status_code == 200
-    jobs = jobs_response.json()["items"]
-    assert {job["job_type"] for job in jobs} == {
-        "thumbnail",
-        "markdown",
-        "screenshot",
-        "webpage_html",
-        "pdf",
-    }
-    assert all(job["status"] == "pending" for job in jobs)
+    events = content_client.portal.call(load_outbox_events)
+    assert [event.event_name for event in events] == ["content.object.created"]
+    assert events[0].payload["content_object_id"] == payload["id"]
+    assert events[0].payload["asset_ids"] == [payload["assets"][0]["id"]]
 
     artifacts_response = content_client.get(
         "/api/v1/snapshots/artifacts",
@@ -106,7 +122,145 @@ def test_upload_preserves_display_filename_and_queues_snapshot_jobs(
     assert artifacts_response.json()["items"] == []
 
 
-def test_snapshot_generator_extracts_docx_markdown_and_falls_back_to_svg_preview(
+def test_snapshot_generator_creates_bounded_jpeg_thumbnail_for_image(tmp_path: Path) -> None:
+    storage_root = tmp_path / "storage"
+    object_dir = storage_root / "user-1" / "photo.object"
+    source_dir = object_dir / "original"
+    source_dir.mkdir(parents=True)
+    source_path = source_dir / "photo.png"
+    source_path.write_bytes(_png_bytes(1200, 900, (210, 48, 48)))
+
+    content_object = ContentObject(
+        id="object-1",
+        owner_user_id="user-1",
+        slug="photo",
+        title="Photo",
+        kind="simple",
+        media_type="image",
+        storage_path="user-1/photo.object",
+    )
+    asset = ContentAsset(
+        id="asset-1",
+        content_object_id="object-1",
+        role="original",
+        media_type="image",
+        filename="photo.png",
+        mime_type="image/png",
+        size_bytes=source_path.stat().st_size,
+        storage_path="user-1/photo.object/original/photo.png",
+    )
+
+    thumbnail = SnapshotArtifactGenerator(storage_root).generate(
+        content_object=content_object,
+        asset=asset,
+        job_type="thumbnail",
+    )
+
+    assert thumbnail.filename == "thumbnail.jpg"
+    assert thumbnail.mime_type == "image/jpeg"
+    assert thumbnail.path.read_bytes().startswith(b"\xff\xd8\xff")
+
+    import fitz
+
+    pixmap = fitz.Pixmap(str(thumbnail.path))
+    assert pixmap.width == 512
+    assert pixmap.height == 384
+    assert thumbnail.size_bytes < source_path.stat().st_size
+
+
+def test_snapshot_generator_creates_jpeg_thumbnail_for_csv_preview(tmp_path: Path) -> None:
+    storage_root = tmp_path / "storage"
+    object_dir = storage_root / "user-1" / "table.object"
+    source_dir = object_dir / "original"
+    source_dir.mkdir(parents=True)
+    source_path = source_dir / "table.csv"
+    source_path.write_text("name,value\nAlpha,10\nBeta,20\n", encoding="utf-8")
+
+    content_object = ContentObject(
+        id="object-1",
+        owner_user_id="user-1",
+        slug="table",
+        title="Table",
+        kind="simple",
+        media_type="document",
+        storage_path="user-1/table.object",
+    )
+    asset = ContentAsset(
+        id="asset-1",
+        content_object_id="object-1",
+        role="original",
+        media_type="document",
+        filename="table.csv",
+        mime_type="text/csv",
+        size_bytes=source_path.stat().st_size,
+        storage_path="user-1/table.object/original/table.csv",
+    )
+
+    thumbnail = SnapshotArtifactGenerator(storage_root).generate(
+        content_object=content_object,
+        asset=asset,
+        job_type="thumbnail",
+    )
+
+    assert thumbnail.filename == "thumbnail.jpg"
+    assert thumbnail.mime_type == "image/jpeg"
+    assert thumbnail.path.read_bytes().startswith(b"\xff\xd8\xff")
+
+    import fitz
+
+    pixmap = fitz.Pixmap(str(thumbnail.path))
+    assert pixmap.width <= 512
+    assert pixmap.height <= 512
+    assert pixmap.width < pixmap.height
+
+
+def test_snapshot_generator_recognizes_pdf_by_mime_when_storage_key_lost_suffix(
+    tmp_path: Path,
+) -> None:
+    storage_root = tmp_path / "storage"
+    object_dir = storage_root / "user-1" / "pdf.object"
+    source_dir = object_dir / "original"
+    source_dir.mkdir(parents=True)
+    source_path = source_dir / "original.bin"
+
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_textbox(fitz.Rect(48, 48, 547, 780), "PDF body", fontsize=12)
+    doc.save(source_path)
+    doc.close()
+
+    content_object = ContentObject(
+        id="object-1",
+        owner_user_id="user-1",
+        slug="pdf",
+        title="PDF",
+        kind="simple",
+        media_type="document",
+        storage_path="user-1/pdf.object",
+    )
+    asset = ContentAsset(
+        id="asset-1",
+        content_object_id="object-1",
+        role="original",
+        media_type="document",
+        filename="дневничок.pdf",
+        mime_type="application/pdf",
+        size_bytes=source_path.stat().st_size,
+        storage_path="user-1/pdf.object/original/original.bin",
+    )
+    generator = SnapshotArtifactGenerator(storage_root)
+
+    thumbnail = generator.generate(content_object=content_object, asset=asset, job_type="thumbnail")
+    markdown = generator.generate(content_object=content_object, asset=asset, job_type="markdown")
+
+    assert thumbnail.filename == "thumbnail.jpg"
+    assert thumbnail.mime_type == "image/jpeg"
+    assert "PDF body" in markdown.path.read_text(encoding="utf-8")
+
+
+def test_snapshot_generator_extracts_docx_markdown_and_skips_thumbnail_without_renderer(
     tmp_path: Path,
 ) -> None:
     storage_root = tmp_path / "storage"
@@ -147,9 +301,9 @@ def test_snapshot_generator_extracts_docx_markdown_and_falls_back_to_svg_preview
     generator = SnapshotArtifactGenerator(storage_root)
 
     markdown = generator.generate(content_object=content_object, asset=asset, job_type="markdown")
-    thumbnail = generator.generate(content_object=content_object, asset=asset, job_type="thumbnail")
 
     assert markdown.mime_type == "text/markdown"
     assert "First paragraph" in markdown.path.read_text(encoding="utf-8")
     assert "Second paragraph" in markdown.path.read_text(encoding="utf-8")
-    assert thumbnail.mime_type == "image/svg+xml"
+    with pytest.raises(UnsupportedSnapshotError, match="No thumbnail renderer"):
+        generator.generate(content_object=content_object, asset=asset, job_type="thumbnail")
