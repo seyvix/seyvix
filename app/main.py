@@ -7,6 +7,7 @@ from app.core.config import Settings, get_settings
 from app.core.database import build_session_factory
 from app.core.lifespan import lifespan
 from app.core.logging import configure_logging
+from app.platform.storage.factory import build_storage_backend
 
 
 def configure_cors(app: FastAPI, settings: Settings) -> None:
@@ -40,6 +41,9 @@ def create_app() -> FastAPI:
         echo=settings.sqlalchemy_echo,
     )
     app.state.content_storage_root = settings.content_storage_root
+    app.state.storage_backend = (
+        build_storage_backend(settings) if settings.storage_backend == "s3" else None
+    )
     configure_cors(app, settings)
     install_error_handlers(app)
     app.include_router(api_router, prefix=settings.api_prefix)
