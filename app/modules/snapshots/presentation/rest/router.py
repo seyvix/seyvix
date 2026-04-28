@@ -28,7 +28,8 @@ def get_snapshot_service(
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> SnapshotService:
     storage_root = getattr(request.app.state, "content_storage_root", Path("data/content"))
-    return SnapshotService(session, Path(storage_root))
+    storage_backend = getattr(request.app.state, "storage_backend", None)
+    return SnapshotService(session, Path(storage_root), storage_backend=storage_backend)
 
 
 @router.get(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,7 +13,7 @@ from app.modules.snapshots.infrastructure.repositories import (
     SnapshotJobRepository,
     SnapshotSettingsRepository,
 )
-from app.modules.snapshots.models import SnapshotJob, SnapshotUserSettings
+from app.modules.snapshots.models import SnapshotUserSettings
 from app.modules.snapshots.schemas import (
     SnapshotArtifactListResponse,
     SnapshotArtifactResponse,
@@ -23,6 +24,7 @@ from app.modules.snapshots.schemas import (
     SnapshotSettingsResponse,
     UpdateSnapshotSettingsRequest,
 )
+from app.platform.storage.service import LocalVolumeStorage, StorageBackend
 
 SNAPSHOT_JOB_TYPES = ("markdown", "screenshot", "webpage_html", "pdf")
 
@@ -41,9 +43,18 @@ class SnapshotArtifactNotFoundError(Exception):
 
 
 class SnapshotService:
-    def __init__(self, session: AsyncSession, storage_root: Path | None = None) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        storage_root: Path | None = None,
+        storage_backend: StorageBackend | None = None,
+    ) -> None:
         self.session = session
         self.storage_root = storage_root or Path("data/content")
+        self.storage_backend = storage_backend or LocalVolumeStorage(
+            root=self.storage_root,
+            bucket=get_settings().s3_bucket,
+        )
         self.settings = SnapshotSettingsRepository(session)
         self.jobs = SnapshotJobRepository(session)
         self.artifacts = SnapshotArtifactRepository(session)
@@ -69,10 +80,7 @@ class SnapshotService:
         owner_user_id: str,
         payload: UpdateSnapshotSettingsRequest,
     ) -> SnapshotSettingsResponse:
-        stored = await self.settings.get(owner_user_id)
-        if stored is None:
-            stored = SnapshotUserSettings(owner_user_id=owner_user_id)
-            self.settings.add(stored)
+        stored = await self.settings.get_or_create(owner_user_id)
 
         update = payload.model_dump(exclude_unset=True)
         if "screenshot" in update:
@@ -155,28 +163,75 @@ class SnapshotService:
             raise SnapshotArtifactNotFoundError
         path = self.storage_root / artifact.storage_path
         if not path.exists():
-            raise SnapshotArtifactNotFoundError
+            temp_file = NamedTemporaryFile(prefix=f"{artifact.id}-", delete=False)
+            temp_file.write(
+                self.storage_backend.get_bytes(artifact.storage_key or artifact.storage_path)
+            )
+            temp_file.close()
+            path = Path(temp_file.name)
         return path, artifact.mime_type, artifact.filename
 
-    async def enqueue_for_content_object(self, content_object: ContentObject) -> None:
+    async def enqueue_for_content_object(
+        self,
+        content_object: ContentObject,
+        *,
+        correlation_id: str | None = None,
+        source_event_id: str | None = None,
+    ) -> None:
         stored = await self.settings.get(content_object.owner_user_id)
         effective = self._effective_settings(stored)
         source_assets = [asset for asset in content_object.assets if asset.role == "original"]
 
         for asset in source_assets:
-            await self._enqueue_job(content_object, asset, "thumbnail")
+            await self._enqueue_job(
+                content_object,
+                asset,
+                "thumbnail",
+                correlation_id=correlation_id,
+                source_event_id=source_event_id,
+            )
 
             if effective.markdown:
-                await self._enqueue_job(content_object, asset, "markdown")
+                await self._enqueue_job(
+                    content_object,
+                    asset,
+                    "markdown",
+                    correlation_id=correlation_id,
+                    source_event_id=source_event_id,
+                )
             if effective.screenshot:
-                await self._enqueue_job(content_object, asset, "screenshot")
+                await self._enqueue_job(
+                    content_object,
+                    asset,
+                    "screenshot",
+                    correlation_id=correlation_id,
+                    source_event_id=source_event_id,
+                )
             if effective.webpage_html:
-                await self._enqueue_job(content_object, asset, "webpage_html")
+                await self._enqueue_job(
+                    content_object,
+                    asset,
+                    "webpage_html",
+                    correlation_id=correlation_id,
+                    source_event_id=source_event_id,
+                )
             if effective.pdf:
-                await self._enqueue_job(content_object, asset, "pdf")
+                await self._enqueue_job(
+                    content_object,
+                    asset,
+                    "pdf",
+                    correlation_id=correlation_id,
+                    source_event_id=source_event_id,
+                )
 
         if effective.archive_org:
-            await self._enqueue_job(content_object, None, "archive_org")
+            await self._enqueue_job(
+                content_object,
+                None,
+                "archive_org",
+                correlation_id=correlation_id,
+                source_event_id=source_event_id,
+            )
 
     async def get_thumbnail_path(self, *, source_asset_id: str) -> tuple[Path, str] | None:
         artifact = await self.artifacts.get_ready(
@@ -185,28 +240,36 @@ class SnapshotService:
         )
         if artifact is None:
             return None
-        return self.storage_root / artifact.storage_path, artifact.mime_type
+        path = self.storage_root / artifact.storage_path
+        if not path.exists():
+            temp_file = NamedTemporaryFile(prefix=f"{artifact.id}-", delete=False)
+            temp_file.write(
+                self.storage_backend.get_bytes(artifact.storage_key or artifact.storage_path)
+            )
+            temp_file.close()
+            path = Path(temp_file.name)
+        return path, artifact.mime_type
+
+    async def is_thumbnail_unavailable(self, *, source_asset_id: str) -> bool:
+        job = await self.jobs.get_for_asset(source_asset_id=source_asset_id, job_type="thumbnail")
+        return job is not None and job.status == "failed"
 
     async def _enqueue_job(
         self,
         content_object: ContentObject,
         asset: ContentAsset | None,
         job_type: str,
+        correlation_id: str | None = None,
+        source_event_id: str | None = None,
     ) -> None:
-        if await self.jobs.exists(
+        await self.jobs.add_once(
+            owner_user_id=content_object.owner_user_id,
             content_object_id=content_object.id,
             source_asset_id=asset.id if asset is not None else None,
             job_type=job_type,
-        ):
-            return
-        self.jobs.add(
-            SnapshotJob(
-                owner_user_id=content_object.owner_user_id,
-                content_object_id=content_object.id,
-                source_asset_id=asset.id if asset is not None else None,
-                job_type=job_type,
-                status="pending",
-            )
+            status="pending",
+            correlation_id=correlation_id,
+            source_event_id=source_event_id,
         )
 
     @staticmethod

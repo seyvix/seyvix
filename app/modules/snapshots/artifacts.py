@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import importlib
 import re
 import shutil
 import subprocess
@@ -8,10 +9,14 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 from xml.etree import ElementTree
 
 from app.core.config import get_settings
 from app.modules.content.models import ContentAsset, ContentObject
+
+THUMBNAIL_MAX_WIDTH = 512
+THUMBNAIL_MAX_HEIGHT = 512
 
 
 class UnsupportedSnapshotError(Exception):
@@ -77,33 +82,35 @@ class SnapshotArtifactGenerator:
         output_dir: Path,
     ) -> GeneratedArtifact:
         if asset.media_type == "image":
-            return self._copy_image_snapshot(
+            return self._render_image_thumbnail(
                 source_path=source_path,
                 output_dir=output_dir,
-                filename="thumbnail" + source_path.suffix.lower(),
-                mime_type=asset.mime_type or "application/octet-stream",
+                filename="thumbnail.jpg",
             )
-        if source_path.suffix.lower() == ".pdf":
+        if self._is_pdf(asset=asset, source_path=source_path):
             return self._render_pdf_first_page(
                 source_path=source_path,
                 output_dir=output_dir,
-                filename="thumbnail.png",
+                filename="thumbnail.jpg",
             )
         office_pdf = self._convert_office_to_pdf(source_path)
         if office_pdf is not None:
             return self._render_pdf_first_page(
                 source_path=office_pdf,
                 output_dir=output_dir,
-                filename="thumbnail.png",
+                filename="thumbnail.jpg",
             )
 
-        preview_text = self._text_for_preview(asset=asset, source_path=source_path)
-        return self._write_svg_preview(
-            output_dir=output_dir,
-            filename="thumbnail.svg",
-            title=asset.filename,
-            body=preview_text or asset.media_type,
-        )
+        preview_text = self._text_for_thumbnail_preview(asset=asset, source_path=source_path)
+        if preview_text is not None:
+            return self._render_text_thumbnail(
+                output_dir=output_dir,
+                filename="thumbnail.jpg",
+                title=asset.filename,
+                body=preview_text,
+            )
+
+        raise UnsupportedSnapshotError("No thumbnail renderer is available for this file.")
 
     def _generate_markdown(
         self,
@@ -168,7 +175,7 @@ class SnapshotArtifactGenerator:
         output_dir: Path,
     ) -> GeneratedArtifact:
         path = output_dir / "snapshot.pdf"
-        if source_path.suffix.lower() == ".pdf":
+        if self._is_pdf(asset=asset, source_path=source_path):
             shutil.copyfile(source_path, path)
             return GeneratedArtifact(
                 filename="snapshot.pdf", mime_type="application/pdf", path=path
@@ -186,7 +193,7 @@ class SnapshotArtifactGenerator:
             raise UnsupportedSnapshotError("No PDF snapshot renderer is available for this file.")
 
         try:
-            import fitz  # type: ignore[import-untyped]
+            fitz = _load_fitz()
         except ImportError as exc:
             raise UnsupportedSnapshotError("PyMuPDF is required to render PDF snapshots.") from exc
 
@@ -206,7 +213,7 @@ class SnapshotArtifactGenerator:
         filename: str,
     ) -> GeneratedArtifact:
         try:
-            import fitz  # type: ignore[import-untyped]
+            fitz = _load_fitz()
         except ImportError as exc:
             raise UnsupportedSnapshotError("PyMuPDF is required to render PDF thumbnails.") from exc
 
@@ -215,10 +222,86 @@ class SnapshotArtifactGenerator:
             if doc.page_count == 0:
                 raise UnsupportedSnapshotError("Cannot render an empty PDF.")
             page = doc[0]
-            pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
+            zoom = self._thumbnail_zoom(width=page.rect.width, height=page.rect.height)
+            pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
             path = output_dir / filename
             pix.save(str(path))
-            return GeneratedArtifact(filename=filename, mime_type="image/png", path=path)
+            return GeneratedArtifact(filename=filename, mime_type="image/jpeg", path=path)
+        finally:
+            doc.close()
+
+    def _render_image_thumbnail(
+        self,
+        *,
+        source_path: Path,
+        output_dir: Path,
+        filename: str,
+    ) -> GeneratedArtifact:
+        try:
+            fitz = _load_fitz()
+        except ImportError as exc:
+            raise UnsupportedSnapshotError(
+                "PyMuPDF is required to render image thumbnails."
+            ) from exc
+
+        try:
+            doc = fitz.open(str(source_path))
+        except Exception as exc:  # noqa: BLE001
+            raise UnsupportedSnapshotError("Source image cannot be decoded.") from exc
+
+        try:
+            if doc.page_count == 0:
+                raise UnsupportedSnapshotError("Cannot render an empty image.")
+            page = doc[0]
+            zoom = self._thumbnail_zoom(width=page.rect.width, height=page.rect.height)
+            pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+            path = output_dir / filename
+            pix.save(str(path))
+            return GeneratedArtifact(filename=filename, mime_type="image/jpeg", path=path)
+        finally:
+            doc.close()
+
+    @staticmethod
+    def _thumbnail_zoom(*, width: float, height: float) -> float:
+        if width <= 0 or height <= 0:
+            raise UnsupportedSnapshotError("Cannot render a thumbnail for zero-sized content.")
+        return min(THUMBNAIL_MAX_WIDTH / width, THUMBNAIL_MAX_HEIGHT / height, 1.0)
+
+    def _render_text_thumbnail(
+        self,
+        *,
+        output_dir: Path,
+        filename: str,
+        title: str,
+        body: str,
+    ) -> GeneratedArtifact:
+        try:
+            fitz = _load_fitz()
+        except ImportError as exc:
+            raise UnsupportedSnapshotError(
+                "PyMuPDF is required to render text thumbnails."
+            ) from exc
+
+        doc = fitz.open()
+        try:
+            page = doc.new_page(width=595, height=842)
+            page.insert_textbox(
+                fitz.Rect(48, 42, 547, 92),
+                title[:140],
+                fontsize=16,
+                fontname="helv",
+            )
+            page.insert_textbox(
+                fitz.Rect(48, 116, 547, 800),
+                body[:5000],
+                fontsize=10,
+                fontname="cour",
+            )
+            zoom = self._thumbnail_zoom(width=page.rect.width, height=page.rect.height)
+            pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+            path = output_dir / filename
+            pix.save(str(path))
+            return GeneratedArtifact(filename=filename, mime_type="image/jpeg", path=path)
         finally:
             doc.close()
 
@@ -265,6 +348,23 @@ class SnapshotArtifactGenerator:
     def _text_for_preview(self, *, asset: ContentAsset, source_path: Path) -> str | None:
         return self._extract_markdown_text(asset=asset, source_path=source_path)
 
+    def _text_for_thumbnail_preview(self, *, asset: ContentAsset, source_path: Path) -> str | None:
+        suffix = source_path.suffix.lower()
+        text_mime_types = {
+            "application/json",
+            "text/csv",
+            "text/html",
+            "text/markdown",
+            "text/plain",
+        }
+        if (
+            asset.media_type == "text"
+            or asset.mime_type in text_mime_types
+            or suffix in {".csv", ".html", ".htm", ".json", ".md", ".markdown", ".txt"}
+        ):
+            return self._extract_markdown_text(asset=asset, source_path=source_path)
+        return None
+
     def _extract_markdown_text(self, *, asset: ContentAsset, source_path: Path) -> str | None:
         if asset.text_content:
             return asset.text_content
@@ -275,11 +375,15 @@ class SnapshotArtifactGenerator:
         if asset.mime_type == "text/html" or suffix in {".html", ".htm"}:
             text = self._decode_text(source_path)
             return self._html_to_text(text) if text is not None else None
-        if suffix == ".pdf":
+        if self._is_pdf(asset=asset, source_path=source_path):
             return self._extract_pdf_text(source_path)
         if suffix == ".docx":
             return self._extract_docx_text(source_path)
         return None
+
+    @staticmethod
+    def _is_pdf(*, asset: ContentAsset, source_path: Path) -> bool:
+        return asset.mime_type == "application/pdf" or source_path.suffix.lower() == ".pdf"
 
     @staticmethod
     def _decode_text(source_path: Path) -> str | None:
@@ -305,7 +409,7 @@ class SnapshotArtifactGenerator:
     @staticmethod
     def _extract_pdf_text(source_path: Path) -> str | None:
         try:
-            import fitz  # type: ignore[import-untyped]
+            fitz = _load_fitz()
         except ImportError:
             return None
         doc = fitz.open(str(source_path))
@@ -358,3 +462,7 @@ class SnapshotArtifactGenerator:
             stable_path = source_path.parent / f".converted-{source_path.stem}.pdf"
             shutil.copyfile(pdf_path, stable_path)
             return stable_path
+
+
+def _load_fitz() -> Any:
+    return importlib.import_module("fitz")
