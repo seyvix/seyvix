@@ -69,7 +69,7 @@ class ContentStorage:
         path = original_dir / safe_filename
         path.write_bytes(data)
         return StoredFile(
-            filename=safe_filename,
+            filename=filename,
             relative_path=self._relative(path),
             size_bytes=path.stat().st_size,
         )
@@ -88,7 +88,7 @@ class ContentStorage:
         path = upload_dir / safe_filename
         path.write_bytes(data)
         return StoredFile(
-            filename=safe_filename,
+            filename=filename,
             relative_path=self._relative(path),
             size_bytes=path.stat().st_size,
         )

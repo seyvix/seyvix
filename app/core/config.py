@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     telegram_dev_username: str | None = "dev_user"
     telegram_dev_photo_url: str | None = None
     content_storage_root: str = "data/content"
+    snapshot_archive_screenshot_enabled: bool = True
+    snapshot_archive_webpage_html_enabled: bool = True
+    snapshot_archive_pdf_enabled: bool = True
+    snapshot_archive_markdown_enabled: bool = True
+    snapshot_archive_org_enabled: bool = False
+    snapshot_worker_batch_size: int = 10
+    snapshot_worker_poll_interval_seconds: int = 10
+    snapshot_office_converter_command: str | None = None
     cors_allowed_origins: list[str] = Field(default_factory=list)
     cors_allow_origin_regex: str | None = None
 

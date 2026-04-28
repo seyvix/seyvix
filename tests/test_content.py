@@ -376,11 +376,70 @@ def test_merge_moves_objects_and_collections_into_target_collection(
     )
 
     assert collection_merge_response.status_code == 200
-    assert [item["source_filename"] for item in collection_merge_response.json()["items"]] == [
+    merged_items = collection_merge_response.json()["items"]
+    assert [item["source_filename"] for item in merged_items] == [
         "content.md",
         "content.md",
+        None,
+    ]
+    nested_collection = merged_items[2]
+    assert nested_collection["title"] == "Other collection"
+    assert [item["source_filename"] for item in nested_collection["items"]] == [
         "one.txt",
         "two.txt",
+    ]
+
+
+def test_merge_moves_collection_items_into_target_folder(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client)
+    target = _create_text_note(
+        content_client,
+        headers,
+        title="Target",
+        text="Target body",
+        folder_path="work/target",
+    )
+    source_collection_id = str(uuid4())
+    content_client.post(
+        "/api/v1/notes/file/upload",
+        headers=headers,
+        data={
+            "object_id": source_collection_id,
+            "title": "Source collection",
+            "folder_path": "work/source",
+        },
+        files={"file": ("one.txt", b"One", "text/plain")},
+    )
+    source_collection = content_client.post(
+        "/api/v1/notes/file/upload",
+        headers=headers,
+        data={
+            "object_id": source_collection_id,
+            "title": "Source collection",
+            "folder_path": "work/source",
+        },
+        files={"file": ("two.txt", b"Two", "text/plain")},
+    ).json()
+
+    merge_response = content_client.post(
+        "/api/v1/notes/merge",
+        headers=headers,
+        json={"target_slug": target["slug"], "source_slugs": [source_collection["slug"]]},
+    )
+
+    assert merge_response.status_code == 200
+    payload = merge_response.json()
+    assert payload["folder"]["path"] == "work/target"
+    moved_collection = next(
+        item for item in payload["items"] if item["title"] == "Source collection"
+    )
+    assert moved_collection["folder"]["path"] == "work/target"
+    assert [item["source_filename"] for item in moved_collection["items"]] == ["one.txt", "two.txt"]
+    assert [item["folder"]["path"] for item in moved_collection["items"]] == [
+        "work/target",
+        "work/target",
     ]
 
 

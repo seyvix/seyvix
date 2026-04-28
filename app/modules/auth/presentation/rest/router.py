@@ -329,9 +329,7 @@ async def exchange_telegram_auth_result(
 ) -> AuthTokensResponse:
     try:
         padding = (4 - len(payload.tg_auth_result) % 4) % 4
-        raw_data = json.loads(
-            base64.urlsafe_b64decode(payload.tg_auth_result + "=" * padding)
-        )
+        raw_data = json.loads(base64.urlsafe_b64decode(payload.tg_auth_result + "=" * padding))
         tg_payload = TelegramLoginRequest(**raw_data)
     except Exception as exc:
         raise AppError(

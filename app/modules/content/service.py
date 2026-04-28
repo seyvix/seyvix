@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-import asyncio
-import io
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import delete as sql_delete, update as sql_update
+from sqlalchemy import delete as sql_delete
+from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.core.logging import get_logger
 from app.modules.content.infrastructure.repositories import (
     CategoryRepository,
     ContentRepository,
@@ -37,14 +37,10 @@ from app.modules.content.schemas import (
     TagResponse,
     UploadedFileResponse,
 )
-from app.core.logging import get_logger
 from app.modules.content.storage import ContentStorage, slugify
+from app.modules.snapshots.service import SnapshotService
 
 logger = get_logger(__name__)
-
-# Keeps strong references to background asyncio tasks so the GC doesn't collect them
-# before they finish (Python docs: "save a reference to the result of create_task").
-_background_tasks: set[asyncio.Task[None]] = set()
 
 
 class NoteNotFoundError(Exception):
@@ -74,6 +70,7 @@ class ContentService:
         self.tags = TagRepository(session)
         self.file_uploads = FileUploadRepository(session)
         self.storage = ContentStorage(storage_root or Path("data/content"))
+        self.snapshots = SnapshotService(session, self.storage.root)
         self.api_prefix = get_settings().api_prefix
 
     async def create_note(
@@ -347,13 +344,7 @@ class ContentService:
         next_position = await self._next_collection_position(collection)
         for slug in unique_source_slugs:
             source = by_slug[slug]
-            if source.kind == "collection":
-                source_items = await self.content.list_collection_items(source.id)
-                for item in source_items:
-                    item.collection = collection
-                    item.position = next_position
-                    next_position += 10
-                continue
+            await self._move_object_tree_to_category(source, collection.category)
             existing_membership = await self.content.get_membership(source.id)
             if existing_membership is not None:
                 existing_membership.collection = collection
@@ -400,9 +391,7 @@ class ContentService:
             return
 
         await self.session.execute(
-            sql_delete(ContentCollectionItem).where(
-                ContentCollectionItem.id.in_(ids_to_remove_set)
-            )
+            sql_delete(ContentCollectionItem).where(ContentCollectionItem.id.in_(ids_to_remove_set))
         )
 
         if len(remaining) == 1:
@@ -865,6 +854,17 @@ class ContentService:
         current_items = await self.content.list_collection_items(collection.id)
         return max((item.position for item in current_items), default=0) + 10
 
+    async def _move_object_tree_to_category(
+        self,
+        content_object: ContentObject,
+        category: ContentCategory | None,
+    ) -> None:
+        content_object.category = category
+        if content_object.kind != "collection":
+            return
+        for item in await self.content.list_collection_items(content_object.id):
+            await self._move_object_tree_to_category(item.content_object, category)
+
     async def _reload_write_manifest_and_card(
         self,
         *,
@@ -885,91 +885,27 @@ class ContentService:
                     directory=self.storage.root / item.storage_path,
                     manifest=self._manifest(item, items=[]),
                 )
-        # Schedule async thumbnail generation for any document assets
         all_objects = [loaded, *items] if loaded.kind == "collection" else [loaded]
-        logger.info(
-            "thumbnail.scan",
-            slug=loaded.slug,
-            object_count=len(all_objects),
-            asset_count=sum(len(obj.assets) for obj in all_objects),
-        )
         for obj in all_objects:
-            for asset in obj.assets:
-                if asset.media_type == "document":
-                    asset_path = self.storage.root / asset.storage_path
-                    thumb_path = self._thumbnail_path(asset_path)
-                    if not thumb_path.exists():
-                        task = asyncio.create_task(
-                            self._generate_thumbnail_async(asset_path, thumb_path)
-                        )
-                        _background_tasks.add(task)
-                        task.add_done_callback(_background_tasks.discard)
+            await self.snapshots.enqueue_for_content_object(obj)
+        await self.session.commit()
         return await self._to_card(loaded)
-
-    def _thumbnail_path(self, asset_path: Path) -> Path:
-        """Returns the path where the thumbnail image for an asset should be stored."""
-        thumb_dir = asset_path.parent / "thumbnails"
-        return thumb_dir / f"{asset_path.stem}.jpg"
-
-    @staticmethod
-    def _render_pdf_thumbnail(asset_path: Path, thumb_path: Path) -> None:
-        """Renders the top half of the first page of a PDF as a JPEG thumbnail (sync, blocking)."""
-        log = get_logger(__name__)
-        log.info("thumbnail.render.start", asset=str(asset_path), thumb=str(thumb_path))
-        try:
-            import fitz  # type: ignore[import-untyped]
-        except ImportError:
-            log.warning("thumbnail.render.skip", reason="pymupdf not installed")
-            return
-        try:
-            doc = fitz.open(str(asset_path))
-            if doc.page_count == 0:
-                log.warning("thumbnail.render.skip", reason="empty document", asset=str(asset_path))
-                return
-            page = doc[0]
-            # Crop to top half
-            rect = page.rect
-            clip = fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y0 + rect.height / 2)
-            mat = fitz.Matrix(2.0, 2.0)  # 2x zoom for decent resolution
-            pix = page.get_pixmap(matrix=mat, clip=clip)
-            thumb_path.parent.mkdir(parents=True, exist_ok=True)
-            # Convert to JPEG via PIL if available, otherwise save directly
-            try:
-                from PIL import Image  # type: ignore[import-untyped]
-                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                buf = io.BytesIO()
-                img.save(buf, format="JPEG", quality=80, optimize=True)
-                thumb_path.write_bytes(buf.getvalue())
-            except ImportError:
-                pix.save(str(thumb_path))
-            log.info(
-                "thumbnail.render.done",
-                asset=str(asset_path),
-                thumb=str(thumb_path),
-                size_bytes=thumb_path.stat().st_size,
-            )
-        except Exception as exc:  # noqa: BLE001
-            log.error("thumbnail.render.error", asset=str(asset_path), error=str(exc), exc_info=True)
-
-    async def _generate_thumbnail_async(self, asset_path: Path, thumb_path: Path) -> None:
-        """Runs PDF thumbnail generation in a thread pool executor."""
-        logger.info("thumbnail.scheduled", asset=str(asset_path))
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._render_pdf_thumbnail, asset_path, thumb_path)
 
     async def get_asset_thumbnail(
         self, *, owner_user_id: str, slug: str, asset_id: str
-    ) -> Path:
-        """Returns path to thumbnail JPEG, or raises ThumbnailPendingError if not ready yet."""
+    ) -> tuple[Path, str]:
+        """Returns path and MIME type for a generated thumbnail artifact."""
         content_object = await self._load_note(owner_user_id=owner_user_id, slug=slug)
         asset = next((a for a in content_object.assets if a.id == asset_id), None)
         if asset is None:
             raise NoteNotFoundError
-        asset_path = self.storage.root / asset.storage_path
-        thumb_path = self._thumbnail_path(asset_path)
-        if not thumb_path.exists():
+        thumbnail = await self.snapshots.get_thumbnail_path(source_asset_id=asset.id)
+        if thumbnail is None:
             raise ThumbnailPendingError
-        return thumb_path
+        path, mime_type = thumbnail
+        if not path.exists():
+            raise ThumbnailPendingError
+        return path, mime_type
 
     async def _get_or_create_category(
         self,
@@ -1063,6 +999,26 @@ class ContentService:
         if content_object.kind == "collection":
             collection_items = await self.content.list_collection_items(content_object.id)
             items = [await self._to_card(item.content_object) for item in collection_items]
+        asset_responses: list[NoteAssetResponse] = []
+        for asset in content_object.assets:
+            thumbnail = await self.snapshots.get_thumbnail_path(source_asset_id=asset.id)
+            asset_responses.append(
+                NoteAssetResponse(
+                    id=asset.id,
+                    role=asset.role,
+                    media_type=asset.media_type,  # type: ignore[arg-type]
+                    filename=asset.filename,
+                    mime_type=asset.mime_type,
+                    size_bytes=asset.size_bytes,
+                    url=f"{self.api_prefix}/notes/{content_object.slug}/asset/{asset.id}",
+                    text_content=asset.text_content,
+                    thumbnail_url=(
+                        f"{self.api_prefix}/notes/{content_object.slug}/asset/{asset.id}/thumbnail"
+                        if thumbnail is not None
+                        else None
+                    ),
+                )
+            )
         return NoteCardResponse(
             id=content_object.id,
             slug=content_object.slug,
@@ -1082,27 +1038,7 @@ class ContentService:
             updated_at=content_object.updated_at,
             download_url=f"{self.api_prefix}/notes/{content_object.slug}/download",
             collection=collection_parent,
-            assets=[
-                NoteAssetResponse(
-                    id=asset.id,
-                    role=asset.role,
-                    media_type=asset.media_type,  # type: ignore[arg-type]
-                    filename=asset.filename,
-                    mime_type=asset.mime_type,
-                    size_bytes=asset.size_bytes,
-                    url=f"{self.api_prefix}/notes/{content_object.slug}/asset/{asset.id}",
-                    text_content=asset.text_content,
-                    thumbnail_url=(
-                        f"{self.api_prefix}/notes/{content_object.slug}/asset/{asset.id}/thumbnail"
-                        if asset.media_type == "document"
-                        and self._thumbnail_path(
-                            self.storage.root / asset.storage_path
-                        ).exists()
-                        else None
-                    ),
-                )
-                for asset in content_object.assets
-            ],
+            assets=asset_responses,
             items=items,
         )
 

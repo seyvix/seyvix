@@ -111,7 +111,7 @@ async def create_note(
 async def upload_note_files(
     context: Annotated[AuthContext, Depends(get_auth_context)],
     service: Annotated[ContentService, Depends(get_content_service)],
-    files: Annotated[list[UploadFile], File(description="Files to upload.")],
+    files: Annotated[list[UploadFile], File(alias="file", description="Files to upload.")],
     create_object: Annotated[bool, Form()] = False,
     object_id: Annotated[str | None, Form(max_length=36)] = None,
     title: Annotated[str | None, Form(max_length=512)] = None,
@@ -190,6 +190,63 @@ async def bulk_delete_notes(
         slugs=payload.slugs,
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.patch(
+    "/notes/order",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Reorder notes",
+    description="Stores explicit sort positions used by drag and drop UI ordering.",
+    responses={
+        204: {"description": "Custom order updated."},
+        401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
+        404: {"model": ErrorResponse, "description": "One or more notes were not found."},
+    },
+)
+async def reorder_notes(
+    payload: ReorderNotesRequest,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[ContentService, Depends(get_content_service)],
+) -> Response:
+    try:
+        await service.reorder(
+            owner_user_id=context.user.id,
+            positions={item.slug: item.position for item in payload.items},
+        )
+    except NoteNotFoundError as exc:
+        raise _not_found(exc) from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/notes/merge",
+    response_model=NoteCardResponse,
+    summary="Merge notes",
+    description=(
+        "Moves source objects or collection items into the target object. If the target is not "
+        "a collection yet, it is converted into one while preserving its previous content as the "
+        "first child object."
+    ),
+    responses={
+        200: {"description": "Sources moved into target collection."},
+        401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
+        404: {"model": ErrorResponse, "description": "One or more notes were not found."},
+    },
+)
+async def merge_notes(
+    payload: MergeNotesRequest,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[ContentService, Depends(get_content_service)],
+) -> NoteCardResponse:
+    try:
+        return await service.merge_notes(
+            owner_user_id=context.user.id,
+            target_slug=payload.target_slug,
+            source_slugs=payload.source_slugs,
+            title=payload.title,
+        )
+    except NoteNotFoundError as exc:
+        raise _not_found(exc) from exc
 
 
 @router.get(
@@ -314,14 +371,14 @@ async def get_asset_thumbnail(
     service: Annotated[ContentService, Depends(get_content_service)],
 ) -> Response:
     try:
-        path = await service.get_asset_thumbnail(
+        path, mime_type = await service.get_asset_thumbnail(
             owner_user_id=context.user.id, slug=note_slug, asset_id=asset_id
         )
     except NoteNotFoundError as exc:
         raise _not_found(exc) from exc
     except ThumbnailPendingError:
         return Response(status_code=status.HTTP_202_ACCEPTED)
-    return FileResponse(path, media_type="image/jpeg")
+    return FileResponse(path, media_type=mime_type)
 
 
 @router.delete(
@@ -374,63 +431,6 @@ async def set_note_favorite(
             owner_user_id=context.user.id,
             slug=note_slug,
             is_favorite=payload.is_favorite,
-        )
-    except NoteNotFoundError as exc:
-        raise _not_found(exc) from exc
-
-
-@router.patch(
-    "/notes/order",
-    status_code=status.HTTP_204_NO_CONTENT,
-    summary="Reorder notes",
-    description="Stores explicit sort positions used by drag and drop UI ordering.",
-    responses={
-        204: {"description": "Custom order updated."},
-        401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
-        404: {"model": ErrorResponse, "description": "One or more notes were not found."},
-    },
-)
-async def reorder_notes(
-    payload: ReorderNotesRequest,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
-    service: Annotated[ContentService, Depends(get_content_service)],
-) -> Response:
-    try:
-        await service.reorder(
-            owner_user_id=context.user.id,
-            positions={item.slug: item.position for item in payload.items},
-        )
-    except NoteNotFoundError as exc:
-        raise _not_found(exc) from exc
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-
-@router.post(
-    "/notes/merge",
-    response_model=NoteCardResponse,
-    summary="Merge notes",
-    description=(
-        "Moves source objects or collection items into the target object. If the target is not "
-        "a collection yet, it is converted into one while preserving its previous content as the "
-        "first child object."
-    ),
-    responses={
-        200: {"description": "Sources moved into target collection."},
-        401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
-        404: {"model": ErrorResponse, "description": "One or more notes were not found."},
-    },
-)
-async def merge_notes(
-    payload: MergeNotesRequest,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
-    service: Annotated[ContentService, Depends(get_content_service)],
-) -> NoteCardResponse:
-    try:
-        return await service.merge_notes(
-            owner_user_id=context.user.id,
-            target_slug=payload.target_slug,
-            source_slugs=payload.source_slugs,
-            title=payload.title,
         )
     except NoteNotFoundError as exc:
         raise _not_found(exc) from exc

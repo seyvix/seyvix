@@ -4,11 +4,13 @@ from app.api.schemas import HealthResponse
 from app.modules.auth.presentation.rest.router import router as auth_router
 from app.modules.content.presentation.rest.router import router as content_router
 from app.modules.registry import list_modules
+from app.modules.snapshots.presentation.rest.router import router as snapshots_router
 from app.shared.module_definitions import ModuleDefinition
 
 api_router = APIRouter()
 api_router.include_router(auth_router)
 api_router.include_router(content_router)
+api_router.include_router(snapshots_router)
 
 
 @api_router.get(

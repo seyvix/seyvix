@@ -37,6 +37,7 @@ def _test_database_url() -> str:
 def auth_client() -> TestClient:
     os.environ["TELEGRAM_BOT_TOKEN"] = TELEGRAM_BOT_TOKEN
     os.environ["TELEGRAM_LOGIN_REDIRECT_URL"] = "http://localhost:3000/auth/telegram"
+    os.environ["TELEGRAM_DEV_LOGIN_ENABLED"] = "false"
     get_settings.cache_clear()
     database_url = _test_database_url()
     try:
