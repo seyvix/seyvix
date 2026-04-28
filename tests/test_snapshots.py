@@ -10,7 +10,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.modules.content.models import ContentAsset, ContentObject
+from app.modules.content.schemas import NoteAssetResponse
 from app.modules.snapshots.artifacts import SnapshotArtifactGenerator, UnsupportedSnapshotError
+from app.modules.snapshots.service import EffectiveSnapshotSettings, plan_snapshot_job_types
 from app.platform.events.models import EventOutbox
 from tests.test_content import _auth_headers
 
@@ -40,7 +42,7 @@ def test_snapshot_settings_defaults_and_user_overrides(content_client: TestClien
     assert default_response.json() == {
         "effective": {
             "screenshot": True,
-            "webpage_html": True,
+            "webpage_html": False,
             "pdf": True,
             "markdown": True,
             "archive_org": False,
@@ -63,7 +65,7 @@ def test_snapshot_settings_defaults_and_user_overrides(content_client: TestClien
     assert update_response.status_code == 200
     assert update_response.json()["effective"] == {
         "screenshot": False,
-        "webpage_html": True,
+        "webpage_html": False,
         "pdf": True,
         "markdown": True,
         "archive_org": True,
@@ -212,6 +214,144 @@ def test_snapshot_generator_creates_jpeg_thumbnail_for_csv_preview(tmp_path: Pat
     assert pixmap.width <= 512
     assert pixmap.height <= 512
     assert pixmap.width < pixmap.height
+
+
+def test_snapshot_job_plan_uses_text_thumbnail_and_skips_existing_markdown() -> None:
+    asset = ContentAsset(
+        id="asset-1",
+        content_object_id="object-1",
+        role="original",
+        media_type="text",
+        filename="note.md",
+        mime_type="text/markdown",
+        size_bytes=120,
+        storage_path="content-assets/object-1/asset-1/original.md",
+    )
+    settings = EffectiveSnapshotSettings(
+        screenshot=True,
+        webpage_html=True,
+        pdf=True,
+        markdown=True,
+        archive_org=True,
+    )
+
+    assert plan_snapshot_job_types(asset, settings) == ("thumbnail_text", "pdf")
+
+
+def test_snapshot_job_plan_skips_html_archive_and_pdf_for_existing_pdf() -> None:
+    asset = ContentAsset(
+        id="asset-1",
+        content_object_id="object-1",
+        role="original",
+        media_type="document",
+        filename="report.pdf",
+        mime_type="application/pdf",
+        size_bytes=120,
+        storage_path="content-assets/object-1/asset-1/original.pdf",
+    )
+    settings = EffectiveSnapshotSettings(
+        screenshot=True,
+        webpage_html=True,
+        pdf=True,
+        markdown=True,
+        archive_org=True,
+    )
+
+    assert plan_snapshot_job_types(asset, settings) == ("thumbnail", "markdown")
+
+
+def test_snapshot_job_plan_respects_disabled_markdown_and_pdf_settings() -> None:
+    asset = ContentAsset(
+        id="asset-1",
+        content_object_id="object-1",
+        role="original",
+        media_type="document",
+        filename="slides.pptx",
+        mime_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        size_bytes=120,
+        storage_path="content-assets/object-1/asset-1/original.pptx",
+    )
+    settings = EffectiveSnapshotSettings(
+        screenshot=True,
+        webpage_html=True,
+        pdf=False,
+        markdown=False,
+        archive_org=True,
+    )
+
+    assert plan_snapshot_job_types(asset, settings) == ("thumbnail",)
+
+
+def test_note_asset_response_exposes_snapshot_representation_fields() -> None:
+    response = NoteAssetResponse(
+        id="asset-1",
+        role="original",
+        media_type="document",
+        filename="report.docx",
+        mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        size_bytes=120,
+        url="/api/v1/notes/note/asset/asset-1",
+        thumbnail_url="/api/v1/notes/note/asset/asset-1/thumbnail",
+        thumbnail_text="Preview text",
+        markdown_url="/api/v1/snapshots/artifacts/markdown-1",
+        pdf_url="/api/v1/snapshots/artifacts/pdf-1",
+        html_url=None,
+    )
+
+    assert response.model_dump() == {
+        "id": "asset-1",
+        "role": "original",
+        "media_type": "document",
+        "filename": "report.docx",
+        "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "size_bytes": 120,
+        "url": "/api/v1/notes/note/asset/asset-1",
+        "text_content": None,
+        "thumbnail_url": "/api/v1/notes/note/asset/asset-1/thumbnail",
+        "thumbnail_text": "Preview text",
+        "markdown_url": "/api/v1/snapshots/artifacts/markdown-1",
+        "pdf_url": "/api/v1/snapshots/artifacts/pdf-1",
+        "html_url": None,
+    }
+
+
+def test_snapshot_generator_creates_text_thumbnail_for_plain_text(tmp_path: Path) -> None:
+    storage_root = tmp_path / "storage"
+    object_dir = storage_root / "user-1" / "note.object"
+    source_dir = object_dir / "original"
+    source_dir.mkdir(parents=True)
+    source_path = source_dir / "note.txt"
+    source_path.write_text("Alpha\nBeta\nGamma\n", encoding="utf-8")
+
+    content_object = ContentObject(
+        id="object-1",
+        owner_user_id="user-1",
+        slug="note",
+        title="Note",
+        kind="simple",
+        media_type="text",
+        storage_path="user-1/note.object",
+    )
+    asset = ContentAsset(
+        id="asset-1",
+        content_object_id="object-1",
+        role="original",
+        media_type="text",
+        filename="note.txt",
+        mime_type="text/plain",
+        size_bytes=source_path.stat().st_size,
+        storage_path="user-1/note.object/original/note.txt",
+    )
+
+    thumbnail_text = SnapshotArtifactGenerator(storage_root).generate(
+        content_object=content_object,
+        asset=asset,
+        job_type="thumbnail_text",
+    )
+
+    assert thumbnail_text.filename == "thumbnail.txt"
+    assert thumbnail_text.mime_type == "text/plain"
+    assert thumbnail_text.path.read_text(encoding="utf-8") == "Alpha\nBeta\nGamma\n"
 
 
 def test_snapshot_generator_recognizes_pdf_by_mime_when_storage_key_lost_suffix(

@@ -2,7 +2,7 @@ from functools import lru_cache
 from typing import Literal
 from urllib.parse import quote
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import URL
 
@@ -57,13 +57,13 @@ class Settings(BaseSettings):
     telegram_dev_photo_url: str | None = None
     content_storage_root: str = "data/content"
     snapshot_archive_screenshot_enabled: bool = True
-    snapshot_archive_webpage_html_enabled: bool = True
+    snapshot_archive_webpage_html_enabled: bool = False
     snapshot_archive_pdf_enabled: bool = True
     snapshot_archive_markdown_enabled: bool = True
     snapshot_archive_org_enabled: bool = False
     snapshot_worker_batch_size: int = 10
     snapshot_worker_poll_interval_seconds: int = 10
-    snapshot_office_converter_command: str | None = None
+    snapshot_office_converter_command: str | None = "libreoffice"
     cors_allowed_origins: list[str] = Field(default_factory=list)
     cors_allow_origin_regex: str | None = None
 
@@ -87,6 +87,13 @@ class Settings(BaseSettings):
             auth_part = f":{quote(self.redis_password, safe='')}@"
 
         return f"redis://{auth_part}{self.redis_host}:{self.redis_port}/{self.redis_db}"
+
+    @field_validator("snapshot_office_converter_command", mode="before")
+    @classmethod
+    def default_office_converter_command(cls, value: str | None) -> str:
+        if value is None or not value.strip():
+            return "libreoffice"
+        return value
 
 
 @lru_cache(maxsize=1)

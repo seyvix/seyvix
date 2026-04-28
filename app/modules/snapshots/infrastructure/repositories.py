@@ -179,6 +179,17 @@ class SnapshotArtifactRepository:
         )
         return cast(SnapshotArtifact | None, await self.session.scalar(query))
 
+    async def list_ready_for_asset(self, *, source_asset_id: str) -> list[SnapshotArtifact]:
+        query = (
+            select(SnapshotArtifact)
+            .where(
+                SnapshotArtifact.source_asset_id == source_asset_id,
+                SnapshotArtifact.status == "ready",
+            )
+            .order_by(SnapshotArtifact.created_at.asc())
+        )
+        return list(await self.session.scalars(query))
+
     async def list_for_user(
         self,
         *,

@@ -58,6 +58,10 @@ class SnapshotArtifactGenerator:
             return self._generate_thumbnail(
                 asset=asset, source_path=source_path, output_dir=output_dir
             )
+        if job_type == "thumbnail_text":
+            return self._generate_thumbnail_text(
+                asset=asset, source_path=source_path, output_dir=output_dir
+            )
         if job_type == "markdown":
             return self._generate_markdown(
                 asset=asset, source_path=source_path, output_dir=output_dir
@@ -93,14 +97,6 @@ class SnapshotArtifactGenerator:
                 output_dir=output_dir,
                 filename="thumbnail.jpg",
             )
-        office_pdf = self._convert_office_to_pdf(source_path)
-        if office_pdf is not None:
-            return self._render_pdf_first_page(
-                source_path=office_pdf,
-                output_dir=output_dir,
-                filename="thumbnail.jpg",
-            )
-
         preview_text = self._text_for_thumbnail_preview(asset=asset, source_path=source_path)
         if preview_text is not None:
             return self._render_text_thumbnail(
@@ -110,7 +106,31 @@ class SnapshotArtifactGenerator:
                 body=preview_text,
             )
 
+        office_pdf = self._convert_office_to_pdf(source_path)
+        if office_pdf is not None:
+            return self._render_pdf_first_page(
+                source_path=office_pdf,
+                output_dir=output_dir,
+                filename="thumbnail.jpg",
+            )
+
         raise UnsupportedSnapshotError("No thumbnail renderer is available for this file.")
+
+    def _generate_thumbnail_text(
+        self,
+        *,
+        asset: ContentAsset,
+        source_path: Path,
+        output_dir: Path,
+    ) -> GeneratedArtifact:
+        preview_text = self._text_for_thumbnail_text(asset=asset, source_path=source_path)
+        if preview_text is None:
+            raise UnsupportedSnapshotError(
+                "No text thumbnail extractor is available for this file."
+            )
+        path = output_dir / "thumbnail.txt"
+        path.write_text(preview_text[:5000], encoding="utf-8")
+        return GeneratedArtifact(filename="thumbnail.txt", mime_type="text/plain", path=path)
 
     def _generate_markdown(
         self,
@@ -365,6 +385,16 @@ class SnapshotArtifactGenerator:
             return self._extract_markdown_text(asset=asset, source_path=source_path)
         return None
 
+    def _text_for_thumbnail_text(self, *, asset: ContentAsset, source_path: Path) -> str | None:
+        suffix = source_path.suffix.lower()
+        if (
+            asset.media_type == "text"
+            or asset.mime_type in {"text/markdown", "text/plain"}
+            or suffix in {".md", ".markdown", ".txt"}
+        ):
+            return self._extract_markdown_text(asset=asset, source_path=source_path)
+        return None
+
     def _extract_markdown_text(self, *, asset: ContentAsset, source_path: Path) -> str | None:
         if asset.text_content:
             return asset.text_content
@@ -440,20 +470,23 @@ class SnapshotArtifactGenerator:
 
         with TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir)
-            result = subprocess.run(
-                [
-                    command,
-                    "--headless",
-                    "--convert-to",
-                    "pdf",
-                    "--outdir",
-                    str(output_dir),
-                    str(source_path),
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
+            try:
+                result = subprocess.run(
+                    [
+                        command,
+                        "--headless",
+                        "--convert-to",
+                        "pdf",
+                        "--outdir",
+                        str(output_dir),
+                        str(source_path),
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+            except FileNotFoundError:
+                return None
             if result.returncode != 0:
                 return None
             pdf_path = output_dir / f"{source_path.stem}.pdf"

@@ -1096,7 +1096,19 @@ class ContentService:
             items = [await self._to_card(item.content_object) for item in collection_items]
         asset_responses: list[NoteAssetResponse] = []
         for asset in content_object.assets:
-            thumbnail = await self.snapshots.get_thumbnail_path(source_asset_id=asset.id)
+            asset_url = f"{self.api_prefix}/notes/{content_object.slug}/asset/{asset.id}"
+            artifact_refs = await self.snapshots.get_asset_artifact_references(
+                source_asset_id=asset.id
+            )
+            thumbnail = artifact_refs.get("thumbnail")
+            thumbnail_text = (
+                await self.snapshots.get_thumbnail_text(source_asset_id=asset.id)
+                if "thumbnail_text" in artifact_refs
+                else None
+            )
+            markdown = artifact_refs.get("markdown")
+            pdf = artifact_refs.get("pdf")
+            html = artifact_refs.get("webpage_html")
             asset_responses.append(
                 NoteAssetResponse(
                     id=asset.id,
@@ -1105,13 +1117,25 @@ class ContentService:
                     filename=asset.filename,
                     mime_type=asset.mime_type,
                     size_bytes=asset.size_bytes,
-                    url=f"{self.api_prefix}/notes/{content_object.slug}/asset/{asset.id}",
+                    url=asset_url,
                     text_content=asset.text_content,
                     thumbnail_url=(
                         f"{self.api_prefix}/notes/{content_object.slug}/asset/{asset.id}/thumbnail"
                         if thumbnail is not None
                         else None
                     ),
+                    thumbnail_text=thumbnail_text,
+                    markdown_url=(
+                        markdown.url
+                        if markdown is not None
+                        else asset_url if self._is_markdown_asset(asset) else None
+                    ),
+                    pdf_url=(
+                        pdf.url
+                        if pdf is not None
+                        else asset_url if self._is_pdf_asset(asset) else None
+                    ),
+                    html_url=html.url if html is not None else None,
                 )
             )
         return NoteCardResponse(
@@ -1208,6 +1232,15 @@ class ContentService:
         if suffix in {".mp4", ".mov", ".webm"}:
             return "video"
         return "document"
+
+    @staticmethod
+    def _is_markdown_asset(asset: ContentAsset) -> bool:
+        suffix = Path(asset.filename).suffix.lower()
+        return asset.mime_type == "text/markdown" or suffix in {".md", ".markdown"}
+
+    @staticmethod
+    def _is_pdf_asset(asset: ContentAsset) -> bool:
+        return asset.mime_type == "application/pdf" or Path(asset.filename).suffix.lower() == ".pdf"
 
     @staticmethod
     def _decode_text(data: bytes) -> str | None:

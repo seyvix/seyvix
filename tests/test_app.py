@@ -41,6 +41,12 @@ def test_settings_read_cors_values_from_env(monkeypatch) -> None:
     get_settings.cache_clear()
 
 
+def test_settings_uses_libreoffice_for_office_conversion_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("SNAPSHOT_OFFICE_CONVERTER_COMMAND", raising=False)
+
+    assert Settings().snapshot_office_converter_command == "libreoffice"
+
+
 def test_cors_allows_configured_origin_and_credentials() -> None:
     cors_app = FastAPI()
     configure_cors(

@@ -47,6 +47,10 @@ class NoteAssetResponse(BaseModel):
     url: str | None = None
     text_content: str | None = None
     thumbnail_url: str | None = None
+    thumbnail_text: str | None = None
+    markdown_url: str | None = None
+    pdf_url: str | None = None
+    html_url: str | None = None
 
 
 class NoteCardResponse(BaseModel):

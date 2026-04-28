@@ -26,7 +26,50 @@ from app.modules.snapshots.schemas import (
 )
 from app.platform.storage.service import LocalVolumeStorage, StorageBackend
 
-SNAPSHOT_JOB_TYPES = ("markdown", "screenshot", "webpage_html", "pdf")
+SNAPSHOT_JOB_TYPES = (
+    "thumbnail",
+    "thumbnail_text",
+    "markdown",
+    "screenshot",
+    "webpage_html",
+    "pdf",
+    "archive_org",
+)
+
+MARKDOWN_SUFFIXES = {".md", ".markdown"}
+OFFICE_PDF_SUFFIXES = {
+    ".doc",
+    ".docx",
+    ".odp",
+    ".ods",
+    ".odt",
+    ".ppt",
+    ".pptx",
+    ".rtf",
+    ".xls",
+    ".xlsx",
+}
+OFFICE_PDF_MIME_TYPES = {
+    "application/msword",
+    "application/rtf",
+    "application/vnd.ms-excel",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.oasis.opendocument.presentation",
+    "application/vnd.oasis.opendocument.spreadsheet",
+    "application/vnd.oasis.opendocument.text",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+TEXT_PDF_SUFFIXES = {".csv", ".htm", ".html", ".json", ".txt"}
+TEXT_PDF_MIME_TYPES = {
+    "application/json",
+    "text/csv",
+    "text/html",
+    "text/markdown",
+    "text/plain",
+}
+TEXT_THUMBNAIL_SUFFIXES = {".md", ".markdown", ".txt"}
 
 
 @dataclass(slots=True)
@@ -38,8 +81,35 @@ class EffectiveSnapshotSettings:
     archive_org: bool
 
 
+@dataclass(frozen=True, slots=True)
+class SnapshotArtifactReference:
+    url: str
+    filename: str
+    mime_type: str
+    size_bytes: int
+
+
 class SnapshotArtifactNotFoundError(Exception):
     pass
+
+
+def plan_snapshot_job_types(
+    asset: ContentAsset,
+    effective: EffectiveSnapshotSettings,
+) -> tuple[str, ...]:
+    job_types: list[str] = ["thumbnail_text" if _uses_text_thumbnail(asset) else "thumbnail"]
+
+    if effective.markdown and not _is_markdown_asset(asset):
+        job_types.append("markdown")
+    if effective.pdf and _should_generate_pdf(asset):
+        job_types.append("pdf")
+    if _is_site_asset(asset):
+        if effective.screenshot:
+            job_types.append("screenshot")
+        if effective.webpage_html:
+            job_types.append("webpage_html")
+
+    return tuple(job_types)
 
 
 class SnapshotService:
@@ -183,48 +253,16 @@ class SnapshotService:
         source_assets = [asset for asset in content_object.assets if asset.role == "original"]
 
         for asset in source_assets:
-            await self._enqueue_job(
-                content_object,
-                asset,
-                "thumbnail",
-                correlation_id=correlation_id,
-                source_event_id=source_event_id,
-            )
-
-            if effective.markdown:
+            for job_type in plan_snapshot_job_types(asset, effective):
                 await self._enqueue_job(
                     content_object,
                     asset,
-                    "markdown",
-                    correlation_id=correlation_id,
-                    source_event_id=source_event_id,
-                )
-            if effective.screenshot:
-                await self._enqueue_job(
-                    content_object,
-                    asset,
-                    "screenshot",
-                    correlation_id=correlation_id,
-                    source_event_id=source_event_id,
-                )
-            if effective.webpage_html:
-                await self._enqueue_job(
-                    content_object,
-                    asset,
-                    "webpage_html",
-                    correlation_id=correlation_id,
-                    source_event_id=source_event_id,
-                )
-            if effective.pdf:
-                await self._enqueue_job(
-                    content_object,
-                    asset,
-                    "pdf",
+                    job_type,
                     correlation_id=correlation_id,
                     source_event_id=source_event_id,
                 )
 
-        if effective.archive_org:
+        if effective.archive_org and self._is_site_object(content_object):
             await self._enqueue_job(
                 content_object,
                 None,
@@ -250,9 +288,51 @@ class SnapshotService:
             path = Path(temp_file.name)
         return path, artifact.mime_type
 
+    async def get_asset_artifact_references(
+        self,
+        *,
+        source_asset_id: str,
+    ) -> dict[str, SnapshotArtifactReference]:
+        artifacts = await self.artifacts.list_ready_for_asset(source_asset_id=source_asset_id)
+        return {
+            artifact.artifact_type: SnapshotArtifactReference(
+                url=f"{self.api_prefix}/snapshots/artifacts/{artifact.id}",
+                filename=artifact.filename,
+                mime_type=artifact.mime_type,
+                size_bytes=artifact.size_bytes,
+            )
+            for artifact in artifacts
+        }
+
+    async def get_thumbnail_text(
+        self,
+        *,
+        source_asset_id: str,
+        max_chars: int = 5000,
+    ) -> str | None:
+        artifact = await self.artifacts.get_ready(
+            source_asset_id=source_asset_id,
+            artifact_type="thumbnail_text",
+        )
+        if artifact is None:
+            return None
+        path = self.storage_root / artifact.storage_path
+        if path.exists():
+            data = path.read_bytes()
+        else:
+            data = self.storage_backend.get_bytes(artifact.storage_key or artifact.storage_path)
+        return data.decode("utf-8", errors="replace")[:max_chars]
+
     async def is_thumbnail_unavailable(self, *, source_asset_id: str) -> bool:
         job = await self.jobs.get_for_asset(source_asset_id=source_asset_id, job_type="thumbnail")
-        return job is not None and job.status == "failed"
+        if job is not None:
+            return job.status == "failed"
+
+        text_job = await self.jobs.get_for_asset(
+            source_asset_id=source_asset_id,
+            job_type="thumbnail_text",
+        )
+        return text_job is not None and text_job.status in {"done", "failed"}
 
     async def _enqueue_job(
         self,
@@ -271,6 +351,10 @@ class SnapshotService:
             correlation_id=correlation_id,
             source_event_id=source_event_id,
         )
+
+    @staticmethod
+    def _is_site_object(content_object: ContentObject) -> bool:
+        return content_object.media_type == "link"
 
     @staticmethod
     def _overrides(stored: SnapshotUserSettings | None) -> SnapshotFormatOverrides:
@@ -316,3 +400,36 @@ class SnapshotService:
                 else settings.snapshot_archive_org_enabled
             ),
         )
+
+
+def _uses_text_thumbnail(asset: ContentAsset) -> bool:
+    suffix = Path(asset.filename).suffix.lower()
+    return (
+        asset.media_type == "text"
+        or asset.mime_type in {"text/markdown", "text/plain"}
+        or suffix in TEXT_THUMBNAIL_SUFFIXES
+    )
+
+
+def _is_markdown_asset(asset: ContentAsset) -> bool:
+    suffix = Path(asset.filename).suffix.lower()
+    return asset.mime_type == "text/markdown" or suffix in MARKDOWN_SUFFIXES
+
+
+def _should_generate_pdf(asset: ContentAsset) -> bool:
+    suffix = Path(asset.filename).suffix.lower()
+    if asset.mime_type == "application/pdf" or suffix == ".pdf":
+        return False
+    if asset.mime_type in OFFICE_PDF_MIME_TYPES:
+        return True
+    if asset.mime_type in TEXT_PDF_MIME_TYPES:
+        return True
+    if asset.media_type == "document":
+        return suffix in OFFICE_PDF_SUFFIXES | TEXT_PDF_SUFFIXES
+    if asset.media_type == "text":
+        return suffix in MARKDOWN_SUFFIXES | TEXT_PDF_SUFFIXES
+    return _is_site_asset(asset)
+
+
+def _is_site_asset(asset: ContentAsset) -> bool:
+    return asset.media_type == "link"

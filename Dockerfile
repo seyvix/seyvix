@@ -11,7 +11,13 @@ WORKDIR /app
 COPY --from=ghcr.io/astral-sh/uv:0.8.13 /uv /bin/uv
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential curl \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        curl \
+        fontconfig \
+        fonts-dejavu \
+        fonts-liberation \
+        libreoffice \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml uv.lock ./
