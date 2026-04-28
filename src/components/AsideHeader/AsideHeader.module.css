@@ -56,18 +56,35 @@
   letter-spacing: 0.02em;
 }
 
-.logoText {
-  font-size: var(--font-size-base);
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-text-primary);
-  white-space: nowrap;
+.userInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
   opacity: 0;
   transition: opacity var(--duration-fast) var(--ease-default);
   pointer-events: none;
 }
 
-.expanded .logoText {
+.expanded .userInfo {
   opacity: 1;
+}
+
+.logoText {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.username {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Nav */

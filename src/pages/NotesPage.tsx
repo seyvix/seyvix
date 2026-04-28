@@ -1,8 +1,12 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useNotes } from '../hooks/useNotes'
+import { useLocalNotes } from '../contexts/LocalNotesContext'
 import { NoteGrid } from '../components/NoteGrid/NoteGrid'
 import { SearchBar } from '../components/SearchBar/SearchBar'
+import { BulkToolbar } from '../components/BulkToolbar/BulkToolbar'
+import { BulkSelectProvider } from '../contexts/BulkSelectContext'
+import { useThumbnailPoller } from '../hooks/useThumbnailPoller'
 
 export default function NotesPage() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -14,10 +18,21 @@ export default function NotesPage() {
   const [inputValue, setInputValue] = useState(search)
   useEffect(() => { setInputValue(search) }, [search])
 
-  const { data: notes = [], isPending } = useNotes({
+  const { data: serverNotes = [], isPending } = useNotes({
     search:  search  || undefined,
     tags:    activeTags.length ? activeTags : undefined,
   })
+  const { localNotes } = useLocalNotes()
+
+  // Local notes always first (stable positions). Server notes fill in the rest.
+  // Dedup by id: once a local note's id matches a server note, skip the server copy.
+  const localIds = useMemo(() => new Set(localNotes.map(n => n.id)), [localNotes])
+  const notes = useMemo(
+    () => [...localNotes, ...serverNotes.filter(n => !localIds.has(n.id))],
+    [localNotes, serverNotes, localIds],
+  )
+
+  useThumbnailPoller(notes)
 
   function handleSearchChange(value: string) {
     setInputValue(value)
@@ -57,7 +72,7 @@ export default function NotesPage() {
   }
 
   return (
-    <>
+    <BulkSelectProvider>
       <SearchBar
         search={inputValue}
         activeTags={activeTags}
@@ -65,9 +80,10 @@ export default function NotesPage() {
         onTagRemove={handleTagRemove}
         onClear={handleClear}
       />
+      <BulkToolbar />
       {!isPending && (
         <NoteGrid notes={notes} onTagClick={handleTagClick} />
       )}
-    </>
+    </BulkSelectProvider>
   )
 }

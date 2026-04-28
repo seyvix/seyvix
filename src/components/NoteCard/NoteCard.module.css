@@ -728,3 +728,115 @@
   background-size: 200% 100%;
   animation: shimmer 1.4s infinite;
 }
+
+/* === Loading (syncing with server) === */
+@keyframes loadingPulse {
+  0%, 100% { border-color: var(--color-border); box-shadow: none; }
+  50%       { border-color: rgba(99, 102, 241, 0.45); box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.12); }
+}
+
+.isLoading .card {
+  animation: loadingPulse 1.6s ease-in-out infinite;
+}
+
+/* === Bulk selection === */
+.isSelected .card {
+  border-color: var(--color-accent);
+  border-width: 2px;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.3);
+}
+
+.bulkOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  cursor: pointer;
+  border-radius: var(--radius-md);
+}
+
+.bulkCheck {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.55);
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+.bulkOverlay:hover .bulkCheck {
+  border-color: rgba(255, 255, 255, 0.9);
+}
+
+.bulkCheckActive {
+  border-color: var(--color-accent) !important;
+  background: var(--color-accent) !important;
+}
+
+/* === Sync button (local note) === */
+.syncBtn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 200, 60, 0.15);
+  color: #ffc83c;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  transition: background 0.15s;
+}
+.syncBtn:hover {
+  background: rgba(255, 200, 60, 0.28);
+}
+.syncBtn.syncing {
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* === Thumbnail pending shimmer === */
+@keyframes thumbShimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+
+/* Applied when thumbnailUrl === null — fills parent (LayerContent or compositeCover) */
+.thumbPending {
+  background: linear-gradient(90deg, #1e1e1e 25%, #2a2a2a 50%, #1e1e1e 75%);
+  background-size: 200% 100%;
+  animation: thumbShimmer 1.6s ease-in-out infinite;
+  width: 100%;
+  height: 100%;
+  flex: 1;
+}
+
+/* Small badge on DocChip icon when thumbnail is loading */
+.docChipIconWrap.thumbPendingIcon {
+  position: relative;
+  overflow: visible;
+}
+
+.docChipIconWrap.thumbPendingIcon::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 5px;
+  background: linear-gradient(90deg, transparent 0%, rgba(99,102,241,0.35) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: thumbShimmer 1.4s ease-in-out infinite;
+}

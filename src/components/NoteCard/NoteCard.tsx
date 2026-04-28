@@ -1,10 +1,13 @@
 import { useRef, useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { ExternalLink, FileText, ImageIcon, Link2, AlignLeft, Plus, UploadCloud } from 'lucide-react'
+import { ExternalLink, FileText, ImageIcon, Link2, AlignLeft, Plus, UploadCloud, RefreshCw, Check } from 'lucide-react'
+import { useSyncLocalNote } from '../../hooks/useSyncLocalNote'
+import { useBulkSelect } from '../../contexts/BulkSelectContext'
 import { draggable, dropTargetForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter'
 import { dropTargetForExternal } from '@atlaskit/pragmatic-drag-and-drop/external/adapter'
 import { containsFiles, getFiles } from '@atlaskit/pragmatic-drag-and-drop/external/file'
+import AuthImage from '../AuthImage/AuthImage'
 import type { Note, NoteObject, Tag } from '../../types'
 import { getTagColor } from '../../utils/tagColor'
 import { useMergeNotes } from '../../hooks/useMergeNotes'
@@ -50,14 +53,14 @@ function SimpleCard({ note, onTagClick }: { note: Note; onTagClick?: (name: stri
   if (imageObj && !textObj) {
     return (
       <Link draggable={false} to={`/notes/${note.slug}`} className={`${styles.card} ${styles.cardSimpleImage}`}>
-        <img src={imageObj.content} alt={note.title} />
+        <AuthImage src={imageObj.content} alt={note.title} />
       </Link>
     )
   }
 
   return (
     <Link draggable={false} to={`/notes/${note.slug}`} className={`${styles.card} ${styles.cardSimple}`}>
-      {imageObj && <img className={styles.cover} src={imageObj.content} alt="" />}
+      {imageObj && <AuthImage className={styles.cover} src={imageObj.content} alt="" />}
       <div className={styles.title}>{note.title}</div>
       {textObj && <div className={styles.excerpt}>{textObj.content}</div>}
       <TagList tags={note.tags} onTagClick={onTagClick} />
@@ -101,10 +104,15 @@ function LayerContent({ obj, fallback }: { obj: NoteObject | undefined; fallback
     return <div className={styles.collectionLayerBg} style={{ background: fallback }} />
   }
   if (obj.type === 'image') {
-    return <img src={obj.content} alt="" className={styles.collectionLayerImg} />
+    return <AuthImage src={obj.content} alt="" className={styles.collectionLayerImg} />
   }
   if (obj.type === 'document') {
-    if (obj.cover) return <img src={obj.cover} alt="" className={styles.collectionLayerImg} />
+    const thumb = obj.thumbnailUrl ?? obj.cover
+    if (thumb) return <AuthImage src={thumb} alt="" className={styles.collectionLayerImg} />
+    // thumbnailUrl === null means backend is generating it → shimmer
+    if (obj.thumbnailUrl === null) {
+      return <div className={styles.thumbPending} />
+    }
     return (
       <div className={`${styles.collectionLayerBg} ${styles.collectionLayerDoc}`} style={{ background: fallback }}>
         <FileText size={24} />
@@ -165,7 +173,7 @@ function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClic
   if (visualObjs.length === 1) {
     const obj = visualObjs[0]
     if (obj.type === 'image') {
-      visual = <img src={obj.content} alt="" className={styles.collectionSingle} />
+      visual = <AuthImage src={obj.content} alt="" className={styles.collectionSingle} />
     } else {
       visual = (
         <div className={styles.collectionSingleNonImage}>
@@ -178,7 +186,7 @@ function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClic
       <div className={styles.collectionPair}>
         {visualObjs.map(obj => (
           obj.type === 'image'
-            ? <img key={obj.id} src={obj.content} alt="" className={styles.collectionPairImg} />
+            ? <AuthImage key={obj.id} src={obj.content} alt="" className={styles.collectionPairImg} />
             : <div key={obj.id} className={styles.collectionPairSlot}>
                 <LayerContent obj={obj} fallback={fallback} />
               </div>
@@ -245,14 +253,18 @@ function LinkChip({ obj }: { obj: NoteObject }) {
 }
 
 function DocChip({ obj }: { obj: NoteObject }) {
-  const ext  = obj.content.includes('.') ? obj.content.split('.').pop()!.toUpperCase().slice(0, 4) : 'FILE'
-  const name = obj.content.replace(/\.[^.]+$/, '')
+  const ext         = obj.content.includes('.') ? obj.content.split('.').pop()!.toUpperCase().slice(0, 4) : 'FILE'
+  const name        = obj.content.replace(/\.[^.]+$/, '')
+  const thumb       = obj.thumbnailUrl ?? obj.cover
+  const isPending   = obj.thumbnailUrl === null  // backend is generating
 
   return (
     <div className={styles.docChip}>
-      {obj.cover
-        ? <img src={obj.cover} alt="" className={styles.docChipCover} />
-        : <div className={styles.docChipIconWrap}><FileText size={13} /></div>
+      {thumb
+        ? <AuthImage src={thumb} alt="" className={styles.docChipCover} />
+        : <div className={`${styles.docChipIconWrap}${isPending ? ` ${styles.thumbPendingIcon}` : ''}`}>
+            <FileText size={13} />
+          </div>
       }
       <span className={styles.docChipName}>{name}</span>
       <span className={styles.docChipExt}>{ext}</span>
@@ -265,6 +277,8 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
   const textObj  = note.objects.find(o => o.type === 'text')
   const links    = note.objects.filter(o => o.type === 'link')
   const docs     = note.objects.filter(o => o.type === 'document')
+  const firstDoc = docs[0]
+  const docThumb = firstDoc ? (firstDoc.thumbnailUrl ?? firstDoc.cover) : undefined
 
   return (
     <Link draggable={false} to={`/notes/${note.slug}`} className={`${styles.card} ${styles.cardComposite}`}>
@@ -272,10 +286,14 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
       {/* Cover */}
       <div className={styles.compositeCover}>
         {imageObj
-          ? <img src={imageObj.content} alt="" className={styles.compositeCoverImg} />
-          : <div className={styles.compositeCoverEmpty}>
-              {textObj && <span className={styles.compositeCoverText}>{textObj.content}</span>}
-            </div>
+          ? <AuthImage src={imageObj.content} alt="" className={styles.compositeCoverImg} />
+          : docThumb
+            ? <AuthImage src={docThumb} alt="" className={styles.compositeCoverImg} />
+            : firstDoc?.thumbnailUrl === null
+              ? <div className={styles.thumbPending} />
+              : <div className={styles.compositeCoverEmpty}>
+                  {textObj && <span className={styles.compositeCoverText}>{textObj.content}</span>}
+                </div>
         }
       </div>
 
@@ -297,6 +315,9 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
         )}
 
         {titleNode}
+        {textObj && !/^https?:\/\//.test(textObj.content) && (
+          <div className={styles.excerpt}>{textObj.content}</div>
+        )}
         <TagList tags={note.tags} onTagClick={onTagClick} />
       </div>
     </Link>
@@ -343,9 +364,13 @@ export function NoteCard({ note, isNew, onTagClick }: { note: Note; isNew?: bool
     return () => clearTimeout(t)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
+  const { isBulk, selectedSlugs, toggleSelect } = useBulkSelect()
+  const isSelected = selectedSlugs.has(note.slug)
+
   const { mutate: merge }    = useMergeNotes()
   const { mutate: upload }   = useUploadFiles()
   const { mutate: addFiles } = useAddFilesToNote()
+  const { mutate: syncLocal, isPending: isSyncing } = useSyncLocalNote()
 
   // Стабильные рефы, чтобы useEffect не переподписывался на каждый рендер
   const mergeRef    = useRef(merge)
@@ -364,7 +389,7 @@ export function NoteCard({ note, isNew, onTagClick }: { note: Note; isNew?: bool
 
     const cleanupDrag = draggable({
       element: el,
-      getInitialData: () => ({ type: 'note', noteId: note.id, noteType: note.type, noteTitle: note.title }),
+      getInitialData: () => ({ type: 'note', noteId: note.id, noteSlug: note.slug, noteType: note.type, noteTitle: note.title }),
       onDragStart: () => setIsDragging(true),
       onDrop: () => setIsDragging(false),
     })
@@ -380,11 +405,9 @@ export function NoteCard({ note, isNew, onTagClick }: { note: Note; isNew?: bool
         const sourceType  = source.data.noteType  as string
         const sourceTitle = source.data.noteTitle as string
         mergeRef.current(
-          { sourceId: source.data.noteId as string, targetId: note.id },
+          { sourceSlug: source.data.noteSlug as string, targetSlug: note.slug },
           {
             onSuccess: () => {
-              // object+collection или collection+object → pre-fill с названием коллекции
-              // object+object или collection+collection → пустой инпут
               const isMixed = (sourceType === 'collection') !== (note.type === 'collection')
               const prefill = isMixed
                 ? (note.type === 'collection' ? note.title : sourceTitle)
@@ -436,6 +459,8 @@ export function NoteCard({ note, isNew, onTagClick }: { note: Note; isNew?: bool
     fileHoverState === 'new'   ? styles.isFileOverNew   : '',
     fileHoverState === 'merge' ? styles.isFileOverMerge : '',
     highlighted                ? styles.isHighlighted   : '',
+    isSelected                 ? styles.isSelected      : '',
+    note.isLoading             ? styles.isLoading       : '',
   ].filter(Boolean).join(' ')
 
   const titleNode = (
@@ -481,13 +506,32 @@ export function NoteCard({ note, isNew, onTagClick }: { note: Note; isNew?: bool
   )
 
   return (
-    <div ref={wrapperRef} className={cls}>
+    <div ref={wrapperRef} className={cls} style={{ position: 'relative' }}>
       {note.type === 'collection' ? (
         <CollectionCard note={note} onTagClick={onTagClick} titleNode={titleNode} />
       ) : note.type === 'composite' ? (
         <CompositeCard  note={note} onTagClick={onTagClick} titleNode={titleNode} />
       ) : (
         <SimpleCard note={note} onTagClick={onTagClick} />
+      )}
+      {isBulk && (
+        <div
+          className={styles.bulkOverlay}
+          onClick={e => { e.preventDefault(); e.stopPropagation(); toggleSelect(note.slug) }}
+        >
+          <div className={`${styles.bulkCheck} ${isSelected ? styles.bulkCheckActive : ''}`}>
+            {isSelected && <Check size={12} strokeWidth={3} />}
+          </div>
+        </div>
+      )}
+      {note.isLocal && (
+        <button
+          className={`${styles.syncBtn}${isSyncing ? ` ${styles.syncing}` : ''}`}
+          title="Синхронизировать с сервером"
+          onClick={e => { e.preventDefault(); e.stopPropagation(); syncLocal(note) }}
+        >
+          <RefreshCw size={14} />
+        </button>
       )}
     </div>
   )

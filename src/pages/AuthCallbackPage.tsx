@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { apiTelegramCode } from '../api/auth'
+import { apiTelegramCode, apiTelegramResult } from '../api/auth'
 import { useAuth } from '../contexts/AuthContext'
 
 export default function AuthCallbackPage() {
@@ -9,22 +9,35 @@ export default function AuthCallbackPage() {
   const [searchParams] = useSearchParams()
 
   useEffect(() => {
-    const code = searchParams.get('code')
     const error = searchParams.get('error')
-
     if (error) {
       navigate(`/auth?error=${encodeURIComponent(error)}`, { replace: true })
       return
     }
 
+    // oauth.telegram.org sends tgAuthResult in URL fragment (#tgAuthResult=...)
+    const hashParams = new URLSearchParams(window.location.hash.slice(1))
+    const tgAuthResult = hashParams.get('tgAuthResult')
+    if (tgAuthResult) {
+      apiTelegramResult(tgAuthResult)
+        .then(({ user, access_token }) => {
+          loginWithTokens(user, access_token)
+          navigate('/notes', { replace: true })
+        })
+        .catch((err) => {
+          console.error('[AuthCallbackPage] tgAuthResult exchange failed:', err)
+          navigate('/auth?error=telegram_code_failed', { replace: true })
+        })
+      return
+    }
+
+    // Dev login: code is in query param
+    const code = searchParams.get('code')
     if (!code) {
       navigate('/auth', { replace: true })
       return
     }
 
-    // Note: AuthProvider's bootstrap apiRefresh() runs concurrently with this effect.
-    // For a new user there's no refresh cookie yet, so refresh fails silently.
-    // For an existing session both may succeed — the last setUser() call wins, which is fine.
     apiTelegramCode(code)
       .then(({ user, access_token }) => {
         loginWithTokens(user, access_token)

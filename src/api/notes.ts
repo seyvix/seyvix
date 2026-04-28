@@ -1,72 +1,226 @@
-import type { Note, NotesParams, UploadJob } from '../types'
+import { apiFetch } from '../lib/apiClient'
+import type { Note, NoteObject, NoteObjectType, NoteType, NotesParams, UploadJob } from '../types'
+
+const BASE = '/api/v1/notes'
+
+// ── Backend schema (subset we care about) ─────────────────────────────────────
+
+interface BackendTag   { id: string; name: string; slug: string }
+interface BackendAsset { id: string; role: string; media_type: string; filename: string; mime_type: string | null; size_bytes: number; url: string | null; text_content: string | null; thumbnail_url: string | null }
+interface BackendFolder { id: string; name: string; slug: string; path: string }
+
+interface BackendNote {
+  id: string
+  slug: string
+  kind: 'simple' | 'complex' | 'collection'
+  media_type: string | null
+  title: string
+  source_filename: string | null
+  folder: BackendFolder | null
+  tags: BackendTag[]
+  is_favorite: boolean
+  sort_order: number
+  created_at: string
+  updated_at: string
+  download_url: string
+  collection: { id: string; slug: string; title: string } | null
+  assets: BackendAsset[]
+  items: BackendNote[]
+}
+
+// ── Mapping ───────────────────────────────────────────────────────────────────
+
+function kindToType(kind: string): NoteType {
+  if (kind === 'complex')    return 'composite'
+  if (kind === 'collection') return 'collection'
+  return 'simple'
+}
+
+function mapAsset(asset: BackendAsset, downloadUrl: string, createdAt: string): NoteObject {
+  const type = (asset.media_type as NoteObjectType) ?? 'document'
+  const content = type === 'text'
+    ? (asset.text_content ?? asset.url ?? downloadUrl)
+    : (asset.url ?? downloadUrl)
+  return {
+    id: asset.id,
+    type,
+    content,
+    thumbnailUrl: asset.thumbnail_url ?? null,
+    filename: asset.filename,
+    createdAt,
+  }
+}
+
+function mapNote(b: BackendNote): Note {
+  let objects: NoteObject[] = []
+
+  if (b.kind === 'collection') {
+    objects = b.items.map(item => {
+      const firstAsset = item.assets?.[0]
+      const type = firstAsset
+        ? (firstAsset.media_type as NoteObjectType)
+        : (item.media_type ?? 'document') as NoteObjectType
+      const content = firstAsset?.url ?? item.download_url
+      const thumbnailUrl = type === 'document' ? (firstAsset?.thumbnail_url ?? null) : undefined
+      const cover = type === 'document' ? undefined : firstAsset?.url
+      return {
+        id: item.id,
+        type,
+        content,
+        cover,
+        thumbnailUrl,
+        slug: item.slug,
+        filename: firstAsset?.filename,
+        createdAt: item.created_at,
+      }
+    })
+  } else if (b.assets.length > 0) {
+    objects = b.assets.map(a => mapAsset(a, b.download_url, b.created_at))
+  } else if (b.media_type === 'text' || b.media_type === null) {
+    // Text note — no content in list response; synthetic placeholder
+    objects = [{
+      id: `${b.id}-text`,
+      type: 'text',
+      content: b.title,
+      createdAt: b.created_at,
+    }]
+  }
+
+  return {
+    id: b.id,
+    slug: b.slug,
+    type: kindToType(b.kind),
+    title: b.title,
+    cover: b.assets.length > 0 ? b.download_url : null,
+    tags: b.tags.map(t => ({ id: t.id, name: t.name })),
+    folderId: b.folder?.id ?? null,
+    objects,
+    createdAt: b.created_at,
+    updatedAt: b.updated_at,
+  }
+}
+
+// ── API ───────────────────────────────────────────────────────────────────────
 
 export async function fetchNotes(params: NotesParams = {}): Promise<Note[]> {
-  const url = new URL('/api/notes', window.location.origin)
-  if (params.search) url.searchParams.set('search', params.search)
-  if (params.tags?.length) url.searchParams.set('tags', params.tags.join(','))
+  const url = new URL(BASE, window.location.origin)
+  if (params.search)          url.searchParams.set('search', params.search)
+  if (params.tags?.length)    url.searchParams.set('tags', params.tags.join(','))
   if (params.folders?.length) url.searchParams.set('folders', params.folders.join(','))
 
-  const res = await fetch(url)
+  const res = await apiFetch(url.toString())
   if (!res.ok) throw new Error('Failed to fetch notes')
-  return res.json() as Promise<Note[]>
+  const data = await res.json()
+  const items: BackendNote[] = Array.isArray(data) ? data : (data.items ?? [])
+  return items.map(mapNote)
 }
 
 export async function fetchNote(slug: string): Promise<Note> {
-  const res = await fetch(`/api/notes/${slug}`)
+  const res = await apiFetch(`${BASE}/${slug}`)
   if (!res.ok) throw new Error('Failed to fetch note')
-  return res.json() as Promise<Note>
+  return mapNote(await res.json())
 }
 
 export async function createNote(data: Partial<Note>): Promise<Note> {
-  const res = await fetch('/api/notes', {
+  const textObj = data.objects?.find(o => o.type === 'text')
+  const backendPayload = {
+    title: data.title ?? null,
+    text: textObj?.content ?? null,
+    media_type: textObj ? 'text' : null,
+    tag_names: data.tags?.map(t => t.name) ?? [],
+    file_upload_ids: [] as string[],
+  }
+  const res = await apiFetch(BASE, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
+    body: JSON.stringify(backendPayload),
   })
   if (!res.ok) throw new Error('Failed to create note')
-  return res.json() as Promise<Note>
+  return mapNote(await res.json())
 }
 
 export async function addFilesToNote(noteId: string, files: File[]): Promise<Note> {
   const formData = new FormData()
-  formData.append('noteId', noteId)
+  formData.append('object_id', noteId)
   files.forEach(f => formData.append('files', f))
-  const res = await fetch('/api/notes/add-files', { method: 'POST', body: formData })
+  const res = await apiFetch(`${BASE}/file/upload`, { method: 'POST', body: formData })
   if (!res.ok) throw new Error('Failed to add files to note')
-  return res.json() as Promise<Note>
+  const result = await res.json()
+  return mapNote(result.object ?? result)
 }
 
-export async function startUploadJob(files: File[], text?: string): Promise<{ jobId: string; noteId: string }> {
+export async function startUploadJob(
+  files: File[],
+  text?: string,
+): Promise<{ jobId: string; noteId: string; noteSlug: string }> {
+  if (files.length === 0) throw new Error('No files to upload')
+
+  if (text) {
+    // Two-step: upload files as temp → create note with text + file_ids combined
+    const formData = new FormData()
+    files.forEach(f => formData.append('files', f))
+    const uploadRes = await apiFetch(`${BASE}/file/upload`, { method: 'POST', body: formData })
+    if (!uploadRes.ok) throw new Error('Failed to upload files')
+    const uploadResult = await uploadRes.json()
+    const fileIds: string[] = (uploadResult.files ?? []).map((f: { id: string }) => f.id)
+
+    const title = text.split('\n')[0].slice(0, 60) || files[0]?.name || ''
+    const createRes = await apiFetch(BASE, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, text, media_type: 'text', tag_names: [], file_upload_ids: fileIds }),
+    })
+    if (!createRes.ok) throw new Error('Failed to create note')
+    const note = mapNote(await createRes.json())
+    return { jobId: note.id, noteId: note.id, noteSlug: note.slug }
+  }
+
+  // Files only: single request with create_object=true
   const formData = new FormData()
   files.forEach(f => formData.append('files', f))
-  if (text) formData.append('text', text)
-  const res = await fetch('/api/notes/upload', { method: 'POST', body: formData })
-  if (!res.ok) throw new Error('Failed to start upload job')
-  return res.json() as Promise<{ jobId: string }>
+  formData.append('create_object', 'true')
+
+  const res = await apiFetch(`${BASE}/file/upload`, { method: 'POST', body: formData })
+  if (!res.ok) throw new Error('Failed to upload file')
+  const result = await res.json()
+  const obj: BackendNote = result.object ?? result
+  return {
+    jobId: obj.id,
+    noteId: obj.id,
+    noteSlug: obj.slug,
+  }
 }
 
 export async function fetchUploadJob(jobId: string): Promise<UploadJob> {
-  const res = await fetch(`/api/notes/jobs/${jobId}`)
-  if (!res.ok) throw new Error('Failed to fetch job')
-  return res.json() as Promise<UploadJob>
+  // Backend upload is synchronous — upload is already done by the time we poll
+  return { id: jobId, status: 'done', files: [], noteId: jobId }
 }
 
-export async function mergeNotes(sourceId: string, targetId: string): Promise<{ updated: Note; removedId: string }> {
-  const res = await fetch('/api/notes/merge', {
+export async function mergeNotes(sourceSlug: string, targetSlug: string, title?: string): Promise<Note> {
+  const res = await apiFetch(`${BASE}/merge`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sourceId, targetId }),
+    body: JSON.stringify({ source_slugs: [sourceSlug], target_slug: targetSlug, title: title ?? null }),
   })
   if (!res.ok) throw new Error('Failed to merge notes')
-  return res.json()
+  return mapNote(await res.json())
+}
+
+export async function deleteNotes(slugs: string[]): Promise<void> {
+  const res = await apiFetch(BASE, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ slugs }),
+  })
+  if (!res.ok) throw new Error('Failed to delete notes')
 }
 
 export async function updateNote(slug: string, data: Partial<Note>): Promise<Note> {
-  const res = await fetch(`/api/notes/${slug}`, {
+  const res = await apiFetch(`${BASE}/${slug}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   })
   if (!res.ok) throw new Error('Failed to update note')
-  return res.json() as Promise<Note>
+  return mapNote(await res.json())
 }

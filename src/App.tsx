@@ -2,6 +2,7 @@ import { createBrowserRouter, RouterProvider, Navigate, Outlet } from 'react-rou
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import AppLayout from './components/AppLayout/AppLayout'
 import { UploadProvider } from './contexts/UploadContext'
+import { LocalNotesProvider } from './contexts/LocalNotesContext'
 import { UploadToast } from './components/UploadToast/UploadToast'
 import { SettingsProvider } from './contexts/SettingsContext'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
@@ -89,10 +90,12 @@ export default function App() {
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
         <SettingsProvider>
-          <UploadProvider>
-            <RouterProvider router={router} />
-            <UploadToast />
-          </UploadProvider>
+          <LocalNotesProvider>
+            <UploadProvider>
+              <RouterProvider router={router} />
+              <UploadToast />
+            </UploadProvider>
+          </LocalNotesProvider>
         </SettingsProvider>
       </AuthProvider>
     </QueryClientProvider>

@@ -19,7 +19,10 @@ export interface NoteObject {
   id: string
   type: NoteObjectType
   content: string
-  cover?: string   // скриншот/превью — только для type === 'document'
+  cover?: string
+  thumbnailUrl?: string | null
+  filename?: string      // оригинальное имя файла (для документов)
+  slug?: string          // slug дочерней заметки (для элементов коллекции)
   createdAt: string
 }
 
@@ -34,6 +37,10 @@ export interface Note {
   objects: NoteObject[]
   createdAt: string
   updatedAt: string
+  /** Стабильный ключ для React — не меняется при tempId→serverId переходе */
+  stableKey?: string
+  isLocal?: boolean    // хранится локально, ещё не синхронизировано
+  isLoading?: boolean  // запрос в процессе
 }
 
 export interface NotesParams {

@@ -4,6 +4,7 @@ import { ArrowLeft, ExternalLink, FileText, Download, X } from 'lucide-react'
 import { useNote } from '../hooks/useNote'
 import { useUpdateNote } from '../hooks/useUpdateNote'
 import { getTagColor } from '../utils/tagColor'
+import AuthImage from '../components/AuthImage/AuthImage'
 import type { Note, NoteObject, Tag } from '../types'
 import styles from './NotePage.module.css'
 
@@ -12,7 +13,7 @@ import styles from './NotePage.module.css'
 function ImageObj({ obj, isEditing, onDelete }: { obj: NoteObject; isEditing: boolean; onDelete: () => void }) {
   return (
     <div className={`${styles.objWrapper} ${styles.objImage}`}>
-      <img src={obj.content} alt="" onClick={() => window.open(obj.content, '_blank')} />
+      <AuthImage src={obj.content} alt="" style={{ cursor: 'pointer' }} onClick={() => window.open(obj.content, '_blank')} />
       {isEditing && (
         <button className={styles.objDeleteBtn} onClick={onDelete}><X size={12} /></button>
       )}
@@ -106,7 +107,7 @@ function DocObj({ obj, isEditing, onDelete }: { obj: NoteObject; isEditing: bool
     <div className={styles.objWrapper}>
       <div className={styles.objDoc}>
         {obj.cover
-          ? <img src={obj.cover} alt="" className={styles.objDocCover} />
+          ? <AuthImage src={obj.cover} alt="" className={styles.objDocCover} />
           : <div className={styles.objDocIconWrap}><FileText size={20} /></div>
         }
         <div className={styles.objDocMeta}>

@@ -5,8 +5,8 @@ export function useMergeNotes() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: ({ sourceId, targetId }: { sourceId: string; targetId: string }) =>
-      mergeNotes(sourceId, targetId),
+    mutationFn: ({ sourceSlug, targetSlug, title }: { sourceSlug: string; targetSlug: string; title?: string }) =>
+      mergeNotes(sourceSlug, targetSlug, title),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['notes'] })
     },

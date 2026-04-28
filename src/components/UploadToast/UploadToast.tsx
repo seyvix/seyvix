@@ -1,38 +1,29 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { CheckCircle, Loader } from 'lucide-react'
-import { useUploadContext } from '../../contexts/UploadContext'
+import { useUploadContext, type UploadJobEntry } from '../../contexts/UploadContext'
 import { useUploadJob } from '../../hooks/useUploadJob'
 import styles from './UploadToast.module.css'
 
-function JobRow({ jobId }: { jobId: string }) {
-  const { data } = useUploadJob(jobId)
+function JobRow({ job }: { job: UploadJobEntry }) {
+  const { data } = useUploadJob(job.jobId)
 
   if (!data) return null
+
+  const isDone = data.status === 'done'
 
   return (
     <div className={styles.job}>
       <div className={styles.jobHeader}>
-        {data.status === 'done'
+        {isDone
           ? <CheckCircle size={13} className={styles.iconDone} />
           : <Loader size={13} className={styles.iconSpinner} />
         }
         <span className={styles.jobTitle}>
-          {data.status === 'done' ? 'Загружено' : 'Загрузка…'}
+          {isDone ? 'Готово' : 'Загрузка…'}
         </span>
-        <span className={styles.jobCount}>{data.files.length} файл{data.files.length > 1 ? 'а' : ''}</span>
-      </div>
-      <div className={styles.fileList}>
-        {data.files.map(f => (
-          <div key={f.name} className={styles.fileRow}>
-            <span className={styles.fileName}>{f.name}</span>
-            <div className={styles.progressTrack}>
-              <div
-                className={`${styles.progressBar} ${f.status === 'processing' ? styles.progressBarActive : ''} ${f.status === 'done' ? styles.progressBarDone : ''}`}
-                style={{ width: `${f.progress}%` }}
-              />
-            </div>
-          </div>
-        ))}
+        {job.label && (
+          <span className={styles.jobCount}>{job.label}</span>
+        )}
       </div>
     </div>
   )
@@ -44,15 +35,15 @@ export function UploadToast() {
   return (
     <div className={styles.container}>
       <AnimatePresence>
-        {jobs.map(({ jobId }) => (
+        {jobs.map((job) => (
           <motion.div
-            key={jobId}
+            key={job.jobId}
             initial={{ opacity: 0, y: 16, scale: 0.95 }}
             animate={{ opacity: 1, y: 0,  scale: 1    }}
             exit={{    opacity: 0, y: 8,  scale: 0.95, transition: { duration: 0.2 } }}
             transition={{ duration: 0.2 }}
           >
-            <JobRow jobId={jobId} />
+            <JobRow job={job} />
           </motion.div>
         ))}
       </AnimatePresence>

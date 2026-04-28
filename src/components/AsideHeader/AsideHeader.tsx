@@ -75,7 +75,12 @@ export default function AsideHeader() {
     <aside className={sidebarClass}>
       <div className={styles.top}>
         <div className={styles.avatar}>{initials}</div>
-        <span className={styles.logoText}>{user?.display_name ?? 'Пользователь'}</span>
+        <div className={styles.userInfo}>
+          <span className={styles.logoText}>{user?.display_name ?? 'Пользователь'}</span>
+          {user?.telegram_username && (
+            <span className={styles.username}>@{user.telegram_username}</span>
+          )}
+        </div>
       </div>
 
       <nav className={styles.nav}>
