@@ -33,6 +33,7 @@ from app.modules.content.service import (
     FolderNotFoundError,
     NoteNotFoundError,
     ThumbnailPendingError,
+    ThumbnailUnavailableError,
     UploadedContent,
 )
 
@@ -44,7 +45,8 @@ def get_content_service(
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> ContentService:
     storage_root = getattr(request.app.state, "content_storage_root", Path("data/content"))
-    return ContentService(session, Path(storage_root))
+    storage_backend = getattr(request.app.state, "storage_backend", None)
+    return ContentService(session, Path(storage_root), storage_backend=storage_backend)
 
 
 def _not_found(exc: Exception) -> AppError:
@@ -111,20 +113,46 @@ async def create_note(
 async def upload_note_files(
     context: Annotated[AuthContext, Depends(get_auth_context)],
     service: Annotated[ContentService, Depends(get_content_service)],
-    files: Annotated[list[UploadFile], File(alias="file", description="Files to upload.")],
+    file: Annotated[
+        list[UploadFile] | None,
+        File(alias="file", description="Files to upload."),
+    ] = None,
+    files: Annotated[
+        list[UploadFile] | None,
+        File(alias="files", description="Files to upload."),
+    ] = None,
+    files_array: Annotated[
+        list[UploadFile] | None,
+        File(alias="files[]", description="Files to upload."),
+    ] = None,
     create_object: Annotated[bool, Form()] = False,
     object_id: Annotated[str | None, Form(max_length=36)] = None,
     title: Annotated[str | None, Form(max_length=512)] = None,
     folder_path: Annotated[str | None, Form(max_length=1024)] = None,
     tag_names: Annotated[list[str] | None, Form()] = None,
 ) -> Response:
+    files_to_upload = [*(file or []), *(files or []), *(files_array or [])]
+    if not files_to_upload:
+        raise AppError(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            code="validation_error",
+            message="Request validation failed.",
+            details=[
+                {
+                    "type": "missing",
+                    "location": ["body", "file"],
+                    "message": "At least one file is required.",
+                }
+            ],
+        )
+
     uploaded_files = [
         UploadedContent(
             filename=f.filename or "file",
             content_type=f.content_type,
             data=await f.read(),
         )
-        for f in files
+        for f in files_to_upload
     ]
     result = await service.upload_files(
         owner_user_id=context.user.id,
@@ -356,10 +384,15 @@ async def get_asset_file(
 @router.get(
     "/notes/{note_slug}/asset/{asset_id}/thumbnail",
     summary="Get asset thumbnail",
-    description="Returns the generated thumbnail JPEG for a document asset. Returns 202 if thumbnail is not yet ready.",
+    description=(
+        "Returns the generated thumbnail artifact for an asset. Image and rendered document "
+        "thumbnails are returned as JPEG. Returns 202 if thumbnail is not yet ready and "
+        "204 if thumbnail generation is unsupported for this asset."
+    ),
     responses={
-        200: {"description": "Thumbnail JPEG returned."},
+        200: {"description": "Thumbnail artifact returned."},
         202: {"description": "Thumbnail not yet ready."},
+        204: {"description": "Thumbnail is unavailable for this asset."},
         401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
         404: {"model": ErrorResponse, "description": "Note or asset not found."},
     },
@@ -376,6 +409,8 @@ async def get_asset_thumbnail(
         )
     except NoteNotFoundError as exc:
         raise _not_found(exc) from exc
+    except ThumbnailUnavailableError:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
     except ThumbnailPendingError:
         return Response(status_code=status.HTTP_202_ACCEPTED)
     return FileResponse(path, media_type=mime_type)

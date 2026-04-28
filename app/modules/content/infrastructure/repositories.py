@@ -3,7 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import cast
 
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.sql.base import ExecutableOption
@@ -87,6 +88,12 @@ class ContentRepository:
         )
         return await self.session.scalar(query) is not None
 
+    async def lock_slug_base(self, *, owner_user_id: str, slug_base: str) -> None:
+        await self.session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+            {"lock_key": f"content-object-slug:{owner_user_id}:{slug_base}"},
+        )
+
     async def list_all(self, *, owner_user_id: str) -> list[ContentObject]:
         query = (
             select(ContentObject)
@@ -140,6 +147,36 @@ class CategoryRepository:
         )
         return cast(ContentCategory | None, await self.session.scalar(query))
 
+    async def get_or_create(
+        self,
+        *,
+        owner_user_id: str,
+        parent_id: str | None,
+        name: str,
+        slug: str,
+        path: str,
+    ) -> ContentCategory:
+        statement = (
+            postgresql_insert(ContentCategory)
+            .values(
+                owner_user_id=owner_user_id,
+                parent_id=parent_id,
+                name=name,
+                slug=slug,
+                path=path,
+            )
+            .on_conflict_do_nothing(constraint="uq_content_categories_owner_user_id_path")
+            .returning(ContentCategory)
+        )
+        category = cast(ContentCategory | None, await self.session.scalar(statement))
+        if category is not None:
+            return category
+
+        existing = await self.get_by_path(owner_user_id=owner_user_id, path=path)
+        if existing is None:
+            raise RuntimeError(f"Failed to load content category after conflict: {path}")
+        return existing
+
     async def list_all(self, *, owner_user_id: str) -> list[ContentCategory]:
         query = (
             select(ContentCategory)
@@ -162,6 +199,28 @@ class TagRepository:
             ContentTag.slug == slug,
         )
         return cast(ContentTag | None, await self.session.scalar(query))
+
+    async def get_or_create(
+        self,
+        *,
+        owner_user_id: str,
+        name: str,
+        slug: str,
+    ) -> ContentTag:
+        statement = (
+            postgresql_insert(ContentTag)
+            .values(owner_user_id=owner_user_id, name=name, slug=slug)
+            .on_conflict_do_nothing(constraint="uq_content_tags_owner_user_id_slug")
+            .returning(ContentTag)
+        )
+        tag = cast(ContentTag | None, await self.session.scalar(statement))
+        if tag is not None:
+            return tag
+
+        existing = await self.get_by_slug(owner_user_id=owner_user_id, slug=slug)
+        if existing is None:
+            raise RuntimeError(f"Failed to load content tag after conflict: {slug}")
+        return existing
 
     async def list_all(self, *, owner_user_id: str) -> list[ContentTag]:
         query = (

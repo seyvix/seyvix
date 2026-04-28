@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from typing import Any
 from unicodedata import normalize
 
 from app.modules.content.models import ContentObject
+from app.platform.storage.service import LocalVolumeStorage, StorageBackend, StorageKeyBuilder
 
 
 @dataclass(slots=True)
@@ -17,11 +18,18 @@ class StoredFile:
     filename: str
     relative_path: str
     size_bytes: int
+    storage_backend: str
+    bucket: str
+    storage_key: str
+    storage_ref: str
+    checksum: str
+    content_type: str | None = None
 
 
 class ContentStorage:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, backend: StorageBackend | None = None) -> None:
         self.root = root
+        self.backend = backend or LocalVolumeStorage(root=root, bucket="app-storage")
 
     def object_directory(
         self,
@@ -41,37 +49,50 @@ class ContentStorage:
     def write_text_object(
         self,
         *,
-        directory: Path,
+        content_object_id: str,
+        asset_id: str,
         title: str,
         text: str,
     ) -> StoredFile:
-        directory.mkdir(parents=True, exist_ok=True)
         filename = "content.md"
         content = f"# {title}\n\n{text}\n"
-        path = directory / filename
-        path.write_text(content, encoding="utf-8")
-        return StoredFile(
+        storage_key = StorageKeyBuilder.content_asset_original(
+            content_object_id=content_object_id,
+            asset_id=asset_id,
             filename=filename,
-            relative_path=self._relative(path),
-            size_bytes=path.stat().st_size,
+        )
+        stored = self.backend.put_bytes(
+            storage_key=storage_key,
+            data=content.encode("utf-8"),
+            content_type="text/markdown",
+        )
+        return self._stored_file(
+            filename=filename,
+            stored=stored,
         )
 
     def write_binary_object(
         self,
         *,
-        directory: Path,
+        content_object_id: str,
+        asset_id: str,
         filename: str,
         data: bytes,
+        content_type: str | None,
     ) -> StoredFile:
-        original_dir = directory / "original"
-        original_dir.mkdir(parents=True, exist_ok=True)
-        safe_filename = safe_file_name(filename)
-        path = original_dir / safe_filename
-        path.write_bytes(data)
-        return StoredFile(
+        storage_key = StorageKeyBuilder.content_asset_original(
+            content_object_id=content_object_id,
+            asset_id=asset_id,
             filename=filename,
-            relative_path=self._relative(path),
-            size_bytes=path.stat().st_size,
+        )
+        stored = self.backend.put_bytes(
+            storage_key=storage_key,
+            data=data,
+            content_type=content_type,
+        )
+        return self._stored_file(
+            filename=filename,
+            stored=stored,
         )
 
     def write_temp_file(
@@ -82,30 +103,33 @@ class ContentStorage:
         filename: str,
         data: bytes,
     ) -> StoredFile:
-        upload_dir = self.root / owner_user_id / ".uploads" / upload_id
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        safe_filename = safe_file_name(filename)
-        path = upload_dir / safe_filename
-        path.write_bytes(data)
-        return StoredFile(
+        storage_key = StorageKeyBuilder.pending_upload(
+            owner_user_id=owner_user_id,
+            upload_id=upload_id,
             filename=filename,
-            relative_path=self._relative(path),
-            size_bytes=path.stat().st_size,
+        )
+        stored = self.backend.put_bytes(
+            storage_key=storage_key,
+            data=data,
+            content_type=None,
+        )
+        return self._stored_file(
+            filename=filename,
+            stored=stored,
         )
 
     def read_relative_file(self, relative_path: str) -> bytes:
-        return (self.root / relative_path).read_bytes()
+        return self.backend.get_bytes(relative_path)
 
-    def write_manifest(self, *, directory: Path, manifest: dict[str, object]) -> None:
-        directory.mkdir(parents=True, exist_ok=True)
-        path = directory / "manifest.json"
-        path.write_text(
-            json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True),
-            encoding="utf-8",
+    def write_manifest(self, *, content_object_id: str, manifest: dict[str, object]) -> None:
+        storage_key = StorageKeyBuilder.content_manifest(content_object_id=content_object_id)
+        self.backend.put_bytes(
+            storage_key=storage_key,
+            data=json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8"),
+            content_type="application/json",
         )
 
     def build_archive(self, content_object: ContentObject) -> Path:
-        source_dir = self.root / content_object.storage_path
         temp_file = NamedTemporaryFile(
             prefix=f"{content_object.slug}-",
             suffix=".zip",
@@ -114,29 +138,38 @@ class ContentStorage:
         temp_file.close()
         archive_path = Path(temp_file.name)
         with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            if source_dir.exists():
-                for path in source_dir.rglob("*"):
-                    if path.is_file():
-                        archive.write(path, arcname=path.relative_to(source_dir))
-            else:
+            manifest_key = StorageKeyBuilder.content_manifest(content_object_id=content_object.id)
+            try:
+                archive.writestr("manifest.json", self.backend.get_bytes(manifest_key))
+            except FileNotFoundError:
                 archive.writestr("manifest.json", "{}")
+            for asset in content_object.assets:
+                try:
+                    archive.writestr(asset.filename, self.backend.get_bytes(asset.storage_path))
+                except FileNotFoundError:
+                    continue
         return archive_path
 
     def remove_directory(self, content_object: ContentObject) -> None:
-        path = self.root / content_object.storage_path
-        if path.exists():
-            shutil.rmtree(path)
+        for asset in content_object.assets:
+            self.backend.delete_object(asset.storage_path)
 
     def remove_relative_file_parent(self, relative_path: str) -> None:
-        path = self.root / relative_path
-        if path.exists():
-            path.unlink()
-        parent = path.parent
-        if parent.exists() and parent != self.root:
-            shutil.rmtree(parent)
+        self.backend.delete_object(relative_path)
 
-    def _relative(self, path: Path) -> str:
-        return path.relative_to(self.root).as_posix()
+    @staticmethod
+    def _stored_file(*, filename: str, stored: Any) -> StoredFile:
+        return StoredFile(
+            filename=filename,
+            relative_path=stored.storage_key,
+            size_bytes=stored.size_bytes,
+            storage_backend=stored.storage_backend,
+            bucket=stored.bucket,
+            storage_key=stored.storage_key,
+            storage_ref=stored.storage_ref,
+            checksum=stored.checksum,
+            content_type=stored.content_type,
+        )
 
 
 def safe_file_name(value: str) -> str:

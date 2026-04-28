@@ -3,11 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from tempfile import NamedTemporaryFile
+from uuid import uuid4
 
 from sqlalchemy import delete as sql_delete
 from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.contracts.events import ContentObjectChangedPayload, EventEnvelope
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.modules.content.infrastructure.repositories import (
@@ -37,8 +40,11 @@ from app.modules.content.schemas import (
     TagResponse,
     UploadedFileResponse,
 )
-from app.modules.content.storage import ContentStorage, slugify
+from app.modules.content.storage import ContentStorage, StoredFile, slugify
 from app.modules.snapshots.service import SnapshotService
+from app.platform.events.outbox import EventOutboxRepository
+from app.platform.storage.repositories import StorageObjectRepository
+from app.platform.storage.service import StorageBackend, StoredObject
 
 logger = get_logger(__name__)
 
@@ -55,6 +61,10 @@ class ThumbnailPendingError(Exception):
     pass
 
 
+class ThumbnailUnavailableError(Exception):
+    pass
+
+
 @dataclass(slots=True)
 class UploadedContent:
     filename: str
@@ -63,14 +73,21 @@ class UploadedContent:
 
 
 class ContentService:
-    def __init__(self, session: AsyncSession, storage_root: Path | None = None) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        storage_root: Path | None = None,
+        storage_backend: StorageBackend | None = None,
+    ) -> None:
         self.session = session
         self.content = ContentRepository(session)
         self.categories = CategoryRepository(session)
         self.tags = TagRepository(session)
         self.file_uploads = FileUploadRepository(session)
-        self.storage = ContentStorage(storage_root or Path("data/content"))
-        self.snapshots = SnapshotService(session, self.storage.root)
+        self.storage = ContentStorage(storage_root or Path("data/content"), backend=storage_backend)
+        self.storage_objects = StorageObjectRepository(session)
+        self.outbox = EventOutboxRepository(session)
+        self.snapshots = SnapshotService(session, self.storage.root, self.storage.backend)
         self.api_prefix = get_settings().api_prefix
 
     async def create_note(
@@ -194,7 +211,18 @@ class ContentService:
                 data=uploaded.data,
             )
             upload.storage_path = stored_file.relative_path
+            upload.storage_backend = stored_file.storage_backend
+            upload.bucket = stored_file.bucket
+            upload.storage_key = stored_file.storage_key
+            upload.storage_ref = stored_file.storage_ref
+            upload.checksum = stored_file.checksum
             upload.size_bytes = stored_file.size_bytes
+            self.storage_objects.add(
+                self._stored_object_from_file(stored_file),
+                owner_entity_type="content_file_upload",
+                owner_entity_id=upload.id,
+                metadata={"source_filename": uploaded.filename},
+            )
             uploads.append(upload)
 
         await self.session.commit()
@@ -271,7 +299,10 @@ class ContentService:
             raise NoteNotFoundError
         path = self.storage.root / asset.storage_path
         if not path.exists():
-            raise NoteNotFoundError
+            temp_file = NamedTemporaryFile(prefix=f"{asset.id}-", delete=False)
+            temp_file.write(self.storage.backend.get_bytes(asset.storage_key or asset.storage_path))
+            temp_file.close()
+            path = Path(temp_file.name)
         mime = asset.mime_type or "application/octet-stream"
         return path, mime
 
@@ -509,18 +540,16 @@ class ContentService:
         tags = await self._get_or_create_tags(owner_user_id, tag_names)
         slug = await self._unique_slug(owner_user_id, normalized_title)
         sort_order = await self.content.get_max_sort_order(owner_user_id=owner_user_id) + 10
-        directory = self.storage.object_directory(
-            owner_user_id=owner_user_id,
-            folder_path=category.path if category else None,
-            slug=slug,
-            kind="simple",
-        )
+        content_object_id = str(uuid4())
+        asset_id = str(uuid4())
         stored_file = self.storage.write_text_object(
-            directory=directory,
+            content_object_id=content_object_id,
+            asset_id=asset_id,
             title=normalized_title,
             text=text,
         )
         content_object = ContentObject(
+            id=content_object_id,
             owner_user_id=owner_user_id,
             category=category,
             slug=slug,
@@ -530,18 +559,30 @@ class ContentService:
             source_filename=stored_file.filename,
             mime_type="text/markdown",
             size_bytes=stored_file.size_bytes,
-            storage_path=directory.relative_to(self.storage.root).as_posix(),
+            storage_path=f"content-assets/{content_object_id}",
             sort_order=sort_order,
             tags=tags,
         )
+        self.storage_objects.add(
+            self._stored_object_from_file(stored_file),
+            owner_entity_type="content_asset",
+            owner_entity_id=asset_id,
+            metadata={"role": "original", "source_filename": stored_file.filename},
+        )
         content_object.assets.append(
             ContentAsset(
+                id=asset_id,
                 role="original",
                 media_type="text",
                 filename=stored_file.filename,
                 mime_type="text/markdown",
                 size_bytes=stored_file.size_bytes,
                 storage_path=stored_file.relative_path,
+                storage_backend=stored_file.storage_backend,
+                bucket=stored_file.bucket,
+                storage_key=stored_file.storage_key,
+                storage_ref=stored_file.storage_ref,
+                checksum=stored_file.checksum,
                 text_content=text,
             ),
         )
@@ -565,23 +606,24 @@ class ContentService:
         normalized_title = title or text.strip().splitlines()[0][:80] or uploaded.filename
         slug = await self._unique_slug(owner_user_id, normalized_title)
         sort_order = await self.content.get_max_sort_order(owner_user_id=owner_user_id) + 10
-        directory = self.storage.object_directory(
-            owner_user_id=owner_user_id,
-            folder_path=category.path if category else None,
-            slug=slug,
-            kind="complex",
-        )
+        content_object_id = str(uuid4())
+        file_asset_id = str(uuid4())
+        text_asset_id = str(uuid4())
         stored_file = self.storage.write_binary_object(
-            directory=directory,
+            content_object_id=content_object_id,
+            asset_id=file_asset_id,
             filename=uploaded.filename,
             data=uploaded.data,
+            content_type=uploaded.content_type,
         )
         stored_text = self.storage.write_text_object(
-            directory=directory,
+            content_object_id=content_object_id,
+            asset_id=text_asset_id,
             title=normalized_title,
             text=text,
         )
         content_object = ContentObject(
+            id=content_object_id,
             owner_user_id=owner_user_id,
             category=category,
             slug=slug,
@@ -591,28 +633,52 @@ class ContentService:
             source_filename=stored_file.filename,
             mime_type=uploaded.content_type,
             size_bytes=stored_file.size_bytes,
-            storage_path=directory.relative_to(self.storage.root).as_posix(),
+            storage_path=f"content-assets/{content_object_id}",
             sort_order=sort_order,
             tags=tags,
         )
+        self.storage_objects.add(
+            self._stored_object_from_file(stored_file),
+            owner_entity_type="content_asset",
+            owner_entity_id=file_asset_id,
+            metadata={"role": "original", "source_filename": uploaded.filename},
+        )
+        self.storage_objects.add(
+            self._stored_object_from_file(stored_text),
+            owner_entity_type="content_asset",
+            owner_entity_id=text_asset_id,
+            metadata={"role": "text", "source_filename": stored_text.filename},
+        )
         content_object.assets.append(
             ContentAsset(
+                id=file_asset_id,
                 role="original",
                 media_type=file_media_type,
                 filename=stored_file.filename,
                 mime_type=uploaded.content_type,
                 size_bytes=stored_file.size_bytes,
                 storage_path=stored_file.relative_path,
+                storage_backend=stored_file.storage_backend,
+                bucket=stored_file.bucket,
+                storage_key=stored_file.storage_key,
+                storage_ref=stored_file.storage_ref,
+                checksum=stored_file.checksum,
             ),
         )
         content_object.assets.append(
             ContentAsset(
+                id=text_asset_id,
                 role="text",
                 media_type="text",
                 filename=stored_text.filename,
                 mime_type="text/markdown",
                 size_bytes=stored_text.size_bytes,
                 storage_path=stored_text.relative_path,
+                storage_backend=stored_text.storage_backend,
+                bucket=stored_text.bucket,
+                storage_key=stored_text.storage_key,
+                storage_ref=stored_text.storage_ref,
+                checksum=stored_text.checksum,
                 text_content=text,
             ),
         )
@@ -721,20 +787,18 @@ class ContentService:
             Path(uploaded.filename).stem or normalized_title,
         )
         sort_order = await self.content.get_max_sort_order(owner_user_id=owner_user_id) + 10
-        directory = self.storage.object_directory(
-            owner_user_id=owner_user_id,
-            folder_path=category.path if category else None,
-            slug=slug,
-            kind=kind,
-        )
+        content_object_id = object_id or str(uuid4())
+        asset_id = str(uuid4())
         stored_file = self.storage.write_binary_object(
-            directory=directory,
+            content_object_id=content_object_id,
+            asset_id=asset_id,
             filename=uploaded.filename,
             data=uploaded.data,
+            content_type=uploaded.content_type,
         )
         text_content = self._decode_text(uploaded.data) if media_type == "text" else None
         content_object = ContentObject(
-            id=object_id or None,
+            id=content_object_id,
             owner_user_id=owner_user_id,
             category=category,
             slug=slug,
@@ -744,18 +808,30 @@ class ContentService:
             source_filename=stored_file.filename,
             mime_type=uploaded.content_type,
             size_bytes=stored_file.size_bytes,
-            storage_path=directory.relative_to(self.storage.root).as_posix(),
+            storage_path=f"content-assets/{content_object_id}",
             sort_order=sort_order,
             tags=tags,
         )
+        self.storage_objects.add(
+            self._stored_object_from_file(stored_file),
+            owner_entity_type="content_asset",
+            owner_entity_id=asset_id,
+            metadata={"role": "original", "source_filename": uploaded.filename},
+        )
         content_object.assets.append(
             ContentAsset(
+                id=asset_id,
                 role="original",
                 media_type=media_type,
                 filename=stored_file.filename,
                 mime_type=uploaded.content_type,
                 size_bytes=stored_file.size_bytes,
                 storage_path=stored_file.relative_path,
+                storage_backend=stored_file.storage_backend,
+                bucket=stored_file.bucket,
+                storage_key=stored_file.storage_key,
+                storage_ref=stored_file.storage_ref,
+                checksum=stored_file.checksum,
                 text_content=text_content,
             ),
         )
@@ -776,22 +852,16 @@ class ContentService:
         tags = await self._get_or_create_tags(owner_user_id, tag_names)
         normalized_slug = slug or await self._unique_slug(owner_user_id, title)
         sort_order = await self.content.get_max_sort_order(owner_user_id=owner_user_id) + 10
-        directory = self.storage.object_directory(
-            owner_user_id=owner_user_id,
-            folder_path=category.path if category else None,
-            slug=normalized_slug,
-            kind="collection",
-        )
-        directory.mkdir(parents=True, exist_ok=True)
+        content_object_id = object_id or str(uuid4())
         collection = ContentObject(
-            id=object_id or None,
+            id=content_object_id,
             owner_user_id=owner_user_id,
             category=category,
             slug=normalized_slug,
             title=title,
             kind="collection",
             media_type=None,
-            storage_path=directory.relative_to(self.storage.root).as_posix(),
+            storage_path=f"content-assets/{content_object_id}",
             sort_order=sort_order,
             tags=tags,
         )
@@ -830,20 +900,13 @@ class ContentService:
         for asset in list(content_object.assets):
             asset.content_object = child
 
-        collection_dir = self.storage.object_directory(
-            owner_user_id=content_object.owner_user_id,
-            folder_path=content_object.category.path if content_object.category else None,
-            slug=content_object.slug,
-            kind="collection",
-        )
-        collection_dir.mkdir(parents=True, exist_ok=True)
         content_object.title = title or content_object.title
         content_object.kind = "collection"
         content_object.media_type = None
         content_object.source_filename = None
         content_object.mime_type = None
         content_object.size_bytes = None
-        content_object.storage_path = collection_dir.relative_to(self.storage.root).as_posix()
+        content_object.storage_path = f"content-assets/{content_object.id}"
         self.content.add(child)
         self.content.add_collection_item(
             ContentCollectionItem(collection=content_object, content_object=child, position=10),
@@ -876,18 +939,17 @@ class ContentService:
             item.content_object for item in await self.content.list_collection_items(loaded.id)
         ]
         self.storage.write_manifest(
-            directory=self.storage.root / loaded.storage_path,
-            manifest=self._manifest(loaded, items=items),
+            content_object_id=loaded.id, manifest=self._manifest(loaded, items=items)
         )
         if loaded.kind == "collection":
             for item in items:
                 self.storage.write_manifest(
-                    directory=self.storage.root / item.storage_path,
+                    content_object_id=item.id,
                     manifest=self._manifest(item, items=[]),
                 )
         all_objects = [loaded, *items] if loaded.kind == "collection" else [loaded]
         for obj in all_objects:
-            await self.snapshots.enqueue_for_content_object(obj)
+            self._enqueue_content_changed_event(obj, event_name="content.object.created")
         await self.session.commit()
         return await self._to_card(loaded)
 
@@ -901,11 +963,49 @@ class ContentService:
             raise NoteNotFoundError
         thumbnail = await self.snapshots.get_thumbnail_path(source_asset_id=asset.id)
         if thumbnail is None:
+            if await self.snapshots.is_thumbnail_unavailable(source_asset_id=asset.id):
+                raise ThumbnailUnavailableError
             raise ThumbnailPendingError
         path, mime_type = thumbnail
         if not path.exists():
             raise ThumbnailPendingError
         return path, mime_type
+
+    def _enqueue_content_changed_event(
+        self,
+        content_object: ContentObject,
+        *,
+        event_name: str,
+    ) -> None:
+        envelope = EventEnvelope.new(
+            event_name=event_name,  # type: ignore[arg-type]
+            entity_id=content_object.id,
+            correlation_id=str(uuid4()),
+            user_id=content_object.owner_user_id,
+            payload=ContentObjectChangedPayload(
+                content_object_id=content_object.id,
+                asset_ids=[asset.id for asset in content_object.assets],
+                storage_refs=[
+                    asset.storage_ref
+                    for asset in content_object.assets
+                    if asset.storage_ref is not None
+                ],
+                metadata={"kind": content_object.kind, "media_type": content_object.media_type},
+            ),
+        )
+        self.outbox.add(envelope, routing_key=event_name)
+
+    @staticmethod
+    def _stored_object_from_file(stored_file: StoredFile) -> StoredObject:
+        return StoredObject(
+            storage_backend=stored_file.storage_backend,
+            bucket=stored_file.bucket,
+            storage_key=stored_file.storage_key,
+            storage_ref=stored_file.storage_ref,
+            content_type=stored_file.content_type,
+            size_bytes=stored_file.size_bytes,
+            checksum=stored_file.checksum,
+        )
 
     async def _get_or_create_category(
         self,
@@ -922,20 +1022,13 @@ class ContentService:
         current_path = ""
         for segment in segments:
             current_path = f"{current_path}/{segment}".strip("/")
-            category = await self.categories.get_by_path(
+            category = await self.categories.get_or_create(
                 owner_user_id=owner_user_id,
+                parent_id=parent.id if parent is not None else None,
+                name=segment,
+                slug=segment,
                 path=current_path,
             )
-            if category is None:
-                category = ContentCategory(
-                    owner_user_id=owner_user_id,
-                    parent=parent,
-                    name=segment,
-                    slug=segment,
-                    path=current_path,
-                )
-                self.categories.add(category)
-                await self.session.flush()
             parent = category
         return parent
 
@@ -963,16 +1056,18 @@ class ContentService:
             if slug in seen:
                 continue
             seen.add(slug)
-            tag = await self.tags.get_by_slug(owner_user_id=owner_user_id, slug=slug)
-            if tag is None:
-                tag = ContentTag(owner_user_id=owner_user_id, name=name, slug=slug)
-                self.tags.add(tag)
-                await self.session.flush()
-            tags.append(tag)
+            tags.append(
+                await self.tags.get_or_create(
+                    owner_user_id=owner_user_id,
+                    name=name,
+                    slug=slug,
+                )
+            )
         return tags
 
     async def _unique_slug(self, owner_user_id: str, title: str) -> str:
         base = slugify(title)
+        await self.content.lock_slug_base(owner_user_id=owner_user_id, slug_base=base)
         candidate = base
         counter = 2
         while await self.content.slug_exists(owner_user_id=owner_user_id, slug=candidate):
