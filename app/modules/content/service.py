@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import delete as sql_delete
+from sqlalchemy import delete as sql_delete, update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -373,6 +373,63 @@ class ContentService:
             owner_user_id=owner_user_id,
             slug=collection.slug,
         )
+
+    async def remove_collection_items(
+        self,
+        *,
+        owner_user_id: str,
+        collection_slug: str,
+        item_slugs: list[str],
+    ) -> None:
+        """Detach items from a collection.
+
+        If only one item would remain after removal, the collection is collapsed:
+        the child's assets are moved to the parent and the parent kind is updated
+        to match the child, removing the collection wrapper.
+        """
+        collection = await self._load_note(owner_user_id=owner_user_id, slug=collection_slug)
+        if collection.kind != "collection":
+            raise NoteNotFoundError
+
+        items = await self.content.list_collection_items(collection.id)
+        slug_set = set(item_slugs)
+        ids_to_remove_set = {item.id for item in items if item.content_object.slug in slug_set}
+        remaining = [item for item in items if item.id not in ids_to_remove_set]
+
+        if not ids_to_remove_set:
+            return
+
+        await self.session.execute(
+            sql_delete(ContentCollectionItem).where(
+                ContentCollectionItem.id.in_(ids_to_remove_set)
+            )
+        )
+
+        if len(remaining) == 1:
+            child = remaining[0].content_object
+            # Only collapse when child is a leaf note (simple/complex), not another collection
+            if child.kind in ("simple", "complex"):
+                child_id = child.id
+                child_kind = child.kind
+                child_media_type = child.media_type
+                # Move child's assets to the parent collection object
+                await self.session.execute(
+                    sql_update(ContentAsset)
+                    .where(ContentAsset.content_object_id == child_id)
+                    .values(content_object_id=collection.id)
+                )
+                # Update parent to take the child's kind/media_type
+                await self.session.execute(
+                    sql_update(ContentObject)
+                    .where(ContentObject.id == collection.id)
+                    .values(kind=child_kind, media_type=child_media_type)
+                )
+                # Delete child — DB-level CASCADE removes the ContentCollectionItem link
+                await self.session.execute(
+                    sql_delete(ContentObject).where(ContentObject.id == child_id)
+                )
+
+        await self.session.commit()
 
     async def delete_notes(self, *, owner_user_id: str, slugs: list[str]) -> None:
         objects = await self.content.list_by_slugs(

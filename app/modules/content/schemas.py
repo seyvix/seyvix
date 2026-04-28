@@ -117,6 +117,10 @@ class BulkDeleteRequest(BaseModel):
     slugs: list[str] = Field(min_length=1)
 
 
+class RemoveCollectionItemsRequest(BaseModel):
+    item_slugs: list[str] = Field(min_length=1)
+
+
 class MergeNotesRequest(BaseModel):
     target_slug: str
     source_slugs: list[str] = Field(min_length=1)

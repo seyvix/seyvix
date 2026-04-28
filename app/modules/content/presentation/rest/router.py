@@ -24,6 +24,7 @@ from app.modules.content.schemas import (
     NoteCardResponse,
     NoteListResponse,
     NoteSort,
+    RemoveCollectionItemsRequest,
     ReorderNotesRequest,
     UpdateNoteRequest,
 )
@@ -321,6 +322,34 @@ async def get_asset_thumbnail(
     except ThumbnailPendingError:
         return Response(status_code=status.HTTP_202_ACCEPTED)
     return FileResponse(path, media_type="image/jpeg")
+
+
+@router.delete(
+    "/notes/{note_slug}/items",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Remove items from collection",
+    description="Detaches items from a collection without deleting the child notes.",
+    responses={
+        204: {"description": "Items removed from collection."},
+        401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
+        404: {"model": ErrorResponse, "description": "Collection not found."},
+    },
+)
+async def remove_collection_items(
+    note_slug: str,
+    payload: RemoveCollectionItemsRequest,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[ContentService, Depends(get_content_service)],
+) -> Response:
+    try:
+        await service.remove_collection_items(
+            owner_user_id=context.user.id,
+            collection_slug=note_slug,
+            item_slugs=payload.item_slugs,
+        )
+    except NoteNotFoundError as exc:
+        raise _not_found(exc) from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.patch(
