@@ -1,0 +1,1 @@
+"""Stable cross-module contracts."""
