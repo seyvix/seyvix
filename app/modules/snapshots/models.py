@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -61,13 +61,19 @@ class SnapshotJob(Base):
     job_type: Mapped[str] = mapped_column(String(32), index=True)
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     attempts: Mapped[int] = mapped_column(Integer(), default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer(), default=3)
+    correlation_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    source_event_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     error_message: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    metadata_: Mapped[dict[str, object]] = mapped_column("metadata", JSON(), default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utcnow,
         onupdate=utcnow,
     )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -101,6 +107,11 @@ class SnapshotArtifact(Base):
     mime_type: Mapped[str] = mapped_column(String(255))
     size_bytes: Mapped[int] = mapped_column(Integer())
     storage_path: Mapped[str] = mapped_column(String(2048))
+    storage_backend: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    bucket: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    storage_key: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    storage_ref: Mapped[str | None] = mapped_column(String(2300), nullable=True)
+    checksum: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="ready", index=True)
     error_message: Mapped[str | None] = mapped_column(Text(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
