@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
@@ -21,6 +22,7 @@ async def _prepare_database(database_url: str) -> async_sessionmaker:
     engine: AsyncEngine = create_async_engine(database_url)
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.drop_all)
+        await connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await connection.run_sync(Base.metadata.create_all)
     await engine.dispose()
     return build_session_factory(database_url)

@@ -63,6 +63,21 @@ class Settings(BaseSettings):
     snapshot_archive_org_enabled: bool = False
     snapshot_worker_batch_size: int = 10
     snapshot_worker_poll_interval_seconds: int = 10
+    vector_embedding_provider: Literal["fake", "http"] = "fake"
+    vector_embedding_base_url: str | None = None
+    vector_embedding_api_key: str | None = None
+    vector_embedding_model: str = "fake-embedding"
+    vector_embedding_dimensions: int = 384
+    vector_embedding_batch_size: int = 64
+    vector_embedding_timeout_seconds: int = 30
+    vector_chunk_default_max_tokens: int = 800
+    vector_chunk_default_overlap_tokens: int = 100
+    vector_chunk_max_document_chars: int = 200000
+    vector_chunk_max_chunks_per_document: int = 300
+    vector_chunk_config_version: str = "v1"
+    vector_worker_batch_size: int = 10
+    vector_worker_poll_interval_seconds: int = 10
+    vector_worker_lock_timeout_seconds: int = 300
     snapshot_office_converter_command: str | None = "libreoffice"
     cors_allowed_origins: list[str] = Field(default_factory=list)
     cors_allow_origin_regex: str | None = None

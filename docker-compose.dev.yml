@@ -29,3 +29,10 @@ services:
     command: >
       sh -c "uv sync --frozen &&
              python -m app.workers.main snapshot-worker"
+
+  vectorization-worker:
+    volumes:
+      - .:/app
+    command: >
+      sh -c "uv sync --frozen &&
+             python -m app.workers.main vectorization-worker"

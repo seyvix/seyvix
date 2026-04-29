@@ -15,6 +15,9 @@ from app.modules.auth import models as auth_models  # noqa: F401
 from app.modules.content import models as content_models  # noqa: F401
 from app.modules.snapshots import models as snapshot_models  # noqa: F401
 from app.modules.snapshots.worker import SnapshotWorker
+from app.modules.taxonomy import models as taxonomy_models  # noqa: F401
+from app.modules.vectorization import models as vectorization_models  # noqa: F401
+from app.modules.vectorization.worker import VectorizationWorker
 from app.platform.events.publisher import OutboxPublisher, RabbitEventPublisher
 from app.platform.events.topology import build_rabbit_topology, declare_rabbit_topology
 from app.platform.storage.factory import build_storage_backend
@@ -74,15 +77,37 @@ async def run_snapshot_worker() -> None:
     await app.run()
 
 
+async def run_vectorization_worker() -> None:
+    settings = get_settings()
+    configure_logging(settings.log_level)
+    session_factory = build_session_factory(
+        settings.sqlalchemy_database_uri,
+        echo=settings.sqlalchemy_echo,
+    )
+    while True:
+        async with session_factory() as session:
+            processed = await VectorizationWorker(session).run_once(
+                limit=settings.vector_worker_batch_size
+            )
+        if processed == 0:
+            await asyncio.sleep(settings.vector_worker_poll_interval_seconds)
+
+
 def main() -> None:
     if len(sys.argv) != 2:
-        raise SystemExit("Usage: python -m app.workers.main <outbox-publisher|snapshot-worker>")
+        raise SystemExit(
+            "Usage: python -m app.workers.main "
+            "<outbox-publisher|snapshot-worker|vectorization-worker>"
+        )
     mode = sys.argv[1]
     if mode == "outbox-publisher":
         asyncio.run(run_outbox_publisher())
         return
     if mode == "snapshot-worker":
         asyncio.run(run_snapshot_worker())
+        return
+    if mode == "vectorization-worker":
+        asyncio.run(run_vectorization_worker())
         return
     raise SystemExit(f"Unknown worker mode: {mode}")
 

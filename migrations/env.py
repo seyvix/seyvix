@@ -12,6 +12,8 @@ from app.core.database import Base
 from app.modules.auth import models as auth_models  # noqa: F401
 from app.modules.content import models as content_models  # noqa: F401
 from app.modules.snapshots import models as snapshot_models  # noqa: F401
+from app.modules.taxonomy import models as taxonomy_models  # noqa: F401
+from app.modules.vectorization import models as vectorization_models  # noqa: F401
 from app.platform.events import models as event_models  # noqa: F401
 from app.platform.storage import models as storage_models  # noqa: F401
 
