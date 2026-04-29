@@ -8,8 +8,13 @@
 Сейчас в проекте уже есть:
 
 - базовый каркас приложения;
-- auth для сайта;
+- auth на Telegram-based аутентификации;
+- модули content и snapshots;
+- контракты для search, vectorization, llm и межмодульных событий;
+- platform-слой для event pipeline, storage и plugin SDK;
+- worker entrypoint для фоновой обработки;
 - PostgreSQL + Alembic;
+- Redis, RabbitMQ/FastStream, MinIO и PyMuPDF как инфраструктурные зависимости;
 - Docker-окружение для локальной разработки;
 - API-документация.
 
@@ -21,6 +26,7 @@
 - `tests/` — тесты
 - `migrations/` — Alembic-миграции
 - `pyproject.toml` — зависимости и настройки инструментов
+- `uv.lock` — lock-файл зависимостей
 - `.pre-commit-config.yaml` — pre-commit проверки
 
 ### `app/`
@@ -33,19 +39,39 @@
   - корневой router
 - `app/core/` — конфиг, БД, логирование, lifecycle
 - `app/modules/` — бизнес-модули
-- `app/platform/` — platform-level вещи, например plugin SDK, jobs, storage, observability
+- `app/contracts/` — общие внешние контракты, в том числе события между модулями
+- `app/platform/` — platform-level вещи: events, storage, plugin SDK
 - `app/shared/` — общие типы и служебные сущности, которые действительно нужны нескольким модулям
+- `app/workers/` — entrypoints для фоновых процессов
 
 ### `app/modules/`
 
 Каждый модуль должен развиваться как отдельная область ответственности.
 
-Сейчас `auth` уже содержит:
+Сейчас в проекте есть:
 
-- `presentation/rest/` — HTTP-ручки;
-- `infrastructure/repositories.py` — доступ к БД;
-- `service.py` — бизнес-логика;
-- `models.py`, `schemas.py`, `security.py`, `contracts.py`.
+- `auth` — Telegram auth, security, contracts, service, repository и REST router;
+- `content` — загрузка и хранение контента, storage-adapter, contracts, service, repository и REST router;
+- `snapshots` — snapshot entities, artifacts, worker logic, contracts, service, repository и REST router;
+- `search` — внешний контракт поиска;
+- `vectorization` — внешний контракт векторизации;
+- `llm` — внешний контракт LLM-интеграции.
+
+Для модулей с HTTP API уже используется слой:
+
+- `presentation/rest/` — HTTP-ручки.
+
+Для модулей с устойчивыми операциями чтения и записи используется:
+
+- `infrastructure/repositories.py` — доступ к БД.
+
+Для текущих модулей также допустимы файлы верхнего уровня внутри модуля:
+
+- `service.py` — бизнес-логика и orchestration use cases;
+- `models.py` — SQLAlchemy-модели;
+- `schemas.py` — Pydantic-схемы;
+- `contracts.py` — внешний контракт модуля для остальных частей приложения;
+- узкие модульные helpers вроде `security.py`, `storage.py`, `artifacts.py`, `worker.py`.
 
 Для новых модулей и постепенного приведения текущих модулей к одному стилю ориентир такой:
 
@@ -58,6 +84,32 @@
 Текущий код может не полностью совпадать с этой структурой. При новых изменениях двигай проект в эту сторону, а не в сторону случайных плоских файлов.
 
 Если модулю нужен repository, он должен жить внутри этого модуля в `infrastructure/`. Repository вводится по необходимости, когда service-слой начинает зарастать SQLAlchemy-запросами или у модуля появляется устойчивый набор операций чтения и записи. Generic repository на всё приложение не нужен.
+
+### `app/contracts/`
+
+`app/contracts/` нужен для общих контрактов, которые не принадлежат одному модулю. Сейчас там живут event contracts:
+
+- `app/contracts/events/base.py`;
+- `app/contracts/events/content.py`;
+- `app/contracts/events/snapshots.py`.
+
+События должны быть типизированными контрактами. Не передавай между модулями произвольные dict-структуры, если событие уже можно выразить через контракт.
+
+### `app/platform/`
+
+`platform` содержит инфраструктурные возможности, которые поддерживают бизнес-модули, но не являются бизнес-модулями сами по себе:
+
+- `platform/events/` — outbox, publisher, topology, idempotency и event models;
+- `platform/storage/` — storage models, repositories, service и factory;
+- `platform/plugin_sdk/` — manifests, registry, interfaces и execution context для плагинов.
+
+Бизнес-правила не должны переезжать в `platform`. Platform-слой предоставляет инфраструктурные примитивы, а решения предметной области остаются в модуле.
+
+### `app/workers/`
+
+`app/workers/main.py` — entrypoint для фоновых процессов.
+
+Если добавляется новый worker или consumer, его бизнес-логика должна оставаться в соответствующем модуле или application/service-слое. Worker entrypoint должен только собирать зависимости и запускать обработчик.
 
 ## Главные правила разработки
 
@@ -96,6 +148,12 @@
 
 12. Не добавляй новые зависимости без понятной причины.
 
+13. Для межмодульных событий используй `app/contracts/events/` и `app/platform/events/`. Сначала фиксируй контракт события, потом publisher/consumer и idempotency.
+
+14. Для файлов, артефактов и объектного хранилища используй `platform/storage` или модульный adapter поверх него. Не размазывай MinIO/S3-клиенты по service-слою бизнес-модулей.
+
+15. Для plugin-related логики используй `platform/plugin_sdk`. Не смешивай plugin manifests/registry/interfaces с core и бизнес-модулями.
+
 ## Pre-commit
 
 В репозитории уже есть `.pre-commit-config.yaml`.
@@ -104,6 +162,12 @@
 - базовые проверки файлов;
 - `black`;
 - `isort`.
+
+В `pyproject.toml` также настроены:
+
+- `ruff` с `line-length = 100`;
+- `mypy` в strict-режиме для пакета `app`;
+- `pytest` для директории `tests`.
 
 Перед любым коммитом обязательно:
 
@@ -132,13 +196,20 @@ uv run isort --profile=black --line-length=100 <changed_files>
 ```
 
 4. Прогнать тесты.
-5. Перед коммитом прогнать:
+5. Для изменений, которые затрагивают типы, публичные контракты или shared/platform-слой, дополнительно прогнать релевантные статические проверки:
+
+```bash
+uv run ruff check <changed_files>
+uv run mypy
+```
+
+6. Перед коммитом прогнать:
 
 ```bash
 pre-commit run --all-files
 ```
 
-6. Только после этого делать `git commit`.
+7. Только после этого делать `git commit`.
 
 ## Запрещено
 
@@ -149,3 +220,5 @@ pre-commit run --all-files
 - пропускать обновление тестов при изменении кода;
 - говорить, что `pre-commit` недоступен, вместо его установки;
 - создавать в корне репозитория случайные summary-файлы вида `.md` или `.txt`, если они не являются частью структуры проекта.
+- добавлять обходные межмодульные импорты вместо `contracts.py` или `app/contracts/`;
+- добавлять инфраструктурные клиенты напрямую в routers.
