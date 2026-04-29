@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.module_definitions import ModuleDefinition
 
@@ -56,6 +57,39 @@ class VectorizationIndexRequest(BaseModel):
     source_id: str = Field(min_length=1, max_length=255)
     priority: int = Field(default=100, ge=0, le=1000)
     reason: str | None = Field(default=None, max_length=255)
+
+
+class VectorizedChunkSearchResult(BaseModel):
+    source: str
+    source_type: str
+    source_id: str
+    external_id: str
+    chunk_id: str
+    chunk_external_id: str
+    text: str
+    metadata: dict[str, Any]
+    distance: float
+    score: float
+
+
+class VectorizedChunkSearchReader(Protocol):
+    async def search_similar_chunks(
+        self,
+        *,
+        owner_user_id: str,
+        query_embedding: list[float],
+        provider: str,
+        model: str,
+        dimensions: int,
+        limit: int,
+    ) -> list[VectorizedChunkSearchResult]:
+        raise NotImplementedError
+
+
+def build_vectorized_chunk_search_reader(session: AsyncSession) -> VectorizedChunkSearchReader:
+    from app.modules.vectorization.infrastructure.search_reader import PgVectorizedChunkSearchReader
+
+    return PgVectorizedChunkSearchReader(session)
 
 
 def vectorization_document_from_subject(
