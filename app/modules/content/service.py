@@ -14,15 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.contracts.events import ContentObjectChangedPayload, EventEnvelope
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.modules.content.contracts import ContentClassificationInput
 from app.modules.content.infrastructure.repositories import (
-    CategoryRepository,
     ContentRepository,
     FileUploadRepository,
     TagRepository,
 )
 from app.modules.content.models import (
     ContentAsset,
-    ContentCategory,
     ContentCollectionItem,
     ContentFileUpload,
     ContentObject,
@@ -30,6 +29,7 @@ from app.modules.content.models import (
 )
 from app.modules.content.schemas import (
     CollectionParentResponse,
+    ContentTaxonomyCategoryResponse,
     FileUploadResponse,
     FolderDetailResponse,
     FolderResponse,
@@ -43,6 +43,8 @@ from app.modules.content.schemas import (
 )
 from app.modules.content.storage import ContentStorage, StoredFile, slugify
 from app.modules.snapshots.service import SnapshotService
+from app.modules.taxonomy.models import TaxonomyCategory, TaxonomyContentAssignment
+from app.modules.taxonomy.service import TaxonomyService
 from app.platform.events.outbox import EventOutboxRepository
 from app.platform.storage.repositories import StorageObjectRepository
 from app.platform.storage.service import StorageBackend, StoredObject
@@ -82,8 +84,8 @@ class ContentService:
     ) -> None:
         self.session = session
         self.content = ContentRepository(session)
-        self.categories = CategoryRepository(session)
         self.tags = TagRepository(session)
+        self.taxonomy = TaxonomyService(session)
         self.file_uploads = FileUploadRepository(session)
         self.storage = ContentStorage(storage_root or Path("data/content"), backend=storage_backend)
         self.storage_objects = StorageObjectRepository(session)
@@ -263,11 +265,13 @@ class ContentService:
         objects = await self.content.list_all(owner_user_id=owner_user_id)
         normalized_search = search.casefold().strip() if search else None
         normalized_tags = {slugify(tag) for tag in tag_slugs}
+        assignment_by_object_id = await self._current_assignment_map(owner_user_id)
         items: list[ContentObject] = []
 
         for content_object in objects:
+            assignment = assignment_by_object_id.get(content_object.id)
             if folder_path and (
-                content_object.category is None or content_object.category.path != folder_path
+                assignment is None or assignment.category_path_snapshot != folder_path
             ):
                 continue
             if normalized_tags and not normalized_tags.issubset(
@@ -298,6 +302,47 @@ class ContentService:
     async def get_download_path(self, *, owner_user_id: str, slug: str) -> Path:
         content_object = await self._load_note(owner_user_id=owner_user_id, slug=slug)
         return self.storage.build_archive(content_object)
+
+    async def build_classification_input(
+        self,
+        *,
+        owner_user_id: str,
+        content_object_id: str,
+        text_excerpt_max_chars: int = 4000,
+    ) -> ContentClassificationInput:
+        content_object = await self.content.get_by_id(
+            owner_user_id=owner_user_id,
+            object_id=content_object_id,
+        )
+        if content_object is None:
+            raise NoteNotFoundError
+        text_excerpt = self._classification_text_excerpt(
+            content_object,
+            max_chars=text_excerpt_max_chars,
+        )
+        url = (
+            content_object.source_filename
+            if content_object.media_type == "link"
+            and content_object.source_filename is not None
+            and self._plain_url(content_object.source_filename) is not None
+            else None
+        )
+        return ContentClassificationInput(
+            content_object_id=content_object.id,
+            title=content_object.title,
+            text_excerpt=text_excerpt,
+            url=url,
+            tags=[tag.slug for tag in sorted(content_object.tags, key=lambda tag: tag.name)],
+            metadata={
+                "kind": content_object.kind,
+                "media_type": content_object.media_type,
+                "source_filename": content_object.source_filename,
+                "mime_type": content_object.mime_type,
+                "size_bytes": content_object.size_bytes,
+                "is_favorite": content_object.is_favorite,
+            },
+            created_at=content_object.created_at,
+        )
 
     async def get_asset_file(
         self, *, owner_user_id: str, slug: str, asset_id: str
@@ -382,10 +427,14 @@ class ContentService:
 
         by_slug = {content_object.slug: content_object for content_object in sources}
         collection = await self._ensure_collection(target, title=title)
+        target_assignment = await self.taxonomy.get_current_assignment(
+            owner_user_id=owner_user_id,
+            content_object_id=collection.id,
+        )
         next_position = await self._next_collection_position(collection)
         for slug in unique_source_slugs:
             source = by_slug[slug]
-            await self._move_object_tree_to_category(source, collection.category)
+            await self._assign_object_tree_to_category(source, target_assignment)
             existing_membership = await self.content.get_membership(source.id)
             if existing_membership is not None:
                 existing_membership.collection = collection
@@ -492,7 +541,10 @@ class ContentService:
         await self.session.commit()
 
     async def list_folders(self, *, owner_user_id: str) -> FolderTreeResponse:
-        categories = await self.categories.list_all(owner_user_id=owner_user_id)
+        categories = await self.taxonomy.repository.list_categories(
+            owner_user_id=owner_user_id,
+            include_archived=False,
+        )
         by_id: dict[str, FolderTreeItem] = {
             category.id: self._folder_tree_item(category) for category in categories
         }
@@ -511,7 +563,11 @@ class ContentService:
         owner_user_id: str,
         folder_path: str,
     ) -> FolderDetailResponse:
-        category = await self.categories.get_by_path(owner_user_id=owner_user_id, path=folder_path)
+        category = await self.taxonomy.repository.get_category_by_path(
+            owner_user_id=owner_user_id,
+            path=folder_path,
+            include_archived=False,
+        )
         if category is None:
             raise FolderNotFoundError
         notes = await self.list_notes(
@@ -521,11 +577,15 @@ class ContentService:
             folder_path=folder_path,
             sort="newest",
         )
+        assignment_by_object_id = await self._current_assignment_map(owner_user_id)
         tags = sorted(
             {
                 tag.slug: tag
                 for note in await self.content.list_all(owner_user_id=owner_user_id)
-                if note.category is not None and note.category.path == folder_path
+                if (
+                    assignment_by_object_id.get(note.id) is not None
+                    and assignment_by_object_id[note.id].category_path_snapshot == folder_path
+                )
                 for tag in note.tags
             }.values(),
             key=lambda tag: tag.name.casefold(),
@@ -546,7 +606,6 @@ class ContentService:
         tag_names: list[str],
     ) -> NoteCardResponse:
         normalized_title = title or text.strip().splitlines()[0][:80]
-        category = await self._get_or_create_category(owner_user_id, folder_path)
         tags = await self._get_or_create_tags(owner_user_id, tag_names)
         slug = await self._unique_slug(owner_user_id, normalized_title)
         sort_order = await self.content.get_max_sort_order(owner_user_id=owner_user_id) + 10
@@ -561,7 +620,6 @@ class ContentService:
         content_object = ContentObject(
             id=content_object_id,
             owner_user_id=owner_user_id,
-            category=category,
             slug=slug,
             title=normalized_title,
             kind="simple",
@@ -597,6 +655,14 @@ class ContentService:
             ),
         )
         self.content.add(content_object)
+        await self.session.flush()
+        await self.taxonomy.assign_content_to_path(
+            owner_user_id=owner_user_id,
+            content_object_id=content_object.id,
+            raw_path=folder_path,
+            reasoning="Assigned from note folder path.",
+            commit=False,
+        )
         await self.session.commit()
         return await self._reload_write_manifest_and_card(owner_user_id=owner_user_id, slug=slug)
 
@@ -610,7 +676,6 @@ class ContentService:
         tag_names: list[str],
     ) -> NoteCardResponse:
         normalized_title = title or self._link_title(url)
-        category = await self._get_or_create_category(owner_user_id, folder_path)
         tags = await self._get_or_create_tags(owner_user_id, tag_names)
         slug = await self._unique_slug(owner_user_id, normalized_title)
         sort_order = await self.content.get_max_sort_order(owner_user_id=owner_user_id) + 10
@@ -626,7 +691,6 @@ class ContentService:
         content_object = ContentObject(
             id=content_object_id,
             owner_user_id=owner_user_id,
-            category=category,
             slug=slug,
             title=normalized_title,
             kind="simple",
@@ -662,6 +726,14 @@ class ContentService:
             ),
         )
         self.content.add(content_object)
+        await self.session.flush()
+        await self.taxonomy.assign_content_to_path(
+            owner_user_id=owner_user_id,
+            content_object_id=content_object.id,
+            raw_path=folder_path,
+            reasoning="Assigned from note folder path.",
+            commit=False,
+        )
         await self.session.commit()
         return await self._reload_write_manifest_and_card(owner_user_id=owner_user_id, slug=slug)
 
@@ -675,7 +747,6 @@ class ContentService:
         folder_path: str | None,
         tag_names: list[str],
     ) -> NoteCardResponse:
-        category = await self._get_or_create_category(owner_user_id, folder_path)
         tags = await self._get_or_create_tags(owner_user_id, tag_names)
         file_media_type = self._media_type(uploaded.filename, uploaded.content_type)
         normalized_title = title or text.strip().splitlines()[0][:80] or uploaded.filename
@@ -700,7 +771,6 @@ class ContentService:
         content_object = ContentObject(
             id=content_object_id,
             owner_user_id=owner_user_id,
-            category=category,
             slug=slug,
             title=normalized_title,
             kind="complex",
@@ -758,6 +828,14 @@ class ContentService:
             ),
         )
         self.content.add(content_object)
+        await self.session.flush()
+        await self.taxonomy.assign_content_to_path(
+            owner_user_id=owner_user_id,
+            content_object_id=content_object.id,
+            raw_path=folder_path,
+            reasoning="Assigned from note folder path.",
+            commit=False,
+        )
         await self.session.commit()
         return await self._reload_write_manifest_and_card(owner_user_id=owner_user_id, slug=slug)
 
@@ -779,11 +857,19 @@ class ContentService:
         if existing is not None:
             collection = await self._ensure_collection(existing, title=title)
             next_position = await self._next_collection_position(collection)
+            collection_assignment = await self.taxonomy.get_current_assignment(
+                owner_user_id=owner_user_id,
+                content_object_id=collection.id,
+            )
             for uploaded in files:
                 child = await self._create_uploaded_object(
                     owner_user_id=owner_user_id,
                     uploaded=uploaded,
-                    folder_path=collection.category.path if collection.category else folder_path,
+                    folder_path=(
+                        collection_assignment.category_path_snapshot
+                        if collection_assignment is not None
+                        else folder_path
+                    ),
                     tag_names=tag_names,
                 )
                 self.content.add_collection_item(
@@ -852,7 +938,6 @@ class ContentService:
         object_id: str | None = None,
         title: str | None = None,
     ) -> ContentObject:
-        category = await self._get_or_create_category(owner_user_id, folder_path)
         tags = await self._get_or_create_tags(owner_user_id, tag_names)
         media_type = self._media_type(uploaded.filename, uploaded.content_type)
         kind = "complex" if media_type == "document" else "simple"
@@ -875,7 +960,6 @@ class ContentService:
         content_object = ContentObject(
             id=content_object_id,
             owner_user_id=owner_user_id,
-            category=category,
             slug=slug,
             title=normalized_title,
             kind=kind,
@@ -911,6 +995,14 @@ class ContentService:
             ),
         )
         self.content.add(content_object)
+        await self.session.flush()
+        await self.taxonomy.assign_content_to_path(
+            owner_user_id=owner_user_id,
+            content_object_id=content_object.id,
+            raw_path=folder_path,
+            reasoning="Assigned from note folder path.",
+            commit=False,
+        )
         return content_object
 
     async def _create_collection(
@@ -923,7 +1015,6 @@ class ContentService:
         object_id: str | None = None,
         slug: str | None = None,
     ) -> ContentObject:
-        category = await self._get_or_create_category(owner_user_id, folder_path)
         tags = await self._get_or_create_tags(owner_user_id, tag_names)
         normalized_slug = slug or await self._unique_slug(owner_user_id, title)
         sort_order = await self.content.get_max_sort_order(owner_user_id=owner_user_id) + 10
@@ -931,7 +1022,6 @@ class ContentService:
         collection = ContentObject(
             id=content_object_id,
             owner_user_id=owner_user_id,
-            category=category,
             slug=normalized_slug,
             title=title,
             kind="collection",
@@ -941,6 +1031,14 @@ class ContentService:
             tags=tags,
         )
         self.content.add(collection)
+        await self.session.flush()
+        await self.taxonomy.assign_content_to_path(
+            owner_user_id=owner_user_id,
+            content_object_id=collection.id,
+            raw_path=folder_path,
+            reasoning="Assigned from note folder path.",
+            commit=False,
+        )
         return collection
 
     async def _ensure_collection(
@@ -958,9 +1056,13 @@ class ContentService:
             content_object.owner_user_id,
             f"{content_object.slug}-item",
         )
-        child = ContentObject(
+        current_assignment = await self.taxonomy.get_current_assignment(
             owner_user_id=content_object.owner_user_id,
-            category=content_object.category,
+            content_object_id=content_object.id,
+        )
+        child = ContentObject(
+            id=str(uuid4()),
+            owner_user_id=content_object.owner_user_id,
             slug=child_slug,
             title=content_object.title,
             kind=content_object.kind,
@@ -983,6 +1085,15 @@ class ContentService:
         content_object.size_bytes = None
         content_object.storage_path = f"content-assets/{content_object.id}"
         self.content.add(child)
+        await self.session.flush()
+        if current_assignment is not None:
+            await self.taxonomy.create_manual_assignment(
+                owner_user_id=content_object.owner_user_id,
+                content_object_id=child.id,
+                category_id=current_assignment.category_id,
+                reasoning="Inherited from collection source object.",
+                commit=False,
+            )
         self.content.add_collection_item(
             ContentCollectionItem(collection=content_object, content_object=child, position=10),
         )
@@ -992,16 +1103,23 @@ class ContentService:
         current_items = await self.content.list_collection_items(collection.id)
         return max((item.position for item in current_items), default=0) + 10
 
-    async def _move_object_tree_to_category(
+    async def _assign_object_tree_to_category(
         self,
         content_object: ContentObject,
-        category: ContentCategory | None,
+        assignment: TaxonomyContentAssignment | None,
     ) -> None:
-        content_object.category = category
+        if assignment is not None:
+            await self.taxonomy.create_manual_assignment(
+                owner_user_id=content_object.owner_user_id,
+                content_object_id=content_object.id,
+                category_id=assignment.category_id,
+                reasoning="Assigned during content merge.",
+                commit=False,
+            )
         if content_object.kind != "collection":
             return
         for item in await self.content.list_collection_items(content_object.id):
-            await self._move_object_tree_to_category(item.content_object, category)
+            await self._assign_object_tree_to_category(item.content_object, assignment)
 
     async def _reload_write_manifest_and_card(
         self,
@@ -1013,14 +1131,24 @@ class ContentService:
         items = [
             item.content_object for item in await self.content.list_collection_items(loaded.id)
         ]
+        assignment_by_object_id = await self._current_assignment_map(owner_user_id)
         self.storage.write_manifest(
-            content_object_id=loaded.id, manifest=self._manifest(loaded, items=items)
+            content_object_id=loaded.id,
+            manifest=self._manifest(
+                loaded,
+                items=items,
+                assignment=assignment_by_object_id.get(loaded.id),
+            ),
         )
         if loaded.kind == "collection":
             for item in items:
                 self.storage.write_manifest(
                     content_object_id=item.id,
-                    manifest=self._manifest(item, items=[]),
+                    manifest=self._manifest(
+                        item,
+                        items=[],
+                        assignment=assignment_by_object_id.get(item.id),
+                    ),
                 )
         all_objects = [loaded, *items] if loaded.kind == "collection" else [loaded]
         for obj in all_objects:
@@ -1081,31 +1209,6 @@ class ContentService:
             size_bytes=stored_file.size_bytes,
             checksum=stored_file.checksum,
         )
-
-    async def _get_or_create_category(
-        self,
-        owner_user_id: str,
-        folder_path: str | None,
-    ) -> ContentCategory | None:
-        if not folder_path:
-            return None
-        segments = [slugify(segment) for segment in folder_path.split("/") if segment.strip()]
-        if not segments:
-            return None
-
-        parent: ContentCategory | None = None
-        current_path = ""
-        for segment in segments:
-            current_path = f"{current_path}/{segment}".strip("/")
-            category = await self.categories.get_or_create(
-                owner_user_id=owner_user_id,
-                parent_id=parent.id if parent is not None else None,
-                name=segment,
-                slug=segment,
-                path=current_path,
-            )
-            parent = category
-        return parent
 
     async def _cleanup_expired_uploads(self, owner_user_id: str) -> None:
         expired_uploads = await self.file_uploads.list_expired(
@@ -1169,6 +1272,10 @@ class ContentService:
         if content_object.kind == "collection":
             collection_items = await self.content.list_collection_items(content_object.id)
             items = [await self._to_card(item.content_object) for item in collection_items]
+        current_assignment = await self.taxonomy.get_current_assignment(
+            owner_user_id=content_object.owner_user_id,
+            content_object_id=content_object.id,
+        )
         asset_responses: list[NoteAssetResponse] = []
         for asset in content_object.assets:
             asset_url = f"{self.api_prefix}/notes/{content_object.slug}/asset/{asset.id}"
@@ -1220,11 +1327,7 @@ class ContentService:
             media_type=content_object.media_type,  # type: ignore[arg-type]
             title=content_object.title,
             source_filename=content_object.source_filename,
-            folder=(
-                self._folder_response(content_object.category)
-                if content_object.category is not None
-                else None
-            ),
+            taxonomy_category=self._taxonomy_category_response_from_assignment(current_assignment),
             tags=[self._tag_response(tag) for tag in content_object.tags],
             is_favorite=content_object.is_favorite,
             sort_order=content_object.sort_order,
@@ -1241,6 +1344,7 @@ class ContentService:
         content_object: ContentObject,
         *,
         items: list[ContentObject],
+        assignment: TaxonomyContentAssignment | None,
     ) -> dict[str, object]:
         return {
             "id": content_object.id,
@@ -1249,7 +1353,7 @@ class ContentService:
             "media_type": content_object.media_type,
             "title": content_object.title,
             "source_filename": content_object.source_filename,
-            "folder": content_object.category.path if content_object.category else None,
+            "folder": assignment.category_path_snapshot if assignment is not None else None,
             "tags": [tag.slug for tag in content_object.tags],
             "items": [item.slug for item in items],
         }
@@ -1264,7 +1368,22 @@ class ContentService:
         return any(search in value.casefold() for value in haystack)
 
     @staticmethod
-    def _folder_response(category: ContentCategory) -> FolderResponse:
+    def _classification_text_excerpt(
+        content_object: ContentObject,
+        *,
+        max_chars: int,
+    ) -> str | None:
+        text = "\n".join(
+            asset.text_content.strip()
+            for asset in content_object.assets
+            if asset.text_content is not None and asset.text_content.strip()
+        ).strip()
+        if not text:
+            return None
+        return text[:max_chars]
+
+    @staticmethod
+    def _folder_response(category: TaxonomyCategory) -> FolderResponse:
         return FolderResponse(
             id=category.id,
             name=category.name,
@@ -1273,7 +1392,7 @@ class ContentService:
         )
 
     @staticmethod
-    def _folder_tree_item(category: ContentCategory) -> FolderTreeItem:
+    def _folder_tree_item(category: TaxonomyCategory) -> FolderTreeItem:
         return FolderTreeItem(
             id=category.id,
             name=category.name,
@@ -1281,6 +1400,28 @@ class ContentService:
             path=category.path,
             children=[],
         )
+
+    @staticmethod
+    def _taxonomy_category_response_from_assignment(
+        assignment: TaxonomyContentAssignment | None,
+    ) -> ContentTaxonomyCategoryResponse | None:
+        if assignment is None:
+            return None
+        return ContentTaxonomyCategoryResponse(
+            id=assignment.category_id,
+            name=assignment.category_name_snapshot,
+            slug=assignment.category_path_snapshot.rsplit("/", 1)[-1],
+            path=assignment.category_path_snapshot,
+        )
+
+    async def _current_assignment_map(
+        self,
+        owner_user_id: str,
+    ) -> dict[str, TaxonomyContentAssignment]:
+        assignments = await self.taxonomy.repository.list_current_assignments(
+            owner_user_id=owner_user_id,
+        )
+        return {assignment.content_object_id: assignment for assignment in assignments}
 
     @staticmethod
     def _tag_response(tag: ContentTag) -> TagResponse:

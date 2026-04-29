@@ -11,7 +11,6 @@ from sqlalchemy.sql.base import ExecutableOption
 
 from app.modules.content.models import (
     ContentAsset,
-    ContentCategory,
     ContentCollectionItem,
     ContentFileUpload,
     ContentObject,
@@ -21,12 +20,8 @@ from app.modules.content.models import (
 
 def content_object_load_options() -> tuple[ExecutableOption, ...]:
     return (
-        selectinload(ContentObject.category),
         selectinload(ContentObject.tags),
         selectinload(ContentObject.assets),
-        selectinload(ContentObject.collection_items)
-        .selectinload(ContentCollectionItem.content_object)
-        .selectinload(ContentObject.category),
         selectinload(ContentObject.collection_items)
         .selectinload(ContentCollectionItem.content_object)
         .selectinload(ContentObject.tags),
@@ -106,9 +101,6 @@ class ContentRepository:
         query = (
             select(ContentCollectionItem)
             .options(
-                selectinload(ContentCollectionItem.content_object).selectinload(
-                    ContentObject.category,
-                ),
                 selectinload(ContentCollectionItem.content_object).selectinload(ContentObject.tags),
                 selectinload(ContentCollectionItem.content_object).selectinload(
                     ContentObject.assets,
@@ -131,59 +123,6 @@ class ContentRepository:
     async def get_max_sort_order(self, *, owner_user_id: str) -> int:
         objects = await self.list_all(owner_user_id=owner_user_id)
         return max((content_object.sort_order for content_object in objects), default=0)
-
-
-class CategoryRepository:
-    def __init__(self, session: AsyncSession) -> None:
-        self.session = session
-
-    def add(self, category: ContentCategory) -> None:
-        self.session.add(category)
-
-    async def get_by_path(self, *, owner_user_id: str, path: str) -> ContentCategory | None:
-        query = select(ContentCategory).where(
-            ContentCategory.owner_user_id == owner_user_id,
-            ContentCategory.path == path,
-        )
-        return cast(ContentCategory | None, await self.session.scalar(query))
-
-    async def get_or_create(
-        self,
-        *,
-        owner_user_id: str,
-        parent_id: str | None,
-        name: str,
-        slug: str,
-        path: str,
-    ) -> ContentCategory:
-        statement = (
-            postgresql_insert(ContentCategory)
-            .values(
-                owner_user_id=owner_user_id,
-                parent_id=parent_id,
-                name=name,
-                slug=slug,
-                path=path,
-            )
-            .on_conflict_do_nothing(constraint="uq_content_categories_owner_user_id_path")
-            .returning(ContentCategory)
-        )
-        category = cast(ContentCategory | None, await self.session.scalar(statement))
-        if category is not None:
-            return category
-
-        existing = await self.get_by_path(owner_user_id=owner_user_id, path=path)
-        if existing is None:
-            raise RuntimeError(f"Failed to load content category after conflict: {path}")
-        return existing
-
-    async def list_all(self, *, owner_user_id: str) -> list[ContentCategory]:
-        query = (
-            select(ContentCategory)
-            .where(ContentCategory.owner_user_id == owner_user_id)
-            .order_by(ContentCategory.path.asc())
-        )
-        return list(await self.session.scalars(query))
 
 
 class TagRepository:

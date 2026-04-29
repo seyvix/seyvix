@@ -16,8 +16,9 @@ from app.core.config import get_settings
 from app.core.database import Base, build_session_factory
 from app.main import app
 from app.modules.auth.models import User
-from app.modules.content.models import ContentCategory, ContentObject, ContentTag
+from app.modules.content.models import ContentObject, ContentTag
 from app.modules.content.service import ContentService
+from app.modules.taxonomy.models import TaxonomyCategory, TaxonomyContentAssignment
 from app.platform.events.models import EventOutbox
 
 TELEGRAM_BOT_TOKEN = "123456:test-bot-token"
@@ -121,7 +122,8 @@ def test_create_text_note_persists_manifest_and_downloads_archive(
     assert payload["kind"] == "simple"
     assert payload["media_type"] == "text"
     assert payload["title"] == "Manual title"
-    assert payload["folder"]["path"] == "projects/ai"
+    assert "folder" not in payload
+    assert payload["taxonomy_category"]["path"] == "projects/ai"
     assert [tag["name"] for tag in payload["tags"]] == ["AI", "draft"]
     assert payload["download_url"] == f"/api/v1/notes/{payload['slug']}/download"
 
@@ -156,6 +158,8 @@ def test_create_plain_url_note_creates_link_object_and_content_event(
     assert payload["media_type"] == "link"
     assert payload["title"] == "example.com"
     assert payload["source_filename"] == "https://example.com/research?item=1"
+    assert "folder" not in payload
+    assert payload["taxonomy_category"] is None
     assert payload["assets"][0]["media_type"] == "link"
     assert payload["assets"][0]["mime_type"] == "text/uri-list"
     assert payload["assets"][0]["text_content"] == "https://example.com/research?item=1"
@@ -205,14 +209,18 @@ def test_concurrent_notes_reuse_folder_and_tags_and_allocate_unique_slugs(
         )
 
         async with session_factory() as session:
-            categories = list(await session.scalars(select(ContentCategory)))
+            categories = list(await session.scalars(select(TaxonomyCategory)))
             tags = list(await session.scalars(select(ContentTag)))
             notes = list(await session.scalars(select(ContentObject)))
+            assignments = list(await session.scalars(select(TaxonomyContentAssignment)))
 
         assert sorted(slugs) == ["same-title", "same-title-2"]
         assert sorted(category.path for category in categories) == ["projects", "projects/ai"]
         assert [tag.slug for tag in tags] == ["ai"]
         assert len(notes) == 2
+        assert all(note.category_id is None for note in notes)
+        assert len(assignments) == 2
+        assert {assignment.category_path_snapshot for assignment in assignments} == {"projects/ai"}
 
     try:
         asyncio.run(scenario())
@@ -255,7 +263,7 @@ def test_upload_single_files_with_same_object_id_creates_collection(
     assert payload["id"] == object_id
     assert payload["kind"] == "collection"
     assert payload["title"] == "Batch import"
-    assert payload["folder"]["path"] == "imports"
+    assert payload["taxonomy_category"]["path"] == "imports"
     assert [item["source_filename"] for item in payload["items"]] == ["alpha.txt", "cover.png"]
     assert [item["media_type"] for item in payload["items"]] == ["text", "image"]
 
@@ -353,7 +361,7 @@ def test_upload_file_without_object_id_stays_temporary_until_note_creation(
     payload = create_response.json()
     assert payload["kind"] == "simple"
     assert payload["source_filename"] == "draft.txt"
-    assert payload["folder"]["path"] == "inbox"
+    assert payload["taxonomy_category"]["path"] == "inbox"
     assert list(content_client.app.state.content_storage_root.rglob("manifest.json"))
 
 
@@ -529,13 +537,13 @@ def test_merge_moves_collection_items_into_target_folder(
 
     assert merge_response.status_code == 200
     payload = merge_response.json()
-    assert payload["folder"]["path"] == "work/target"
+    assert payload["taxonomy_category"]["path"] == "work/target"
     moved_collection = next(
         item for item in payload["items"] if item["title"] == "Source collection"
     )
-    assert moved_collection["folder"]["path"] == "work/target"
+    assert moved_collection["taxonomy_category"]["path"] == "work/target"
     assert [item["source_filename"] for item in moved_collection["items"]] == ["one.txt", "two.txt"]
-    assert [item["folder"]["path"] for item in moved_collection["items"]] == [
+    assert [item["taxonomy_category"]["path"] for item in moved_collection["items"]] == [
         "work/target",
         "work/target",
     ]
@@ -575,4 +583,4 @@ def test_folder_tree_and_folder_tags_are_available(content_client: TestClient) -
     assert folder_response.json()["tags"][0]["slug"] == "ml"
     assert notes_response.status_code == 200
     assert len(notes_response.json()["items"]) == 1
-    assert notes_response.json()["items"][0]["folder"]["path"] == "work/research"
+    assert notes_response.json()["items"][0]["taxonomy_category"]["path"] == "work/research"

@@ -23,6 +23,13 @@ class FolderResponse(BaseModel):
     path: str
 
 
+class ContentTaxonomyCategoryResponse(BaseModel):
+    id: str
+    name: str
+    slug: str
+    path: str
+
+
 class FolderTreeItem(FolderResponse):
     children: list[FolderTreeItem] = Field(default_factory=list)
 
@@ -60,7 +67,7 @@ class NoteCardResponse(BaseModel):
     media_type: ContentMediaType | None
     title: str
     source_filename: str | None
-    folder: FolderResponse | None
+    taxonomy_category: ContentTaxonomyCategoryResponse | None
     tags: list[TagResponse]
     is_favorite: bool
     sort_order: int
