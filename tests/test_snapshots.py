@@ -11,7 +11,11 @@ from sqlalchemy import select
 
 from app.modules.content.models import ContentAsset, ContentObject
 from app.modules.content.schemas import NoteAssetResponse
-from app.modules.snapshots.artifacts import SnapshotArtifactGenerator, UnsupportedSnapshotError
+from app.modules.snapshots.artifacts import (
+    FetchedWebpage,
+    SnapshotArtifactGenerator,
+    UnsupportedSnapshotError,
+)
 from app.modules.snapshots.service import EffectiveSnapshotSettings, plan_snapshot_job_types
 from app.platform.events.models import EventOutbox
 from tests.test_content import _auth_headers
@@ -260,6 +264,35 @@ def test_snapshot_job_plan_skips_html_archive_and_pdf_for_existing_pdf() -> None
     assert plan_snapshot_job_types(asset, settings) == ("thumbnail", "markdown")
 
 
+def test_snapshot_job_plan_includes_site_jobs_for_link_when_enabled() -> None:
+    asset = ContentAsset(
+        id="asset-1",
+        content_object_id="object-1",
+        role="original",
+        media_type="link",
+        filename="link.url",
+        mime_type="text/uri-list",
+        size_bytes=120,
+        storage_path="content-assets/object-1/asset-1/original.url",
+        text_content="https://example.com/research",
+    )
+    settings = EffectiveSnapshotSettings(
+        screenshot=True,
+        webpage_html=True,
+        pdf=True,
+        markdown=True,
+        archive_org=True,
+    )
+
+    assert plan_snapshot_job_types(asset, settings) == (
+        "thumbnail",
+        "markdown",
+        "pdf",
+        "screenshot",
+        "webpage_html",
+    )
+
+
 def test_snapshot_job_plan_respects_disabled_markdown_and_pdf_settings() -> None:
     asset = ContentAsset(
         id="asset-1",
@@ -313,6 +346,75 @@ def test_note_asset_response_exposes_snapshot_representation_fields() -> None:
         "pdf_url": "/api/v1/snapshots/artifacts/pdf-1",
         "html_url": None,
     }
+
+
+def test_snapshot_generator_creates_webpage_artifacts_from_link(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage_root = tmp_path / "storage"
+    object_dir = storage_root / "user-1" / "site.object"
+    source_dir = object_dir / "original"
+    source_dir.mkdir(parents=True)
+    source_path = source_dir / "link.url"
+    source_path.write_text("https://example.com/research", encoding="utf-8")
+
+    content_object = ContentObject(
+        id="object-1",
+        owner_user_id="user-1",
+        slug="site",
+        title="example.com",
+        kind="simple",
+        media_type="link",
+        storage_path="user-1/site.object",
+    )
+    asset = ContentAsset(
+        id="asset-1",
+        content_object_id="object-1",
+        role="original",
+        media_type="link",
+        filename="link.url",
+        mime_type="text/uri-list",
+        size_bytes=source_path.stat().st_size,
+        storage_path="user-1/site.object/original/link.url",
+        text_content="https://example.com/research",
+    )
+
+    def fake_fetch(self: SnapshotArtifactGenerator, url: str) -> FetchedWebpage:
+        assert url == "https://example.com/research"
+        return FetchedWebpage(
+            url=url,
+            html="<html><head><title>Research</title></head><body><h1>Hello</h1></body></html>",
+        )
+
+    monkeypatch.setattr(SnapshotArtifactGenerator, "_fetch_webpage", fake_fetch)
+    generator = SnapshotArtifactGenerator(storage_root)
+
+    html = generator.generate(
+        content_object=content_object,
+        asset=asset,
+        job_type="webpage_html",
+    )
+    markdown = generator.generate(
+        content_object=content_object,
+        asset=asset,
+        job_type="markdown",
+    )
+    pdf = generator.generate(content_object=content_object, asset=asset, job_type="pdf")
+    thumbnail = generator.generate(
+        content_object=content_object,
+        asset=asset,
+        job_type="thumbnail",
+    )
+
+    assert html.mime_type == "text/html"
+    assert "<h1>Hello</h1>" in html.path.read_text(encoding="utf-8")
+    assert markdown.mime_type == "text/markdown"
+    assert "Hello" in markdown.path.read_text(encoding="utf-8")
+    assert pdf.mime_type == "application/pdf"
+    assert pdf.path.read_bytes().startswith(b"%PDF")
+    assert thumbnail.mime_type == "image/jpeg"
+    assert thumbnail.path.read_bytes().startswith(b"\xff\xd8\xff")
 
 
 def test_snapshot_generator_creates_text_thumbnail_for_plain_text(tmp_path: Path) -> None:

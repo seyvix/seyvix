@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import html
 import importlib
+import ipaddress
 import re
 import shutil
+import socket
 import subprocess
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
+from urllib.parse import urlparse
 from xml.etree import ElementTree
+
+import httpx
 
 from app.core.config import get_settings
 from app.modules.content.models import ContentAsset, ContentObject
@@ -32,6 +37,12 @@ class GeneratedArtifact:
     @property
     def size_bytes(self) -> int:
         return self.path.stat().st_size
+
+
+@dataclass(frozen=True, slots=True)
+class FetchedWebpage:
+    url: str
+    html: str
 
 
 class SnapshotArtifactGenerator:
@@ -160,6 +171,16 @@ class SnapshotArtifactGenerator:
                 filename="screenshot" + source_path.suffix.lower(),
                 mime_type=asset.mime_type or "application/octet-stream",
             )
+        if asset.media_type == "link":
+            text = self._text_for_preview(asset=asset, source_path=source_path)
+            if text is None:
+                raise UnsupportedSnapshotError("No screenshot renderer is available for this URL.")
+            return self._render_text_thumbnail(
+                output_dir=output_dir,
+                filename="screenshot.jpg",
+                title=self._link_url(asset=asset, source_path=source_path),
+                body=text,
+            )
         return self._generate_thumbnail(asset=asset, source_path=source_path, output_dir=output_dir)
 
     def _generate_webpage_html(
@@ -171,6 +192,10 @@ class SnapshotArtifactGenerator:
     ) -> GeneratedArtifact:
         suffix = source_path.suffix.lower()
         path = output_dir / "snapshot.html"
+        if asset.media_type == "link":
+            webpage = self._fetch_webpage(self._link_url(asset=asset, source_path=source_path))
+            path.write_text(webpage.html, encoding="utf-8")
+            return GeneratedArtifact(filename="snapshot.html", mime_type="text/html", path=path)
         if asset.mime_type == "text/html" or suffix in {".html", ".htm"}:
             path.write_bytes(source_path.read_bytes())
         else:
@@ -376,11 +401,13 @@ class SnapshotArtifactGenerator:
             "text/html",
             "text/markdown",
             "text/plain",
+            "text/uri-list",
         }
         if (
             asset.media_type == "text"
+            or asset.media_type == "link"
             or asset.mime_type in text_mime_types
-            or suffix in {".csv", ".html", ".htm", ".json", ".md", ".markdown", ".txt"}
+            or suffix in {".csv", ".html", ".htm", ".json", ".md", ".markdown", ".txt", ".url"}
         ):
             return self._extract_markdown_text(asset=asset, source_path=source_path)
         return None
@@ -396,6 +423,9 @@ class SnapshotArtifactGenerator:
         return None
 
     def _extract_markdown_text(self, *, asset: ContentAsset, source_path: Path) -> str | None:
+        if asset.media_type == "link":
+            webpage = self._fetch_webpage(self._link_url(asset=asset, source_path=source_path))
+            return self._html_to_text(webpage.html)
         if asset.text_content:
             return asset.text_content
 
@@ -461,6 +491,63 @@ class SnapshotArtifactGenerator:
         values = [node.text or "" for node in root.iter(f"{namespace}t")]
         text = "\n".join(value for value in values if value.strip()).strip()
         return text or None
+
+    def _link_url(self, *, asset: ContentAsset, source_path: Path) -> str:
+        value = asset.text_content or self._decode_text(source_path)
+        if value is None:
+            raise UnsupportedSnapshotError("Link asset does not contain a URL.")
+        for line in value.splitlines():
+            candidate = line.strip()
+            if candidate and not candidate.startswith("#"):
+                self._validate_fetchable_url(candidate)
+                return candidate
+        raise UnsupportedSnapshotError("Link asset does not contain a URL.")
+
+    def _fetch_webpage(self, url: str) -> FetchedWebpage:
+        self._validate_fetchable_url(url)
+        try:
+            response = httpx.get(
+                url,
+                follow_redirects=True,
+                timeout=10,
+                headers={"User-Agent": "VKR Snapshot Worker/1.0"},
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise UnsupportedSnapshotError(f"Failed to fetch webpage: {exc}") from exc
+        return FetchedWebpage(url=str(response.url), html=response.text)
+
+    @classmethod
+    def _validate_fetchable_url(cls, url: str) -> None:
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
+            raise UnsupportedSnapshotError("Only HTTP and HTTPS URLs can be snapshotted.")
+        host = parsed.hostname.casefold()
+        if host in {"localhost", "localhost.localdomain"} or host.endswith(".localhost"):
+            raise UnsupportedSnapshotError("Local URLs cannot be snapshotted.")
+
+        try:
+            addresses = [ipaddress.ip_address(host)]
+        except ValueError:
+            try:
+                address_info = socket.getaddrinfo(host, parsed.port or 443, type=socket.SOCK_STREAM)
+            except OSError as exc:
+                raise UnsupportedSnapshotError(f"Failed to resolve URL host: {host}") from exc
+            addresses = [ipaddress.ip_address(item[4][0]) for item in address_info]
+
+        if any(cls._is_blocked_address(address) for address in addresses):
+            raise UnsupportedSnapshotError("Private or local URLs cannot be snapshotted.")
+
+    @staticmethod
+    def _is_blocked_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+        return (
+            address.is_loopback
+            or address.is_link_local
+            or address.is_private
+            or address.is_multicast
+            or address.is_reserved
+            or address.is_unspecified
+        )
 
     @staticmethod
     def _convert_office_to_pdf(source_path: Path) -> Path | None:

@@ -18,6 +18,7 @@ from app.main import app
 from app.modules.auth.models import User
 from app.modules.content.models import ContentCategory, ContentObject, ContentTag
 from app.modules.content.service import ContentService
+from app.platform.events.models import EventOutbox
 
 TELEGRAM_BOT_TOKEN = "123456:test-bot-token"
 
@@ -136,6 +137,40 @@ def test_create_text_note_persists_manifest_and_downloads_archive(
     assert download_response.status_code == 200
     assert download_response.headers["content-type"] == "application/zip"
     assert len(download_response.content) > 100
+
+
+def test_create_plain_url_note_creates_link_object_and_content_event(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client)
+
+    response = content_client.post(
+        "/api/v1/notes",
+        headers=headers,
+        json={"text": "https://example.com/research?item=1"},
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["kind"] == "simple"
+    assert payload["media_type"] == "link"
+    assert payload["title"] == "example.com"
+    assert payload["source_filename"] == "https://example.com/research?item=1"
+    assert payload["assets"][0]["media_type"] == "link"
+    assert payload["assets"][0]["mime_type"] == "text/uri-list"
+    assert payload["assets"][0]["text_content"] == "https://example.com/research?item=1"
+
+    async def load_outbox_events() -> list[EventOutbox]:
+        async with content_client.app.state.session_factory() as session:
+            result = await session.scalars(
+                select(EventOutbox).where(EventOutbox.entity_id == payload["id"])
+            )
+            return list(result)
+
+    events = content_client.portal.call(load_outbox_events)
+    assert [event.event_name for event in events] == ["content.object.created"]
+    assert events[0].payload["metadata"]["media_type"] == "link"
+    assert events[0].payload["asset_ids"] == [payload["assets"][0]["id"]]
 
 
 def test_concurrent_notes_reuse_folder_and_tags_and_allocate_unique_slugs(

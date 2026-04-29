@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from sqlalchemy import delete as sql_delete
@@ -150,7 +151,16 @@ class ContentService:
             await self.session.commit()
             return card
 
-        if media_type in (None, "text") and text is not None:
+        if media_type in (None, "text", "link") and text is not None:
+            plain_url = self._plain_url(text)
+            if plain_url is not None:
+                return await self._create_link_note(
+                    owner_user_id=owner_user_id,
+                    url=plain_url,
+                    title=title,
+                    folder_path=folder_path,
+                    tag_names=tag_names,
+                )
             return await self._create_text_note(
                 owner_user_id=owner_user_id,
                 text=text,
@@ -584,6 +594,71 @@ class ContentService:
                 storage_ref=stored_file.storage_ref,
                 checksum=stored_file.checksum,
                 text_content=text,
+            ),
+        )
+        self.content.add(content_object)
+        await self.session.commit()
+        return await self._reload_write_manifest_and_card(owner_user_id=owner_user_id, slug=slug)
+
+    async def _create_link_note(
+        self,
+        *,
+        owner_user_id: str,
+        url: str,
+        title: str | None,
+        folder_path: str | None,
+        tag_names: list[str],
+    ) -> NoteCardResponse:
+        normalized_title = title or self._link_title(url)
+        category = await self._get_or_create_category(owner_user_id, folder_path)
+        tags = await self._get_or_create_tags(owner_user_id, tag_names)
+        slug = await self._unique_slug(owner_user_id, normalized_title)
+        sort_order = await self.content.get_max_sort_order(owner_user_id=owner_user_id) + 10
+        content_object_id = str(uuid4())
+        asset_id = str(uuid4())
+        stored_file = self.storage.write_binary_object(
+            content_object_id=content_object_id,
+            asset_id=asset_id,
+            filename="link.url",
+            data=f"{url}\n".encode(),
+            content_type="text/uri-list",
+        )
+        content_object = ContentObject(
+            id=content_object_id,
+            owner_user_id=owner_user_id,
+            category=category,
+            slug=slug,
+            title=normalized_title,
+            kind="simple",
+            media_type="link",
+            source_filename=url,
+            mime_type="text/uri-list",
+            size_bytes=stored_file.size_bytes,
+            storage_path=f"content-assets/{content_object_id}",
+            sort_order=sort_order,
+            tags=tags,
+        )
+        self.storage_objects.add(
+            self._stored_object_from_file(stored_file),
+            owner_entity_type="content_asset",
+            owner_entity_id=asset_id,
+            metadata={"role": "original", "source_url": url},
+        )
+        content_object.assets.append(
+            ContentAsset(
+                id=asset_id,
+                role="original",
+                media_type="link",
+                filename=stored_file.filename,
+                mime_type="text/uri-list",
+                size_bytes=stored_file.size_bytes,
+                storage_path=stored_file.relative_path,
+                storage_backend=stored_file.storage_backend,
+                bucket=stored_file.bucket,
+                storage_key=stored_file.storage_key,
+                storage_ref=stored_file.storage_ref,
+                checksum=stored_file.checksum,
+                text_content=url,
             ),
         )
         self.content.add(content_object)
@@ -1241,6 +1316,21 @@ class ContentService:
     @staticmethod
     def _is_pdf_asset(asset: ContentAsset) -> bool:
         return asset.mime_type == "application/pdf" or Path(asset.filename).suffix.lower() == ".pdf"
+
+    @staticmethod
+    def _plain_url(value: str) -> str | None:
+        candidate = value.strip()
+        if not candidate or any(character.isspace() for character in candidate):
+            return None
+        parsed = urlparse(candidate)
+        if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
+            return None
+        return candidate
+
+    @staticmethod
+    def _link_title(url: str) -> str:
+        parsed = urlparse(url)
+        return parsed.hostname or url
 
     @staticmethod
     def _decode_text(data: bytes) -> str | None:

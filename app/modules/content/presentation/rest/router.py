@@ -64,6 +64,7 @@ def _not_found(exc: Exception) -> AppError:
     summary="Create note object",
     description=(
         "Creates a content object from text or from previously uploaded temporary files. "
+        "A plain HTTP(S) URL is stored as a link object for website snapshot processing. "
         "Multiple file uploads create a collection with separate child objects."
     ),
     responses={
