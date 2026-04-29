@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     snapshot_archive_org_enabled: bool = False
     snapshot_worker_batch_size: int = 10
     snapshot_worker_poll_interval_seconds: int = 10
-    vector_embedding_provider: Literal["fake", "http"] = "fake"
+    vector_embedding_provider: Literal["fake", "http", "ollama"] = "fake"
     vector_embedding_base_url: str | None = None
     vector_embedding_api_key: str | None = None
     vector_embedding_model: str = "fake-embedding"

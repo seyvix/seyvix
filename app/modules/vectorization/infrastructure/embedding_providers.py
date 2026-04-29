@@ -107,6 +107,12 @@ def build_embedding_provider(
             api_key=api_key,
             timeout_seconds=timeout_seconds,
         )
+    if provider_name == "ollama":
+        return HttpEmbeddingProvider(
+            base_url=base_url or "http://127.0.0.1:11434/v1",
+            api_key=None,
+            timeout_seconds=timeout_seconds,
+        )
     raise ValueError(f"Unsupported vector embedding provider: {provider_name}.")
 
 

@@ -23,6 +23,7 @@ from app.modules.vectorization.infrastructure.chunking import ChunkingLimits, ch
 from app.modules.vectorization.infrastructure.embedding_providers import (
     FakeEmbeddingProvider,
     HttpEmbeddingProvider,
+    build_embedding_provider,
 )
 from app.modules.vectorization.models import (
     VectorizationChunk,
@@ -282,6 +283,19 @@ async def test_embedding_providers_are_deterministic_and_parse_http_shape() -> N
         [0.1, 0.2],
         [0.3, 0.4],
     ]
+
+
+def test_ollama_provider_alias_uses_local_openai_compatible_default() -> None:
+    provider = build_embedding_provider(
+        provider_name="ollama",
+        base_url=None,
+        api_key=None,
+        timeout_seconds=120,
+    )
+
+    assert isinstance(provider, HttpEmbeddingProvider)
+    assert provider.base_url == "http://127.0.0.1:11434/v1"
+    assert provider.api_key is None
 
 
 def test_authenticated_index_endpoint_enqueues_owner_scoped_job(
