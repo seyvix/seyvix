@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field, field_validator
 TaxonomyCategorySource = Literal["template", "user", "system", "legacy_migration"]
 AssignmentStatus = Literal["proposed", "accepted", "rejected", "overridden"]
 AssignedBy = Literal["user", "system", "llm", "migration"]
+TaxonomyClassificationMode = Literal["semantic_only", "llm_judge"]
+TaxonomyClassificationDecisionStatus = Literal["accepted", "proposed", "no_assignment"]
 
 
 class TaxonomyCategoryCreateRequest(BaseModel):
@@ -90,6 +92,53 @@ class TaxonomyProfileResponse(BaseModel):
 class TaxonomyAssignmentCreateRequest(BaseModel):
     category_id: str = Field(max_length=36)
     reasoning: str | None = None
+
+
+class TaxonomyClassificationRequest(BaseModel):
+    mode: TaxonomyClassificationMode = "semantic_only"
+    candidate_limit: int = Field(default=5, ge=1, le=20)
+    dry_run: bool = False
+
+
+class TaxonomyClassificationCategoryResponse(BaseModel):
+    id: str
+    name: str
+    path: str
+
+
+class TaxonomyClassificationCandidateResponse(BaseModel):
+    category_id: str
+    category_name: str
+    category_path: str
+    score: float
+    chunk_id: str
+
+
+class TaxonomyLLMDecisionResponse(BaseModel):
+    selected_category_id: str | None
+    confidence: float = Field(ge=0, le=1)
+    should_assign: bool
+    status: TaxonomyClassificationDecisionStatus
+    reasoning: str
+    alternatives: list[dict[str, object]] = Field(default_factory=list)
+
+
+class TaxonomyClassificationResponse(BaseModel):
+    content_object_id: str
+    mode: TaxonomyClassificationMode
+    dry_run: bool
+    assigned: bool
+    assignment_id: str | None
+    selected_category: TaxonomyClassificationCategoryResponse | None
+    status: TaxonomyClassificationDecisionStatus
+    confidence: float | None
+    reasoning: str | None
+    semantic_candidates: list[TaxonomyClassificationCandidateResponse]
+    classification_text_preview: str
+    llm_decision: TaxonomyLLMDecisionResponse | None = None
+    would_assign: bool
+    would_status: TaxonomyClassificationDecisionStatus
+    would_category: TaxonomyClassificationCategoryResponse | None
 
 
 class TaxonomyAssignmentResponse(BaseModel):

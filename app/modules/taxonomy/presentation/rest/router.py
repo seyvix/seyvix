@@ -18,6 +18,8 @@ from app.modules.taxonomy.schemas import (
     TaxonomyCategoryResponse,
     TaxonomyCategoryTreeItem,
     TaxonomyCategoryUpdateRequest,
+    TaxonomyClassificationRequest,
+    TaxonomyClassificationResponse,
     TaxonomyInitializeRequest,
     TaxonomyInitializeResponse,
     TaxonomyProfilePutRequest,
@@ -27,6 +29,7 @@ from app.modules.taxonomy.schemas import (
 )
 from app.modules.taxonomy.service import (
     TaxonomyConflictError,
+    TaxonomyLLMClassificationError,
     TaxonomyNotFoundError,
     TaxonomyService,
     TaxonomyValidationError,
@@ -379,23 +382,37 @@ async def get_current_assignment(
 
 @router.post(
     "/content/{content_object_id}/classify",
-    response_model=TaxonomyAssignmentResponse | None,
+    response_model=TaxonomyClassificationResponse,
     summary="Classify a content object using semantic taxonomy category candidates",
-    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    responses={
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
 )
 async def classify_content_object(
     content_object_id: str,
     context: Annotated[AuthContext, Depends(get_auth_context)],
     service: Annotated[TaxonomyService, Depends(get_taxonomy_service)],
-) -> TaxonomyAssignmentResponse | None:
+    payload: TaxonomyClassificationRequest | None = None,
+) -> TaxonomyClassificationResponse:
+    request = payload or TaxonomyClassificationRequest()
     try:
-        assignment = await service.classify_content_object(
+        return await service.classify_content_object_with_response(
             owner_user_id=context.user.id,
             content_object_id=content_object_id,
+            mode=request.mode,
+            candidate_limit=request.candidate_limit,
+            dry_run=request.dry_run,
         )
     except TaxonomyNotFoundError as exc:
         raise _not_found("Content object not found.") from exc
-    return service.assignment_response(assignment) if assignment is not None else None
+    except TaxonomyLLMClassificationError as exc:
+        raise AppError(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            code="taxonomy_llm_classification_unavailable",
+            message="LLM taxonomy classification is unavailable.",
+        ) from exc
 
 
 @router.post(

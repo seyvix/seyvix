@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
+from app.modules.llm.contracts import (
+    LLMGenerationError,
+    StructuredLLMGenerator,
+    build_structured_llm_generator,
+)
 from app.modules.search.schemas import SemanticSearchResult
 from app.modules.taxonomy.infrastructure.repositories import TaxonomyRepository
 from app.modules.taxonomy.models import (
@@ -21,6 +27,10 @@ from app.modules.taxonomy.schemas import (
     TaxonomyBreadcrumbResponse,
     TaxonomyCategoryResponse,
     TaxonomyCategoryTreeItem,
+    TaxonomyClassificationCandidateResponse,
+    TaxonomyClassificationCategoryResponse,
+    TaxonomyClassificationResponse,
+    TaxonomyLLMDecisionResponse,
     TaxonomyProfileResponse,
     TaxonomyTemplateDetailResponse,
     TaxonomyTemplateSummaryResponse,
@@ -32,6 +42,7 @@ from app.modules.vectorization.contracts import (
 )
 
 SLUG_PATTERN = re.compile(r"^[a-z0-9_-]+$")
+LLM_JUDGE_PROMPT_VERSION = "taxonomy_classification_llm_judge_v1"
 
 
 class TaxonomyNotFoundError(Exception):
@@ -43,6 +54,10 @@ class TaxonomyConflictError(Exception):
 
 
 class TaxonomyValidationError(Exception):
+    pass
+
+
+class TaxonomyLLMClassificationError(Exception):
     pass
 
 
@@ -68,10 +83,24 @@ class InitializeTaxonomyResult:
     created_profiles_count: int
 
 
+@dataclass(slots=True)
+class ClassificationCandidate:
+    result: SemanticSearchResult
+    category: TaxonomyCategory
+    profile: TaxonomyCategoryProfile | None
+
+
 class TaxonomyService:
-    def __init__(self, session: AsyncSession, *, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        settings: Settings | None = None,
+        llm_generator: StructuredLLMGenerator | None = None,
+    ) -> None:
         self.session = session
         self.settings = settings or get_settings()
+        self.llm_generator = llm_generator or build_structured_llm_generator()
         self.repository = TaxonomyRepository(session)
 
     async def create_category(
@@ -553,6 +582,35 @@ class TaxonomyService:
         semantic_search_service: SemanticClassificationSearchService | None = None,
         limit: int = 5,
     ) -> TaxonomyContentAssignment | None:
+        response = await self.classify_content_object_with_response(
+            owner_user_id=owner_user_id,
+            content_object_id=content_object_id,
+            mode="semantic_only",
+            candidate_limit=limit,
+            dry_run=False,
+            semantic_search_service=semantic_search_service,
+        )
+        if response.assignment_id is None:
+            return None
+        assignment = await self.repository.get_assignment(
+            owner_user_id=owner_user_id,
+            content_object_id=content_object_id,
+            assignment_id=response.assignment_id,
+        )
+        if assignment is None:
+            raise TaxonomyNotFoundError
+        return assignment
+
+    async def classify_content_object_with_response(
+        self,
+        *,
+        owner_user_id: str,
+        content_object_id: str,
+        mode: Literal["semantic_only", "llm_judge"],
+        candidate_limit: int,
+        dry_run: bool,
+        semantic_search_service: SemanticClassificationSearchService | None = None,
+    ) -> TaxonomyClassificationResponse:
         from app.modules.content.service import ContentService, NoteNotFoundError
         from app.modules.search.service import SemanticSearchService
 
@@ -572,49 +630,369 @@ class TaxonomyService:
             text_excerpt=classification_input.text_excerpt,
         )
         search_service = semantic_search_service or SemanticSearchService(self.session)
-        candidates = await search_service.semantic_search(
+        search_results = await search_service.semantic_search(
             owner_user_id=owner_user_id,
             query=query,
             source="taxonomy",
             source_type="category_profile",
             source_id=None,
-            limit=limit,
+            limit=candidate_limit,
+        )
+        candidates = await self._load_classification_candidates(
+            owner_user_id=owner_user_id,
+            search_results=search_results,
         )
         if not candidates:
-            return None
-
-        best = candidates[0]
-        if best.score < self.settings.taxonomy_classification_medium_threshold:
-            return None
-
-        category = await self.repository.get_category(
-            owner_user_id=owner_user_id,
-            category_id=best.source_id,
-            include_archived=False,
-        )
-        if category is None:
-            return None
-
-        status = (
-            "accepted"
-            if best.score >= self.settings.taxonomy_classification_high_threshold
-            else "proposed"
-        )
-        assignment = await self._create_current_assignment(
+            return self._classification_response(
+                content_object_id=content_object_id,
+                mode=mode,
+                dry_run=dry_run,
+                assignment=None,
+                selected_category=None,
+                status="no_assignment",
+                confidence=None,
+                reasoning="No semantic taxonomy candidates found.",
+                semantic_candidates=[],
+                classification_text=query,
+                llm_decision=None,
+                would_assign=False,
+                would_status="no_assignment",
+                would_category=None,
+            )
+        if mode == "semantic_only":
+            return await self._classify_from_semantic_candidates(
+                owner_user_id=owner_user_id,
+                content_object_id=content_object_id,
+                candidates=candidates,
+                classification_text=query,
+                dry_run=dry_run,
+                response_mode=mode,
+                fallback_reason=None,
+            )
+        return await self._classify_with_llm_judge(
             owner_user_id=owner_user_id,
             content_object_id=content_object_id,
-            category=category,
-            status=status,
-            assigned_by="system",
-            confidence=best.score,
-            reasoning="Selected by semantic similarity over taxonomy category profiles.",
-            alternatives=await self._classification_alternatives(
+            candidates=candidates,
+            classification_text=query,
+            dry_run=dry_run,
+        )
+
+    async def _classify_from_semantic_candidates(
+        self,
+        *,
+        owner_user_id: str,
+        content_object_id: str,
+        candidates: list[ClassificationCandidate],
+        classification_text: str,
+        dry_run: bool,
+        response_mode: Literal["semantic_only", "llm_judge"],
+        fallback_reason: str | None,
+    ) -> TaxonomyClassificationResponse:
+        best = candidates[0]
+        if best.result.score < self.settings.taxonomy_classification_medium_threshold:
+            return self._classification_response(
+                content_object_id=content_object_id,
+                mode=response_mode,
+                dry_run=dry_run,
+                assignment=None,
+                selected_category=None,
+                status="no_assignment",
+                confidence=best.result.score,
+                reasoning=fallback_reason or "Semantic similarity was below assignment threshold.",
+                semantic_candidates=self._candidate_responses(candidates),
+                classification_text=classification_text,
+                llm_decision=None,
+                would_assign=False,
+                would_status="no_assignment",
+                would_category=None,
+            )
+
+        status: Literal["accepted", "proposed"] = (
+            "accepted"
+            if best.result.score >= self.settings.taxonomy_classification_high_threshold
+            else "proposed"
+        )
+        reasoning = (
+            fallback_reason or "Selected by semantic similarity over taxonomy category profiles."
+        )
+        assignment = None
+        if not dry_run:
+            assignment = await self._create_current_assignment(
                 owner_user_id=owner_user_id,
+                content_object_id=content_object_id,
+                category=best.category,
+                status=status,
+                assigned_by="system",
+                confidence=best.result.score,
+                reasoning=reasoning,
+                alternatives=[
+                    {
+                        "category_id": candidate.category.id,
+                        "category_name_snapshot": candidate.category.name,
+                        "category_path_snapshot": candidate.category.path,
+                        "score": candidate.result.score,
+                        "chunk_id": candidate.result.chunk_id,
+                    }
+                    for candidate in candidates
+                ],
+                commit=True,
+            )
+        selected_category = self._classification_category(best.category)
+        return self._classification_response(
+            content_object_id=content_object_id,
+            mode=response_mode,
+            dry_run=dry_run,
+            assignment=assignment,
+            selected_category=selected_category,
+            status=status,
+            confidence=best.result.score,
+            reasoning=reasoning,
+            semantic_candidates=self._candidate_responses(candidates),
+            classification_text=classification_text,
+            llm_decision=None,
+            would_assign=True,
+            would_status=status,
+            would_category=selected_category,
+        )
+
+    async def _classify_with_llm_judge(
+        self,
+        *,
+        owner_user_id: str,
+        content_object_id: str,
+        candidates: list[ClassificationCandidate],
+        classification_text: str,
+        dry_run: bool,
+    ) -> TaxonomyClassificationResponse:
+        try:
+            llm_decision = await self._run_llm_judge(
+                classification_text=classification_text,
+                candidates=candidates,
+            )
+            selected_category_id = llm_decision.selected_category_id
+            candidate_by_id = {candidate.category.id: candidate for candidate in candidates}
+            if llm_decision.should_assign and llm_decision.status != "no_assignment":
+                if selected_category_id not in candidate_by_id:
+                    raise TaxonomyLLMClassificationError(
+                        "LLM selected a category outside semantic candidates."
+                    )
+                selected = candidate_by_id[str(selected_category_id)]
+            else:
+                selected = None
+        except (LLMGenerationError, TaxonomyLLMClassificationError, ValidationError) as exc:
+            if not self.settings.taxonomy_llm_classification_fallback_to_semantic:
+                if isinstance(exc, TaxonomyLLMClassificationError):
+                    raise
+                raise TaxonomyLLMClassificationError(str(exc)) from exc
+            return await self._classify_from_semantic_candidates(
+                owner_user_id=owner_user_id,
+                content_object_id=content_object_id,
+                candidates=candidates,
+                classification_text=classification_text,
+                dry_run=dry_run,
+                response_mode="llm_judge",
+                fallback_reason=(
+                    "LLM judge failed; fell back to semantic-only classification: " f"{exc}"
+                ),
+            )
+
+        if selected is None or llm_decision.confidence < (
+            self.settings.taxonomy_llm_classification_propose_threshold
+        ):
+            return self._classification_response(
+                content_object_id=content_object_id,
+                mode="llm_judge",
+                dry_run=dry_run,
+                assignment=None,
+                selected_category=None,
+                status="no_assignment",
+                confidence=llm_decision.confidence,
+                reasoning=llm_decision.reasoning,
+                semantic_candidates=self._candidate_responses(candidates),
+                classification_text=classification_text,
+                llm_decision=llm_decision,
+                would_assign=False,
+                would_status="no_assignment",
+                would_category=None,
+            )
+
+        status: Literal["accepted", "proposed"] = (
+            "accepted"
+            if llm_decision.confidence >= self.settings.taxonomy_llm_classification_accept_threshold
+            else "proposed"
+        )
+        assignment = None
+        if not dry_run:
+            assignment = await self._create_current_assignment(
+                owner_user_id=owner_user_id,
+                content_object_id=content_object_id,
+                category=selected.category,
+                status=status,
+                assigned_by="llm",
+                confidence=llm_decision.confidence,
+                reasoning=llm_decision.reasoning,
+                alternatives=self._llm_assignment_audit(
+                    candidates=candidates,
+                    llm_decision=llm_decision,
+                ),
+                commit=True,
+            )
+        selected_category = self._classification_category(selected.category)
+        return self._classification_response(
+            content_object_id=content_object_id,
+            mode="llm_judge",
+            dry_run=dry_run,
+            assignment=assignment,
+            selected_category=selected_category,
+            status=status,
+            confidence=llm_decision.confidence,
+            reasoning=llm_decision.reasoning,
+            semantic_candidates=self._candidate_responses(candidates),
+            classification_text=classification_text,
+            llm_decision=llm_decision,
+            would_assign=True,
+            would_status=status,
+            would_category=selected_category,
+        )
+
+    async def _run_llm_judge(
+        self,
+        *,
+        classification_text: str,
+        candidates: list[ClassificationCandidate],
+    ) -> TaxonomyLLMDecisionResponse:
+        result = await self.llm_generator.generate_structured(
+            prompt=self._build_llm_judge_prompt(
+                classification_text=classification_text,
                 candidates=candidates,
             ),
-            commit=True,
+            schema=self._llm_judge_schema(),
+            model_config={
+                "model": self.settings.taxonomy_llm_classification_model,
+                "temperature": 0,
+            },
         )
-        return assignment
+        decision = TaxonomyLLMDecisionResponse.model_validate(result)
+        candidate_ids = {candidate.category.id for candidate in candidates}
+        if decision.selected_category_id is not None and (
+            decision.selected_category_id not in candidate_ids
+        ):
+            raise TaxonomyLLMClassificationError(
+                "LLM selected a category outside semantic candidates."
+            )
+        for alternative in decision.alternatives:
+            category_id = alternative.get("category_id")
+            if category_id is not None and category_id not in candidate_ids:
+                raise TaxonomyLLMClassificationError(
+                    "LLM returned an alternative outside semantic candidates."
+                )
+        return decision
+
+    async def _load_classification_candidates(
+        self,
+        *,
+        owner_user_id: str,
+        search_results: list[SemanticSearchResult],
+    ) -> list[ClassificationCandidate]:
+        candidates: list[ClassificationCandidate] = []
+        seen_category_ids: set[str] = set()
+        for result in search_results:
+            if result.source != "taxonomy" or result.source_type != "category_profile":
+                continue
+            if result.source_id in seen_category_ids:
+                continue
+            category = await self.repository.get_category(
+                owner_user_id=owner_user_id,
+                category_id=result.source_id,
+                include_archived=False,
+            )
+            if category is None:
+                continue
+            profile = await self.repository.get_profile(category_id=category.id)
+            candidates.append(
+                ClassificationCandidate(result=result, category=category, profile=profile)
+            )
+            seen_category_ids.add(category.id)
+        return candidates
+
+    def _build_llm_judge_prompt(
+        self,
+        *,
+        classification_text: str,
+        candidates: list[ClassificationCandidate],
+    ) -> str:
+        lines = [
+            f"prompt_version = {LLM_JUDGE_PROMPT_VERSION}",
+            "",
+            "You are a taxonomy classification judge.",
+            "Choose only from provided candidates.",
+            "Do not create categories, rename categories, move categories, "
+            "or choose a category outside the candidate list.",
+            "Prefer the deepest specific category when it clearly fits.",
+            "Prefer a parent or broader category only if the specific candidate is too narrow.",
+            "Return should_assign = false if none of the candidates fit.",
+            "Use semantic score as a signal, not as the only decision factor.",
+            "Explain briefly why the selected category fits.",
+            "",
+            "Content:",
+            classification_text,
+            "",
+            "Candidates:",
+        ]
+        for candidate in candidates:
+            profile = candidate.profile
+            profile_summary = profile.summary if profile is not None and profile.summary else ""
+            lines.extend(
+                [
+                    f"- candidate_id: {candidate.category.id}",
+                    f"  path: {candidate.category.path}",
+                    f"  name: {candidate.category.name}",
+                    f"  description: {candidate.category.description or ''}",
+                    f"  profile_summary: {profile_summary}",
+                    "  keywords: "
+                    + (
+                        ", ".join(profile.keywords)
+                        if profile is not None and profile.keywords
+                        else ""
+                    ),
+                    "  positive_examples: "
+                    + (
+                        "; ".join(profile.positive_examples)
+                        if profile is not None and profile.positive_examples
+                        else ""
+                    ),
+                    "  negative_examples: "
+                    + (
+                        "; ".join(profile.negative_examples)
+                        if profile is not None and profile.negative_examples
+                        else ""
+                    ),
+                    f"  semantic_score: {candidate.result.score:.6f}",
+                ]
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _llm_judge_schema() -> dict[str, Any]:
+        return {
+            "type": "object",
+            "required": [
+                "selected_category_id",
+                "confidence",
+                "should_assign",
+                "status",
+                "reasoning",
+                "alternatives",
+            ],
+            "properties": {
+                "selected_category_id": {"type": ["string", "null"]},
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "should_assign": {"type": "boolean"},
+                "status": {"enum": ["accepted", "proposed", "no_assignment"]},
+                "reasoning": {"type": "string"},
+                "alternatives": {"type": "array"},
+            },
+        }
 
     async def list_templates(self) -> list[TaxonomyTemplate]:
         await self._ensure_templates_seeded()
@@ -767,6 +1145,98 @@ class TaxonomyService:
                 }
             )
         return alternatives
+
+    def _llm_assignment_audit(
+        self,
+        *,
+        candidates: list[ClassificationCandidate],
+        llm_decision: TaxonomyLLMDecisionResponse,
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "classification_mode": "llm_judge",
+                "prompt_version": LLM_JUDGE_PROMPT_VERSION,
+                "llm_model": self.settings.taxonomy_llm_classification_model,
+                "semantic_candidates": [
+                    {
+                        "category_id": candidate.category.id,
+                        "category_path": candidate.category.path,
+                        "score": candidate.result.score,
+                        "chunk_id": candidate.result.chunk_id,
+                    }
+                    for candidate in candidates
+                ],
+                "llm_decision": {
+                    "selected_category_id": llm_decision.selected_category_id,
+                    "confidence": llm_decision.confidence,
+                    "reasoning": llm_decision.reasoning,
+                    "status": llm_decision.status,
+                    "should_assign": llm_decision.should_assign,
+                },
+            },
+            *llm_decision.alternatives,
+        ]
+
+    @staticmethod
+    def _classification_category(
+        category: TaxonomyCategory,
+    ) -> TaxonomyClassificationCategoryResponse:
+        return TaxonomyClassificationCategoryResponse(
+            id=category.id,
+            name=category.name,
+            path=category.path,
+        )
+
+    @staticmethod
+    def _candidate_responses(
+        candidates: list[ClassificationCandidate],
+    ) -> list[TaxonomyClassificationCandidateResponse]:
+        return [
+            TaxonomyClassificationCandidateResponse(
+                category_id=candidate.category.id,
+                category_name=candidate.category.name,
+                category_path=candidate.category.path,
+                score=candidate.result.score,
+                chunk_id=candidate.result.chunk_id,
+            )
+            for candidate in candidates
+        ]
+
+    @staticmethod
+    def _classification_response(
+        *,
+        content_object_id: str,
+        mode: Literal["semantic_only", "llm_judge"],
+        dry_run: bool,
+        assignment: TaxonomyContentAssignment | None,
+        selected_category: TaxonomyClassificationCategoryResponse | None,
+        status: Literal["accepted", "proposed", "no_assignment"],
+        confidence: float | None,
+        reasoning: str | None,
+        semantic_candidates: list[TaxonomyClassificationCandidateResponse],
+        classification_text: str,
+        llm_decision: TaxonomyLLMDecisionResponse | None,
+        would_assign: bool,
+        would_status: Literal["accepted", "proposed", "no_assignment"],
+        would_category: TaxonomyClassificationCategoryResponse | None,
+    ) -> TaxonomyClassificationResponse:
+        return TaxonomyClassificationResponse(
+            content_object_id=content_object_id,
+            mode=mode,
+            dry_run=dry_run,
+            assigned=assignment is not None,
+            assignment_id=assignment.id if assignment is not None else None,
+            selected_category=selected_category,
+            status=status,
+            confidence=confidence,
+            reasoning=reasoning,
+            semantic_candidates=semantic_candidates,
+            classification_text_preview=classification_text[:1000],
+            llm_decision=llm_decision,
+            would_assign=would_assign,
+            would_status=would_status,
+            would_category=would_category,
+        )
 
     @staticmethod
     def _build_classification_query(

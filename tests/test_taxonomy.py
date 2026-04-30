@@ -3,16 +3,18 @@ import hashlib
 import hmac
 import os
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.database import build_session_factory
 from app.modules.content.models import ContentObject
 from app.modules.content.service import ContentService
+from app.modules.llm.contracts import LLMGenerationError
 from app.modules.search.schemas import SemanticSearchResult
-from app.modules.taxonomy.service import TaxonomyService
+from app.modules.taxonomy.service import TaxonomyLLMClassificationError, TaxonomyService
 from app.modules.vectorization.contracts import build_taxonomy_category_profile_vector_subject
 from app.modules.vectorization.worker import VectorizationWorker
 
@@ -639,6 +641,62 @@ class _FakeSemanticSearchService:
         return self.results[:limit]
 
 
+class _FakeLLMStructuredGenerator:
+    def __init__(
+        self,
+        result: dict[str, Any] | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self.result = result or {
+            "selected_category_id": None,
+            "confidence": 0,
+            "should_assign": False,
+            "status": "no_assignment",
+            "reasoning": "No suitable candidate.",
+            "alternatives": [],
+        }
+        self.error = error
+        self.calls: list[dict[str, Any]] = []
+
+    async def generate_structured(
+        self,
+        *,
+        prompt: str,
+        schema: dict[str, Any],
+        model_config: dict[str, Any],
+    ) -> dict[str, Any]:
+        self.calls.append(
+            {
+                "prompt": prompt,
+                "schema": schema,
+                "model_config": model_config,
+            }
+        )
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+def _semantic_result(
+    category: dict[str, object],
+    *,
+    chunk_id: str,
+    score: float,
+) -> SemanticSearchResult:
+    return SemanticSearchResult(
+        source="taxonomy",
+        source_type="category_profile",
+        source_id=str(category["id"]),
+        external_id=f"taxonomy_category_profile:{category['id']}",
+        chunk_id=chunk_id,
+        chunk_external_id=f"{chunk_id}:external",
+        text=f"{category['name']} profile text",
+        metadata={"category_path": str(category["path"])},
+        distance=1 - score,
+        score=score,
+    )
+
+
 def test_taxonomy_semantic_classification_assigns_proposes_and_preserves_history(
     content_client: TestClient,
 ) -> None:
@@ -827,6 +885,364 @@ def test_taxonomy_classify_endpoint_uses_semantic_assignment_flow(
         get_settings.cache_clear()
 
     assert endpoint_response.status_code == 200, endpoint_response.text
+    assert endpoint_response.json()["mode"] == "semantic_only"
+    assert endpoint_response.json()["assigned"] is True
     assert endpoint_response.json()["status"] == "accepted"
-    assert endpoint_response.json()["assigned_by"] == "system"
-    assert endpoint_response.json()["category_id"] == category["id"]
+    assert endpoint_response.json()["assignment_id"] is not None
+    assert endpoint_response.json()["selected_category"]["id"] == category["id"]
+
+
+def test_taxonomy_llm_judge_dry_run_uses_only_semantic_candidates(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client, telegram_id=301100)
+    inference = _create_category(content_client, headers, slug="inference", name="Inference")
+    training = _create_category(content_client, headers, slug="training", name="Training")
+    note = _create_note(content_client, headers, "LLM dry run")
+    llm = _FakeLLMStructuredGenerator(
+        {
+            "selected_category_id": inference["id"],
+            "confidence": 0.91,
+            "should_assign": True,
+            "status": "accepted",
+            "reasoning": "The content is about serving latency.",
+            "alternatives": [
+                {
+                    "category_id": training["id"],
+                    "confidence": 0.42,
+                    "reasoning": "Related to models but less specific.",
+                }
+            ],
+        }
+    )
+    semantic = _FakeSemanticSearchService(
+        [
+            _semantic_result(inference, chunk_id="chunk-inference", score=0.83),
+            _semantic_result(training, chunk_id="chunk-training", score=0.72),
+        ]
+    )
+
+    async def scenario() -> tuple[dict[str, object], int, str, str, str]:
+        async with content_client.app.state.session_factory() as session:
+            service = TaxonomyService(session, llm_generator=llm)
+            response = await service.classify_content_object_with_response(
+                owner_user_id=str(inference["owner_user_id"]),
+                content_object_id=str(note["id"]),
+                mode="llm_judge",
+                candidate_limit=10,
+                dry_run=True,
+                semantic_search_service=semantic,
+            )
+            assignments = await service.list_assignments(
+                owner_user_id=str(inference["owner_user_id"]),
+                content_object_id=str(note["id"]),
+            )
+            return (
+                response.model_dump(mode="json"),
+                len(assignments),
+                str(semantic.calls[0]["source"]),
+                str(semantic.calls[0]["source_type"]),
+                llm.calls[0]["prompt"],
+            )
+
+    response, assignment_count, source_filter, source_type_filter, prompt = (
+        content_client.portal.call(scenario)
+    )
+
+    assert response["mode"] == "llm_judge"
+    assert response["dry_run"] is True
+    assert response["assigned"] is False
+    assert response["would_assign"] is True
+    assert response["would_status"] == "accepted"
+    assert response["assignment_id"] is None
+    assert response["selected_category"]["id"] == inference["id"]
+    assert response["llm_decision"]["selected_category_id"] == inference["id"]
+    assert response["semantic_candidates"][0]["category_id"] == inference["id"]
+    assert assignment_count == 0
+    assert source_filter == "taxonomy"
+    assert source_type_filter == "category_profile"
+    assert "choose only from provided candidates" in prompt.lower()
+    assert str(inference["id"]) in prompt
+    assert str(training["id"]) in prompt
+
+
+def test_taxonomy_llm_judge_creates_assignment_and_audit_metadata(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client, telegram_id=301200)
+    inference = _create_category(content_client, headers, slug="inference", name="Inference")
+    manual = _create_category(content_client, headers, slug="manual", name="Manual")
+    note = _create_note(content_client, headers, "LLM assignment")
+    manual_assignment = content_client.post(
+        f"/api/v1/taxonomy/content/{note['id']}/assignments",
+        headers=headers,
+        json={"category_id": manual["id"], "reasoning": "Manual first."},
+    )
+    assert manual_assignment.status_code == 201, manual_assignment.text
+    llm = _FakeLLMStructuredGenerator(
+        {
+            "selected_category_id": inference["id"],
+            "confidence": 0.86,
+            "should_assign": True,
+            "status": "accepted",
+            "reasoning": "Material is mainly about LLM serving.",
+            "alternatives": [],
+        }
+    )
+    semantic = _FakeSemanticSearchService(
+        [_semantic_result(inference, chunk_id="chunk-inference", score=0.81)]
+    )
+
+    async def scenario() -> tuple[dict[str, object], list[dict[str, object]]]:
+        async with content_client.app.state.session_factory() as session:
+            service = TaxonomyService(session, llm_generator=llm)
+            response = await service.classify_content_object_with_response(
+                owner_user_id=str(inference["owner_user_id"]),
+                content_object_id=str(note["id"]),
+                mode="llm_judge",
+                candidate_limit=5,
+                dry_run=False,
+                semantic_search_service=semantic,
+            )
+            assignments = await service.list_assignments(
+                owner_user_id=str(inference["owner_user_id"]),
+                content_object_id=str(note["id"]),
+            )
+            return (
+                response.model_dump(mode="json"),
+                [
+                    TaxonomyService.assignment_response(assignment).model_dump(mode="json")
+                    for assignment in assignments
+                ],
+            )
+
+    response, assignments = content_client.portal.call(scenario)
+
+    assert response["assigned"] is True
+    assert response["assignment_id"] is not None
+    assert response["status"] == "accepted"
+    assert response["confidence"] == 0.86
+    assert assignments[0]["assigned_by"] == "llm"
+    assert assignments[0]["reasoning"] == "Material is mainly about LLM serving."
+    assert assignments[0]["alternatives"][0]["classification_mode"] == "llm_judge"
+    assert assignments[0]["alternatives"][0]["prompt_version"] == (
+        "taxonomy_classification_llm_judge_v1"
+    )
+    assert assignments[0]["alternatives"][0]["semantic_candidates"][0]["category_id"] == (
+        inference["id"]
+    )
+    assert assignments[1]["status"] == "overridden"
+
+
+def test_taxonomy_llm_judge_thresholds_and_no_assignment_do_not_create_rows(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client, telegram_id=301300)
+    inference = _create_category(content_client, headers, slug="inference", name="Inference")
+    proposed_note = _create_note(content_client, headers, "Proposed LLM")
+    low_note = _create_note(content_client, headers, "Low LLM")
+    no_assignment_note = _create_note(content_client, headers, "No assignment LLM")
+
+    async def scenario() -> tuple[dict[str, object], dict[str, object], dict[str, object], int]:
+        async with content_client.app.state.session_factory() as session:
+            service = TaxonomyService(session)
+            proposed = await TaxonomyService(
+                session,
+                llm_generator=_FakeLLMStructuredGenerator(
+                    {
+                        "selected_category_id": inference["id"],
+                        "confidence": 0.65,
+                        "should_assign": True,
+                        "status": "proposed",
+                        "reasoning": "Possible fit.",
+                        "alternatives": [],
+                    }
+                ),
+            ).classify_content_object_with_response(
+                owner_user_id=str(inference["owner_user_id"]),
+                content_object_id=str(proposed_note["id"]),
+                mode="llm_judge",
+                candidate_limit=5,
+                dry_run=False,
+                semantic_search_service=_FakeSemanticSearchService(
+                    [_semantic_result(inference, chunk_id="chunk-proposed", score=0.8)]
+                ),
+            )
+            low = await TaxonomyService(
+                session,
+                llm_generator=_FakeLLMStructuredGenerator(
+                    {
+                        "selected_category_id": inference["id"],
+                        "confidence": 0.45,
+                        "should_assign": True,
+                        "status": "proposed",
+                        "reasoning": "Weak fit.",
+                        "alternatives": [],
+                    }
+                ),
+            ).classify_content_object_with_response(
+                owner_user_id=str(inference["owner_user_id"]),
+                content_object_id=str(low_note["id"]),
+                mode="llm_judge",
+                candidate_limit=5,
+                dry_run=False,
+                semantic_search_service=_FakeSemanticSearchService(
+                    [_semantic_result(inference, chunk_id="chunk-low", score=0.8)]
+                ),
+            )
+            none = await TaxonomyService(
+                session,
+                llm_generator=_FakeLLMStructuredGenerator(
+                    {
+                        "selected_category_id": None,
+                        "confidence": 0.99,
+                        "should_assign": False,
+                        "status": "no_assignment",
+                        "reasoning": "No candidate fits.",
+                        "alternatives": [],
+                    }
+                ),
+            ).classify_content_object_with_response(
+                owner_user_id=str(inference["owner_user_id"]),
+                content_object_id=str(no_assignment_note["id"]),
+                mode="llm_judge",
+                candidate_limit=5,
+                dry_run=False,
+                semantic_search_service=_FakeSemanticSearchService(
+                    [_semantic_result(inference, chunk_id="chunk-none", score=0.8)]
+                ),
+            )
+            all_assignments = (
+                await service.list_assignments(
+                    owner_user_id=str(inference["owner_user_id"]),
+                    content_object_id=str(proposed_note["id"]),
+                )
+                + await service.list_assignments(
+                    owner_user_id=str(inference["owner_user_id"]),
+                    content_object_id=str(low_note["id"]),
+                )
+                + await service.list_assignments(
+                    owner_user_id=str(inference["owner_user_id"]),
+                    content_object_id=str(no_assignment_note["id"]),
+                )
+            )
+            return (
+                proposed.model_dump(mode="json"),
+                low.model_dump(mode="json"),
+                none.model_dump(mode="json"),
+                len(all_assignments),
+            )
+
+    proposed, low, none, assignment_count = content_client.portal.call(scenario)
+
+    assert proposed["status"] == "proposed"
+    assert proposed["assigned"] is True
+    assert low["assigned"] is False
+    assert low["status"] == "no_assignment"
+    assert none["assigned"] is False
+    assert none["status"] == "no_assignment"
+    assert assignment_count == 1
+
+
+def test_taxonomy_llm_judge_invalid_candidate_falls_back_or_errors(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client, telegram_id=301400)
+    inference = _create_category(content_client, headers, slug="inference", name="Inference")
+    note = _create_note(content_client, headers, "Invalid candidate")
+
+    async def fallback_scenario() -> dict[str, object]:
+        async with content_client.app.state.session_factory() as session:
+            response = await TaxonomyService(
+                session,
+                settings=Settings(taxonomy_llm_classification_fallback_to_semantic=True),
+                llm_generator=_FakeLLMStructuredGenerator(
+                    {
+                        "selected_category_id": "not-a-candidate",
+                        "confidence": 0.99,
+                        "should_assign": True,
+                        "status": "accepted",
+                        "reasoning": "Invalid.",
+                        "alternatives": [],
+                    }
+                ),
+            ).classify_content_object_with_response(
+                owner_user_id=str(inference["owner_user_id"]),
+                content_object_id=str(note["id"]),
+                mode="llm_judge",
+                candidate_limit=5,
+                dry_run=True,
+                semantic_search_service=_FakeSemanticSearchService(
+                    [_semantic_result(inference, chunk_id="chunk-fallback", score=0.85)]
+                ),
+            )
+            return response.model_dump(mode="json")
+
+    async def error_scenario() -> None:
+        async with content_client.app.state.session_factory() as session:
+            await TaxonomyService(
+                session,
+                settings=Settings(taxonomy_llm_classification_fallback_to_semantic=False),
+                llm_generator=_FakeLLMStructuredGenerator(
+                    {
+                        "selected_category_id": "not-a-candidate",
+                        "confidence": 0.99,
+                        "should_assign": True,
+                        "status": "accepted",
+                        "reasoning": "Invalid.",
+                        "alternatives": [],
+                    }
+                ),
+            ).classify_content_object_with_response(
+                owner_user_id=str(inference["owner_user_id"]),
+                content_object_id=str(note["id"]),
+                mode="llm_judge",
+                candidate_limit=5,
+                dry_run=True,
+                semantic_search_service=_FakeSemanticSearchService(
+                    [_semantic_result(inference, chunk_id="chunk-error", score=0.85)]
+                ),
+            )
+
+    fallback = content_client.portal.call(fallback_scenario)
+    assert fallback["mode"] == "llm_judge"
+    assert fallback["selected_category"]["id"] == inference["id"]
+    assert fallback["reasoning"].startswith("LLM judge failed; fell back")
+
+    try:
+        content_client.portal.call(error_scenario)
+    except TaxonomyLLMClassificationError as exc:
+        assert "candidate" in str(exc).lower()
+    else:
+        raise AssertionError("Expected invalid LLM candidate to raise when fallback is disabled.")
+
+
+def test_taxonomy_llm_judge_generation_error_falls_back_when_enabled(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client, telegram_id=301500)
+    inference = _create_category(content_client, headers, slug="inference", name="Inference")
+    note = _create_note(content_client, headers, "LLM failure")
+
+    async def scenario() -> dict[str, object]:
+        async with content_client.app.state.session_factory() as session:
+            response = await TaxonomyService(
+                session,
+                settings=Settings(taxonomy_llm_classification_fallback_to_semantic=True),
+                llm_generator=_FakeLLMStructuredGenerator(error=LLMGenerationError("timeout")),
+            ).classify_content_object_with_response(
+                owner_user_id=str(inference["owner_user_id"]),
+                content_object_id=str(note["id"]),
+                mode="llm_judge",
+                candidate_limit=5,
+                dry_run=True,
+                semantic_search_service=_FakeSemanticSearchService(
+                    [_semantic_result(inference, chunk_id="chunk-timeout", score=0.85)]
+                ),
+            )
+            return response.model_dump(mode="json")
+
+    response = content_client.portal.call(scenario)
+    assert response["would_assign"] is True
+    assert response["selected_category"]["id"] == inference["id"]
+    assert response["reasoning"].startswith("LLM judge failed; fell back")
