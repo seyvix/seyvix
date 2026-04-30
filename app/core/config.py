@@ -27,6 +27,15 @@ class Settings(BaseSettings):
     rabbitmq_snapshot_queue: str = "snapshot-worker.events"
     rabbitmq_snapshot_retry_queue: str = "snapshot-worker.events.retry"
     rabbitmq_snapshot_dlq: str = "snapshot-worker.events.dlq"
+    rabbitmq_vectorization_queue: str = "vectorization-worker.events"
+    rabbitmq_vectorization_retry_queue: str = "vectorization-worker.events.retry"
+    rabbitmq_vectorization_dlq: str = "vectorization-worker.events.dlq"
+    rabbitmq_taxonomy_queue: str = "taxonomy-worker.events"
+    rabbitmq_taxonomy_retry_queue: str = "taxonomy-worker.events.retry"
+    rabbitmq_taxonomy_dlq: str = "taxonomy-worker.events.dlq"
+    rabbitmq_tags_queue: str = "tags-worker.events"
+    rabbitmq_tags_retry_queue: str = "tags-worker.events.retry"
+    rabbitmq_tags_dlq: str = "tags-worker.events.dlq"
     rabbitmq_retry_ttl_ms: int = 30000
     outbox_publisher_batch_size: int = 50
     outbox_publisher_poll_interval_seconds: int = 2
@@ -84,6 +93,9 @@ class Settings(BaseSettings):
     taxonomy_llm_classification_propose_threshold: float = 0.60
     taxonomy_llm_classification_fallback_to_semantic: bool = True
     taxonomy_llm_classification_model: str = "qwen3:4b-thinking"
+    taxonomy_worker_batch_size: int = 10
+    taxonomy_worker_poll_interval_seconds: int = 10
+    taxonomy_worker_lock_timeout_seconds: int = 300
     tags_llm_enabled: bool = False
     tags_llm_model: str = "qwen3:4b-thinking"
     tags_llm_max_tags: int = 8

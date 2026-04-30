@@ -152,6 +152,55 @@ class TaxonomyContentAssignment(Base):
     category: Mapped[TaxonomyCategory] = relationship()
 
 
+class TaxonomyClassificationJob(Base):
+    __tablename__ = "taxonomy_classification_jobs"
+    __table_args__ = (
+        Index(
+            "ix_taxonomy_classification_jobs_status_run_after_priority",
+            "status",
+            "run_after",
+            "priority",
+        ),
+        Index(
+            "ix_taxonomy_classification_jobs_owner_content",
+            "owner_user_id",
+            "content_object_id",
+        ),
+        UniqueConstraint("source_event_id", name="uq_taxonomy_classification_jobs_source_event_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    owner_user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    content_object_id: Mapped[str] = mapped_column(
+        ForeignKey("content_objects.id", ondelete="CASCADE"),
+        index=True,
+    )
+    job_type: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    priority: Mapped[int] = mapped_column(Integer(), default=100)
+    attempts: Mapped[int] = mapped_column(Integer(), default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer(), default=3)
+    run_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    locked_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_event_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    correlation_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    assignment_id: Mapped[str | None] = mapped_column(
+        ForeignKey("taxonomy_content_assignments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    result_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )
+
+
 class TaxonomyTemplate(Base):
     __tablename__ = "taxonomy_templates"
     __table_args__ = (UniqueConstraint("slug", name="uq_taxonomy_templates_slug"),)

@@ -9,9 +9,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 EventName = Literal[
     "content.object.created",
     "content.object.updated",
+    "content.object.deleted",
     "snapshot.requested",
     "snapshot.completed",
     "snapshot.failed",
+    "taxonomy.classification.completed",
 ]
 
 

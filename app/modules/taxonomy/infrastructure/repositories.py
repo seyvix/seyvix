@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
 from sqlalchemy import select, update
@@ -10,6 +11,7 @@ from app.modules.content.models import ContentObject
 from app.modules.taxonomy.models import (
     TaxonomyCategory,
     TaxonomyCategoryProfile,
+    TaxonomyClassificationJob,
     TaxonomyContentAssignment,
     TaxonomyTemplate,
     TaxonomyTemplateCategory,
@@ -28,6 +30,9 @@ class TaxonomyRepository:
 
     def add_assignment(self, assignment: TaxonomyContentAssignment) -> None:
         self.session.add(assignment)
+
+    def add_classification_job(self, job: TaxonomyClassificationJob) -> None:
+        self.session.add(job)
 
     async def get_category(
         self,
@@ -233,6 +238,66 @@ class TaxonomyRepository:
             TaxonomyContentAssignment.is_current.is_(True),
         )
         return list(await self.session.scalars(query))
+
+    async def enqueue_classification_job(
+        self,
+        *,
+        owner_user_id: str,
+        content_object_id: str,
+        job_type: str,
+        priority: int,
+        source_event_id: str | None,
+        correlation_id: str | None,
+    ) -> TaxonomyClassificationJob:
+        job = TaxonomyClassificationJob(
+            owner_user_id=owner_user_id,
+            content_object_id=content_object_id,
+            job_type=job_type,
+            status="pending",
+            priority=priority,
+            source_event_id=source_event_id,
+            correlation_id=correlation_id,
+        )
+        self.session.add(job)
+        await self.session.flush()
+        return job
+
+    async def claim_pending_classification_jobs(
+        self,
+        *,
+        limit: int,
+        worker_id: str,
+        lock_timeout_seconds: int,
+    ) -> list[TaxonomyClassificationJob]:
+        now = datetime.now(UTC)
+        stale_before = now - timedelta(seconds=lock_timeout_seconds)
+        query = (
+            select(TaxonomyClassificationJob)
+            .where(
+                (
+                    (TaxonomyClassificationJob.status == "pending")
+                    & (TaxonomyClassificationJob.run_after <= now)
+                )
+                | (
+                    (TaxonomyClassificationJob.status == "processing")
+                    & (TaxonomyClassificationJob.locked_at < stale_before)
+                )
+            )
+            .order_by(
+                TaxonomyClassificationJob.priority.desc(),
+                TaxonomyClassificationJob.created_at.asc(),
+            )
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        jobs = list(await self.session.scalars(query))
+        for job in jobs:
+            job.status = "processing"
+            job.attempts += 1
+            job.locked_at = now
+            job.locked_by = worker_id
+        await self.session.flush()
+        return jobs
 
     async def override_current_assignments(
         self,

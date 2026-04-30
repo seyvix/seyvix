@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, Protocol, cast
+from uuid import uuid4
 
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.contracts.events import EventEnvelope, TaxonomyClassificationCompletedPayload
 from app.core.config import Settings, get_settings
 from app.modules.llm.contracts import (
     LLMGenerationError,
@@ -18,6 +21,7 @@ from app.modules.taxonomy.infrastructure.repositories import TaxonomyRepository
 from app.modules.taxonomy.models import (
     TaxonomyCategory,
     TaxonomyCategoryProfile,
+    TaxonomyClassificationJob,
     TaxonomyContentAssignment,
     TaxonomyTemplate,
     TaxonomyTemplateCategory,
@@ -40,6 +44,7 @@ from app.modules.vectorization.contracts import (
     VectorizationSubject,
     build_taxonomy_category_profile_vector_subject,
 )
+from app.platform.events.outbox import EventOutboxRepository
 
 SLUG_PATTERN = re.compile(r"^[a-z0-9_-]+$")
 LLM_JUDGE_PROMPT_VERSION = "taxonomy_classification_llm_judge_v1"
@@ -102,6 +107,7 @@ class TaxonomyService:
         self.settings = settings or get_settings()
         self.llm_generator = llm_generator or build_structured_llm_generator()
         self.repository = TaxonomyRepository(session)
+        self.outbox = EventOutboxRepository(session)
 
     async def create_category(
         self,
@@ -508,6 +514,25 @@ class TaxonomyService:
             commit=commit,
         )
 
+    async def enqueue_classification_job(
+        self,
+        *,
+        owner_user_id: str,
+        content_object_id: str,
+        priority: int = 100,
+        source_event_id: str | None = None,
+        correlation_id: str | None = None,
+    ) -> TaxonomyClassificationJob:
+        await self._ensure_content_exists(owner_user_id, content_object_id)
+        return await self.repository.enqueue_classification_job(
+            owner_user_id=owner_user_id,
+            content_object_id=content_object_id,
+            job_type="classify_content",
+            priority=priority,
+            source_event_id=source_event_id,
+            correlation_id=correlation_id,
+        )
+
     async def list_assignments(
         self,
         *,
@@ -677,6 +702,52 @@ class TaxonomyService:
             dry_run=dry_run,
         )
 
+    async def process_classification_job(self, job: TaxonomyClassificationJob) -> None:
+        if job.job_type != "classify_content":
+            raise TaxonomyValidationError(f"Unsupported taxonomy job type: {job.job_type}")
+
+        response = await self.classify_content_object_with_response(
+            owner_user_id=job.owner_user_id,
+            content_object_id=job.content_object_id,
+            mode="llm_judge",
+            candidate_limit=5,
+            dry_run=False,
+        )
+        assignment = None
+        if response.assignment_id is not None:
+            assignment = await self.repository.get_assignment(
+                owner_user_id=job.owner_user_id,
+                content_object_id=job.content_object_id,
+                assignment_id=response.assignment_id,
+            )
+
+        job.status = "succeeded"
+        job.assignment_id = response.assignment_id
+        job.result_status = response.status
+        job.last_error = None
+        job.locked_at = None
+        job.locked_by = None
+        self._enqueue_classification_completed_event(
+            job=job,
+            assignment=assignment,
+            status=response.status,
+            confidence=response.confidence,
+        )
+
+    async def mark_classification_failed(
+        self,
+        job: TaxonomyClassificationJob,
+        error: str,
+    ) -> None:
+        job.last_error = error[:4000]
+        job.locked_at = None
+        job.locked_by = None
+        if job.attempts >= job.max_attempts:
+            job.status = "failed"
+            return
+        job.status = "pending"
+        job.run_after = datetime.now(UTC) + timedelta(seconds=min(300, 2**job.attempts))
+
     async def _classify_from_semantic_candidates(
         self,
         *,
@@ -754,6 +825,33 @@ class TaxonomyService:
             would_status=status,
             would_category=selected_category,
         )
+
+    def _enqueue_classification_completed_event(
+        self,
+        *,
+        job: TaxonomyClassificationJob,
+        assignment: TaxonomyContentAssignment | None,
+        status: Literal["accepted", "proposed", "no_assignment"],
+        confidence: float | None,
+    ) -> None:
+        envelope = EventEnvelope.new(
+            event_name="taxonomy.classification.completed",
+            entity_id=job.content_object_id,
+            correlation_id=job.correlation_id or str(uuid4()),
+            user_id=job.owner_user_id,
+            payload=TaxonomyClassificationCompletedPayload(
+                content_object_id=job.content_object_id,
+                assignment_id=assignment.id if assignment is not None else None,
+                status=status,
+                assigned_by=(
+                    cast(Literal["system", "llm"], assignment.assigned_by)
+                    if assignment is not None and assignment.assigned_by in {"system", "llm"}
+                    else None
+                ),
+                confidence=confidence,
+            ),
+        )
+        self.outbox.add(envelope, routing_key="taxonomy.classification.completed")
 
     async def _classify_with_llm_judge(
         self,
