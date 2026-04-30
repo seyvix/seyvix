@@ -127,6 +127,7 @@ def test_modules_overview_contains_expected_modules() -> None:
         "auth",
         "content",
         "snapshots",
+        "tags",
         "taxonomy",
         "search",
         "vectorization",

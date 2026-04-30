@@ -1,0 +1,1 @@
+"""Tags infrastructure adapters."""

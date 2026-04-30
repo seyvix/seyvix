@@ -25,8 +25,9 @@ from app.modules.content.models import (
     ContentCollectionItem,
     ContentFileUpload,
     ContentObject,
-    ContentTag,
+    ContentObjectTag,
 )
+from app.modules.content.models import ContentTag as LegacyContentTag
 from app.modules.content.schemas import (
     CollectionParentResponse,
     ContentTaxonomyCategoryResponse,
@@ -43,6 +44,8 @@ from app.modules.content.schemas import (
 )
 from app.modules.content.storage import ContentStorage, StoredFile, slugify
 from app.modules.snapshots.service import SnapshotService
+from app.modules.tags.models import Tag
+from app.modules.tags.service import TagsService
 from app.modules.taxonomy.models import TaxonomyCategory, TaxonomyContentAssignment
 from app.modules.taxonomy.service import TaxonomyService
 from app.platform.events.outbox import EventOutboxRepository
@@ -84,7 +87,8 @@ class ContentService:
     ) -> None:
         self.session = session
         self.content = ContentRepository(session)
-        self.tags = TagRepository(session)
+        self.legacy_tags = TagRepository(session)
+        self.tag_service = TagsService(session)
         self.taxonomy = TaxonomyService(session)
         self.file_uploads = FileUploadRepository(session)
         self.storage = ContentStorage(storage_root or Path("data/content"), backend=storage_backend)
@@ -266,6 +270,10 @@ class ContentService:
         normalized_search = search.casefold().strip() if search else None
         normalized_tags = {slugify(tag) for tag in tag_slugs}
         assignment_by_object_id = await self._current_assignment_map(owner_user_id)
+        tags_by_object_id = await self.tag_service.list_active_tags_for_contents(
+            owner_user_id=owner_user_id,
+            content_object_ids=[content_object.id for content_object in objects],
+        )
         items: list[ContentObject] = []
 
         for content_object in objects:
@@ -275,7 +283,7 @@ class ContentService:
             ):
                 continue
             if normalized_tags and not normalized_tags.issubset(
-                {tag.slug for tag in content_object.tags},
+                {tag.slug for tag in tags_by_object_id.get(content_object.id, [])},
             ):
                 continue
             if normalized_search:
@@ -294,7 +302,12 @@ class ContentService:
         else:
             items.sort(key=lambda item: item.created_at, reverse=True)
 
-        return NoteListResponse(items=[await self._to_card(item) for item in items])
+        return NoteListResponse(
+            items=[
+                await self._to_card(item, active_tags=tags_by_object_id.get(item.id, []))
+                for item in items
+            ]
+        )
 
     async def get_note(self, *, owner_user_id: str, slug: str) -> NoteCardResponse:
         return await self._to_card(await self._load_note(owner_user_id=owner_user_id, slug=slug))
@@ -332,7 +345,18 @@ class ContentService:
             title=content_object.title,
             text_excerpt=text_excerpt,
             url=url,
-            tags=[tag.slug for tag in sorted(content_object.tags, key=lambda tag: tag.name)],
+            tags=[
+                tag.slug
+                for tag in sorted(
+                    (
+                        await self.tag_service.list_active_tags_for_contents(
+                            owner_user_id=owner_user_id,
+                            content_object_ids=[content_object.id],
+                        )
+                    ).get(content_object.id, []),
+                    key=lambda tag: tag.name,
+                )
+            ],
             metadata={
                 "kind": content_object.kind,
                 "media_type": content_object.media_type,
@@ -374,7 +398,18 @@ class ContentService:
         if title is not None:
             content_object.title = title
         if tag_names is not None:
-            content_object.tags = await self._get_or_create_tags(owner_user_id, tag_names)
+            await self.tag_service.replace_manual_tags_for_content(
+                owner_user_id=owner_user_id,
+                content_object_id=content_object.id,
+                tag_names=tag_names,
+                assigned_by_user_id=owner_user_id,
+                commit=False,
+            )
+            await self._sync_legacy_tags_for_content(
+                owner_user_id=owner_user_id,
+                content_object=content_object,
+                tag_names=tag_names,
+            )
         await self.session.commit()
         loaded = await self._load_note(owner_user_id=owner_user_id, slug=slug)
         return await self._to_card(loaded)
@@ -579,15 +614,20 @@ class ContentService:
             sort="newest",
         )
         assignment_by_object_id = await self._current_assignment_map(owner_user_id)
+        all_notes = await self.content.list_all(owner_user_id=owner_user_id)
+        tags_by_object_id = await self.tag_service.list_active_tags_for_contents(
+            owner_user_id=owner_user_id,
+            content_object_ids=[note.id for note in all_notes],
+        )
         tags = sorted(
             {
                 tag.slug: tag
-                for note in await self.content.list_all(owner_user_id=owner_user_id)
+                for note in all_notes
                 if (
                     assignment_by_object_id.get(note.id) is not None
                     and assignment_by_object_id[note.id].category_path_snapshot == folder_path
                 )
-                for tag in note.tags
+                for tag in tags_by_object_id.get(note.id, [])
             }.values(),
             key=lambda tag: tag.name.casefold(),
         )
@@ -607,7 +647,6 @@ class ContentService:
         tag_names: list[str],
     ) -> NoteCardResponse:
         normalized_title = title or text.strip().splitlines()[0][:80]
-        tags = await self._get_or_create_tags(owner_user_id, tag_names)
         slug = await self._unique_slug(owner_user_id, normalized_title)
         sort_order = await self.content.get_max_sort_order(owner_user_id=owner_user_id) + 10
         content_object_id = str(uuid4())
@@ -630,7 +669,6 @@ class ContentService:
             size_bytes=stored_file.size_bytes,
             storage_path=f"content-assets/{content_object_id}",
             sort_order=sort_order,
-            tags=tags,
         )
         self.storage_objects.add(
             self._stored_object_from_file(stored_file),
@@ -657,6 +695,18 @@ class ContentService:
         )
         self.content.add(content_object)
         await self.session.flush()
+        await self.tag_service.replace_manual_tags_for_content(
+            owner_user_id=owner_user_id,
+            content_object_id=content_object.id,
+            tag_names=tag_names,
+            assigned_by_user_id=owner_user_id,
+            commit=False,
+        )
+        await self._sync_legacy_tags_for_content(
+            owner_user_id=owner_user_id,
+            content_object=content_object,
+            tag_names=tag_names,
+        )
         await self.taxonomy.assign_content_to_path(
             owner_user_id=owner_user_id,
             content_object_id=content_object.id,
@@ -677,7 +727,6 @@ class ContentService:
         tag_names: list[str],
     ) -> NoteCardResponse:
         normalized_title = title or self._link_title(url)
-        tags = await self._get_or_create_tags(owner_user_id, tag_names)
         slug = await self._unique_slug(owner_user_id, normalized_title)
         sort_order = await self.content.get_max_sort_order(owner_user_id=owner_user_id) + 10
         content_object_id = str(uuid4())
@@ -701,7 +750,6 @@ class ContentService:
             size_bytes=stored_file.size_bytes,
             storage_path=f"content-assets/{content_object_id}",
             sort_order=sort_order,
-            tags=tags,
         )
         self.storage_objects.add(
             self._stored_object_from_file(stored_file),
@@ -728,6 +776,18 @@ class ContentService:
         )
         self.content.add(content_object)
         await self.session.flush()
+        await self.tag_service.replace_manual_tags_for_content(
+            owner_user_id=owner_user_id,
+            content_object_id=content_object.id,
+            tag_names=tag_names,
+            assigned_by_user_id=owner_user_id,
+            commit=False,
+        )
+        await self._sync_legacy_tags_for_content(
+            owner_user_id=owner_user_id,
+            content_object=content_object,
+            tag_names=tag_names,
+        )
         await self.taxonomy.assign_content_to_path(
             owner_user_id=owner_user_id,
             content_object_id=content_object.id,
@@ -748,7 +808,6 @@ class ContentService:
         folder_path: str | None,
         tag_names: list[str],
     ) -> NoteCardResponse:
-        tags = await self._get_or_create_tags(owner_user_id, tag_names)
         file_media_type = self._media_type(uploaded.filename, uploaded.content_type)
         normalized_title = title or text.strip().splitlines()[0][:80] or uploaded.filename
         slug = await self._unique_slug(owner_user_id, normalized_title)
@@ -781,7 +840,6 @@ class ContentService:
             size_bytes=stored_file.size_bytes,
             storage_path=f"content-assets/{content_object_id}",
             sort_order=sort_order,
-            tags=tags,
         )
         self.storage_objects.add(
             self._stored_object_from_file(stored_file),
@@ -830,6 +888,18 @@ class ContentService:
         )
         self.content.add(content_object)
         await self.session.flush()
+        await self.tag_service.replace_manual_tags_for_content(
+            owner_user_id=owner_user_id,
+            content_object_id=content_object.id,
+            tag_names=tag_names,
+            assigned_by_user_id=owner_user_id,
+            commit=False,
+        )
+        await self._sync_legacy_tags_for_content(
+            owner_user_id=owner_user_id,
+            content_object=content_object,
+            tag_names=tag_names,
+        )
         await self.taxonomy.assign_content_to_path(
             owner_user_id=owner_user_id,
             content_object_id=content_object.id,
@@ -939,7 +1009,6 @@ class ContentService:
         object_id: str | None = None,
         title: str | None = None,
     ) -> ContentObject:
-        tags = await self._get_or_create_tags(owner_user_id, tag_names)
         media_type = self._media_type(uploaded.filename, uploaded.content_type)
         kind = "complex" if media_type == "document" else "simple"
         normalized_title = title or uploaded.filename
@@ -970,7 +1039,6 @@ class ContentService:
             size_bytes=stored_file.size_bytes,
             storage_path=f"content-assets/{content_object_id}",
             sort_order=sort_order,
-            tags=tags,
         )
         self.storage_objects.add(
             self._stored_object_from_file(stored_file),
@@ -997,6 +1065,18 @@ class ContentService:
         )
         self.content.add(content_object)
         await self.session.flush()
+        await self.tag_service.replace_manual_tags_for_content(
+            owner_user_id=owner_user_id,
+            content_object_id=content_object.id,
+            tag_names=tag_names,
+            assigned_by_user_id=owner_user_id,
+            commit=False,
+        )
+        await self._sync_legacy_tags_for_content(
+            owner_user_id=owner_user_id,
+            content_object=content_object,
+            tag_names=tag_names,
+        )
         await self.taxonomy.assign_content_to_path(
             owner_user_id=owner_user_id,
             content_object_id=content_object.id,
@@ -1016,7 +1096,6 @@ class ContentService:
         object_id: str | None = None,
         slug: str | None = None,
     ) -> ContentObject:
-        tags = await self._get_or_create_tags(owner_user_id, tag_names)
         normalized_slug = slug or await self._unique_slug(owner_user_id, title)
         sort_order = await self.content.get_max_sort_order(owner_user_id=owner_user_id) + 10
         content_object_id = object_id or str(uuid4())
@@ -1029,10 +1108,21 @@ class ContentService:
             media_type=None,
             storage_path=f"content-assets/{content_object_id}",
             sort_order=sort_order,
-            tags=tags,
         )
         self.content.add(collection)
         await self.session.flush()
+        await self.tag_service.replace_manual_tags_for_content(
+            owner_user_id=owner_user_id,
+            content_object_id=collection.id,
+            tag_names=tag_names,
+            assigned_by_user_id=owner_user_id,
+            commit=False,
+        )
+        await self._sync_legacy_tags_for_content(
+            owner_user_id=owner_user_id,
+            content_object=collection,
+            tag_names=tag_names,
+        )
         await self.taxonomy.assign_content_to_path(
             owner_user_id=owner_user_id,
             content_object_id=collection.id,
@@ -1087,6 +1177,21 @@ class ContentService:
         content_object.storage_path = f"content-assets/{content_object.id}"
         self.content.add(child)
         await self.session.flush()
+        inherited_tags = (
+            await self.tag_service.list_active_tags_for_contents(
+                owner_user_id=content_object.owner_user_id,
+                content_object_ids=[content_object.id],
+            )
+        ).get(content_object.id, [])
+        for tag in inherited_tags:
+            await self.tag_service.assign_tag_to_content(
+                owner_user_id=content_object.owner_user_id,
+                content_object_id=child.id,
+                tag_id=tag.id,
+                assigned_by_user_id=content_object.owner_user_id,
+                reasoning="Inherited from collection source object.",
+                commit=False,
+            )
         if current_assignment is not None:
             await self.taxonomy.create_manual_assignment(
                 owner_user_id=content_object.owner_user_id,
@@ -1133,12 +1238,17 @@ class ContentService:
             item.content_object for item in await self.content.list_collection_items(loaded.id)
         ]
         assignment_by_object_id = await self._current_assignment_map(owner_user_id)
+        tags_by_object_id = await self.tag_service.list_active_tags_for_contents(
+            owner_user_id=owner_user_id,
+            content_object_ids=[loaded.id, *(item.id for item in items)],
+        )
         self.storage.write_manifest(
             content_object_id=loaded.id,
             manifest=self._manifest(
                 loaded,
                 items=items,
                 assignment=assignment_by_object_id.get(loaded.id),
+                tags=tags_by_object_id.get(loaded.id, []),
             ),
         )
         if loaded.kind == "collection":
@@ -1149,6 +1259,7 @@ class ContentService:
                         item,
                         items=[],
                         assignment=assignment_by_object_id.get(item.id),
+                        tags=tags_by_object_id.get(item.id, []),
                     ),
                 )
         all_objects = [loaded, *items] if loaded.kind == "collection" else [loaded]
@@ -1222,10 +1333,15 @@ class ContentService:
         if expired_uploads:
             await self.session.flush()
 
-    async def _get_or_create_tags(
-        self, owner_user_id: str, tag_names: list[str]
-    ) -> list[ContentTag]:
-        tags: list[ContentTag] = []
+    async def _sync_legacy_tags_for_content(
+        self,
+        *,
+        owner_user_id: str,
+        content_object: ContentObject,
+        tag_names: list[str],
+    ) -> None:
+        # Compatibility mirror for deprecated content_tags/content_object_tags schema artifacts.
+        legacy_tags: list[LegacyContentTag] = []
         seen: set[str] = set()
         for raw_name in tag_names:
             name = raw_name.strip()
@@ -1235,14 +1351,21 @@ class ContentService:
             if slug in seen:
                 continue
             seen.add(slug)
-            tags.append(
-                await self.tags.get_or_create(
+            legacy_tags.append(
+                await self.legacy_tags.get_or_create(
                     owner_user_id=owner_user_id,
                     name=name,
                     slug=slug,
                 )
             )
-        return tags
+        await self.session.execute(
+            sql_delete(ContentObjectTag).where(
+                ContentObjectTag.content_object_id == content_object.id
+            )
+        )
+        for tag in legacy_tags:
+            self.session.add(ContentObjectTag(content_object_id=content_object.id, tag_id=tag.id))
+        await self.session.flush()
 
     async def _unique_slug(self, owner_user_id: str, title: str) -> str:
         base = slugify(title)
@@ -1260,7 +1383,12 @@ class ContentService:
             raise NoteNotFoundError
         return content_object
 
-    async def _to_card(self, content_object: ContentObject) -> NoteCardResponse:
+    async def _to_card(
+        self,
+        content_object: ContentObject,
+        *,
+        active_tags: list[Tag] | None = None,
+    ) -> NoteCardResponse:
         collection_parent = None
         if content_object.collection_memberships:
             collection = content_object.collection_memberships[0].collection
@@ -1273,6 +1401,13 @@ class ContentService:
         if content_object.kind == "collection":
             collection_items = await self.content.list_collection_items(content_object.id)
             items = [await self._to_card(item.content_object) for item in collection_items]
+        if active_tags is None:
+            active_tags = (
+                await self.tag_service.list_active_tags_for_contents(
+                    owner_user_id=content_object.owner_user_id,
+                    content_object_ids=[content_object.id],
+                )
+            ).get(content_object.id, [])
         current_assignment = await self.taxonomy.get_current_assignment(
             owner_user_id=content_object.owner_user_id,
             content_object_id=content_object.id,
@@ -1329,7 +1464,7 @@ class ContentService:
             title=content_object.title,
             source_filename=content_object.source_filename,
             taxonomy_category=self._taxonomy_category_response_from_assignment(current_assignment),
-            tags=[self._tag_response(tag) for tag in content_object.tags],
+            tags=[self._tag_response(tag) for tag in active_tags],
             is_favorite=content_object.is_favorite,
             sort_order=content_object.sort_order,
             created_at=content_object.created_at,
@@ -1346,6 +1481,7 @@ class ContentService:
         *,
         items: list[ContentObject],
         assignment: TaxonomyContentAssignment | None,
+        tags: list[Tag],
     ) -> dict[str, object]:
         return {
             "id": content_object.id,
@@ -1355,7 +1491,7 @@ class ContentService:
             "title": content_object.title,
             "source_filename": content_object.source_filename,
             "folder": assignment.category_path_snapshot if assignment is not None else None,
-            "tags": [tag.slug for tag in content_object.tags],
+            "tags": [tag.slug for tag in tags],
             "items": [item.slug for item in items],
         }
 
@@ -1425,7 +1561,7 @@ class ContentService:
         return {assignment.content_object_id: assignment for assignment in assignments}
 
     @staticmethod
-    def _tag_response(tag: ContentTag) -> TagResponse:
+    def _tag_response(tag: Tag) -> TagResponse:
         return TagResponse(id=tag.id, name=tag.name, slug=tag.slug)
 
     @staticmethod

@@ -15,6 +15,8 @@ from app.modules.auth import models as auth_models  # noqa: F401
 from app.modules.content import models as content_models  # noqa: F401
 from app.modules.snapshots import models as snapshot_models  # noqa: F401
 from app.modules.snapshots.worker import SnapshotWorker
+from app.modules.tags import models as tags_models  # noqa: F401
+from app.modules.tags.worker import TagsWorker
 from app.modules.taxonomy import models as taxonomy_models  # noqa: F401
 from app.modules.vectorization import models as vectorization_models  # noqa: F401
 from app.modules.vectorization.worker import VectorizationWorker
@@ -93,11 +95,25 @@ async def run_vectorization_worker() -> None:
             await asyncio.sleep(settings.vector_worker_poll_interval_seconds)
 
 
+async def run_tags_worker() -> None:
+    settings = get_settings()
+    configure_logging(settings.log_level)
+    session_factory = build_session_factory(
+        settings.sqlalchemy_database_uri,
+        echo=settings.sqlalchemy_echo,
+    )
+    while True:
+        async with session_factory() as session:
+            processed = await TagsWorker(session).run_once(limit=settings.tags_worker_batch_size)
+        if processed == 0:
+            await asyncio.sleep(settings.tags_worker_poll_interval_seconds)
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit(
             "Usage: python -m app.workers.main "
-            "<outbox-publisher|snapshot-worker|vectorization-worker>"
+            "<outbox-publisher|snapshot-worker|vectorization-worker|tags-worker>"
         )
     mode = sys.argv[1]
     if mode == "outbox-publisher":
@@ -108,6 +124,9 @@ def main() -> None:
         return
     if mode == "vectorization-worker":
         asyncio.run(run_vectorization_worker())
+        return
+    if mode == "tags-worker":
+        asyncio.run(run_tags_worker())
         return
     raise SystemExit(f"Unknown worker mode: {mode}")
 

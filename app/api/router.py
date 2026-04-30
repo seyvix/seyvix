@@ -12,6 +12,7 @@ from app.modules.content.presentation.rest.router import router as content_route
 from app.modules.registry import list_modules
 from app.modules.search.presentation.rest.router import router as search_router
 from app.modules.snapshots.presentation.rest.router import router as snapshots_router
+from app.modules.tags.presentation.rest.router import router as tags_router
 from app.modules.taxonomy.presentation.rest.router import router as taxonomy_router
 from app.modules.vectorization.presentation.rest.router import router as vectorization_router
 from app.shared.module_definitions import ModuleDefinition
@@ -21,6 +22,7 @@ api_router.include_router(auth_router)
 api_router.include_router(content_router)
 api_router.include_router(snapshots_router)
 api_router.include_router(taxonomy_router)
+api_router.include_router(tags_router)
 api_router.include_router(vectorization_router)
 api_router.include_router(search_router)
 

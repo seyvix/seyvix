@@ -84,6 +84,16 @@ class Settings(BaseSettings):
     taxonomy_llm_classification_propose_threshold: float = 0.60
     taxonomy_llm_classification_fallback_to_semantic: bool = True
     taxonomy_llm_classification_model: str = "qwen3:4b-thinking"
+    tags_llm_enabled: bool = False
+    tags_llm_model: str = "qwen3:4b-thinking"
+    tags_llm_max_tags: int = 8
+    tags_llm_auto_apply_threshold: float = 0.85
+    tags_llm_suggest_threshold: float = 0.60
+    tags_llm_create_missing_tags: bool = True
+    tags_llm_prompt_version: str = "content_tags_v1"
+    tags_worker_batch_size: int = 10
+    tags_worker_poll_interval_seconds: int = 10
+    tags_worker_lock_timeout_seconds: int = 300
     llm_structured_provider: Literal["disabled", "http", "ollama"] = "disabled"
     llm_structured_base_url: str | None = None
     llm_structured_api_key: str | None = None
