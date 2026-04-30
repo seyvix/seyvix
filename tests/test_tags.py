@@ -292,6 +292,7 @@ def test_service_llm_suggestions_store_metadata_thresholds_and_history(tmp_path:
                 persist=False,
             )
             assert [suggestion.slug for suggestion in dry_run] == ["vllm", "kv-cache"]
+            assert "Taxonomy category:" not in generator.calls[0]["prompt"]
             assert list(await session.scalars(select(Tag))) == []
 
             persisted = await service.suggest_tags_for_content(

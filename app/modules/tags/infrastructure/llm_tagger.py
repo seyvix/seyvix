@@ -39,7 +39,6 @@ class LLMContentTagger:
         *,
         title: str,
         url: str | None,
-        taxonomy_path: str | None,
         existing_tags: list[str],
         excerpt: str | None,
         metadata: dict[str, object],
@@ -48,7 +47,6 @@ class LLMContentTagger:
         prompt = self._build_prompt(
             title=title,
             url=url,
-            taxonomy_path=taxonomy_path,
             existing_tags=existing_tags,
             excerpt=excerpt,
             metadata=metadata,
@@ -86,7 +84,6 @@ class LLMContentTagger:
         *,
         title: str,
         url: str | None,
-        taxonomy_path: str | None,
         existing_tags: list[str],
         excerpt: str | None,
         metadata: dict[str, object],
@@ -102,7 +99,6 @@ class LLMContentTagger:
             f"Prompt version: {self.settings.tags_llm_prompt_version}\n"
             f"Title: {title}\n"
             f"URL: {url or ''}\n"
-            f"Taxonomy category: {taxonomy_path or ''}\n"
             f"Existing tags: {', '.join(existing_tags)}\n"
             f"Metadata: {metadata}\n"
             f"Excerpt:\n{excerpt or ''}\n\n"

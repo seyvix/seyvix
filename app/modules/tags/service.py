@@ -14,7 +14,6 @@ from app.modules.tags.contracts import ContentTagSuggestion
 from app.modules.tags.infrastructure.llm_tagger import LLMContentTagger
 from app.modules.tags.infrastructure.repositories import TagsRepository
 from app.modules.tags.models import ContentTagAssignment, Tag, TaggingJob
-from app.modules.taxonomy.service import TaxonomyService
 
 
 class TagNotFoundError(Exception):
@@ -36,7 +35,6 @@ class TagLLMDisabledError(Exception):
 @dataclass(slots=True)
 class TaggingInput:
     content_object: ContentObject
-    taxonomy_path: str | None
     active_tags: list[Tag]
     excerpt: str | None
 
@@ -53,7 +51,6 @@ class TagsService:
         self.settings = settings or get_settings()
         self.repository = TagsRepository(session)
         self.content = ContentRepository(session)
-        self.taxonomy = TaxonomyService(session)
         self.llm_generator = llm_generator or build_structured_llm_generator()
 
     async def create_tag(
@@ -371,7 +368,6 @@ class TagsService:
         suggestions = await tagger.suggest(
             title=tagging_input.content_object.title,
             url=self._content_url(tagging_input.content_object),
-            taxonomy_path=tagging_input.taxonomy_path,
             existing_tags=[tag.slug for tag in tagging_input.active_tags],
             excerpt=tagging_input.excerpt,
             metadata={
@@ -526,10 +522,6 @@ class TagsService:
             owner_user_id=owner_user_id,
             content_object_id=content_object_id,
         )
-        current_assignment = await self.taxonomy.get_current_assignment(
-            owner_user_id=owner_user_id,
-            content_object_id=content_object_id,
-        )
         active = await self.repository.list_active_assignments_for_content(
             owner_user_id=owner_user_id,
             content_object_id=content_object_id,
@@ -537,11 +529,6 @@ class TagsService:
         )
         return TaggingInput(
             content_object=content_object,
-            taxonomy_path=(
-                current_assignment.category_path_snapshot
-                if current_assignment is not None
-                else None
-            ),
             active_tags=[assignment.tag for assignment in active],
             excerpt=self._text_excerpt(content_object, max_chars=4000),
         )
