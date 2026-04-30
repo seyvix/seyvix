@@ -24,6 +24,9 @@ class PgVectorizedChunkSearchReader:
         model: str,
         dimensions: int,
         limit: int,
+        source: str | None = None,
+        source_type: str | None = None,
+        source_id: str | None = None,
     ) -> list[VectorizedChunkSearchResult]:
         distance = VectorizationEmbedding.embedding.cosine_distance(query_embedding).label(
             "distance"
@@ -50,16 +53,22 @@ class PgVectorizedChunkSearchReader:
             .order_by(distance.asc())
             .limit(limit)
         )
+        if source is not None:
+            query = query.where(VectorizationSource.source == source)
+        if source_type is not None:
+            query = query.where(VectorizationSource.source_type == source_type)
+        if source_id is not None:
+            query = query.where(VectorizationSource.source_id == source_id)
         rows = (await self.session.execute(query)).all()
         results: list[VectorizedChunkSearchResult] = []
-        for chunk, source, raw_distance in rows:
+        for chunk, source_record, raw_distance in rows:
             distance_value = float(raw_distance)
             results.append(
                 VectorizedChunkSearchResult(
-                    source=source.source,
-                    source_type=source.source_type,
-                    source_id=source.source_id,
-                    external_id=source.external_id,
+                    source=source_record.source,
+                    source_type=source_record.source_type,
+                    source_id=source_record.source_id,
+                    external_id=source_record.external_id,
                     chunk_id=chunk.id,
                     chunk_external_id=chunk.chunk_external_id,
                     text=chunk.text,

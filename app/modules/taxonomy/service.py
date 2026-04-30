@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import cast
+from typing import Protocol, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import Settings, get_settings
+from app.modules.search.schemas import SemanticSearchResult
 from app.modules.taxonomy.infrastructure.repositories import TaxonomyRepository
 from app.modules.taxonomy.models import (
     TaxonomyCategory,
@@ -44,6 +46,20 @@ class TaxonomyValidationError(Exception):
     pass
 
 
+class SemanticClassificationSearchService(Protocol):
+    async def semantic_search(
+        self,
+        *,
+        owner_user_id: str,
+        query: str,
+        limit: int,
+        source: str | None = None,
+        source_type: str | None = None,
+        source_id: str | None = None,
+    ) -> list[SemanticSearchResult]:
+        raise NotImplementedError
+
+
 @dataclass(slots=True)
 class InitializeTaxonomyResult:
     owner_user_id: str
@@ -53,8 +69,9 @@ class InitializeTaxonomyResult:
 
 
 class TaxonomyService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, *, settings: Settings | None = None) -> None:
         self.session = session
+        self.settings = settings or get_settings()
         self.repository = TaxonomyRepository(session)
 
     async def create_category(
@@ -528,6 +545,77 @@ class TaxonomyService:
         await self.session.refresh(assignment)
         return assignment
 
+    async def classify_content_object(
+        self,
+        *,
+        owner_user_id: str,
+        content_object_id: str,
+        semantic_search_service: SemanticClassificationSearchService | None = None,
+        limit: int = 5,
+    ) -> TaxonomyContentAssignment | None:
+        from app.modules.content.service import ContentService, NoteNotFoundError
+        from app.modules.search.service import SemanticSearchService
+
+        try:
+            classification_input = await ContentService(self.session).build_classification_input(
+                owner_user_id=owner_user_id,
+                content_object_id=content_object_id,
+                text_excerpt_max_chars=4000,
+            )
+        except NoteNotFoundError as exc:
+            raise TaxonomyNotFoundError from exc
+
+        query = self._build_classification_query(
+            title=classification_input.title,
+            url=classification_input.url,
+            tags=classification_input.tags,
+            text_excerpt=classification_input.text_excerpt,
+        )
+        search_service = semantic_search_service or SemanticSearchService(self.session)
+        candidates = await search_service.semantic_search(
+            owner_user_id=owner_user_id,
+            query=query,
+            source="taxonomy",
+            source_type="category_profile",
+            source_id=None,
+            limit=limit,
+        )
+        if not candidates:
+            return None
+
+        best = candidates[0]
+        if best.score < self.settings.taxonomy_classification_medium_threshold:
+            return None
+
+        category = await self.repository.get_category(
+            owner_user_id=owner_user_id,
+            category_id=best.source_id,
+            include_archived=False,
+        )
+        if category is None:
+            return None
+
+        status = (
+            "accepted"
+            if best.score >= self.settings.taxonomy_classification_high_threshold
+            else "proposed"
+        )
+        assignment = await self._create_current_assignment(
+            owner_user_id=owner_user_id,
+            content_object_id=content_object_id,
+            category=category,
+            status=status,
+            assigned_by="system",
+            confidence=best.score,
+            reasoning="Selected by semantic similarity over taxonomy category profiles.",
+            alternatives=await self._classification_alternatives(
+                owner_user_id=owner_user_id,
+                candidates=candidates,
+            ),
+            commit=True,
+        )
+        return assignment
+
     async def list_templates(self) -> list[TaxonomyTemplate]:
         await self._ensure_templates_seeded()
         return await self.repository.list_templates()
@@ -627,6 +715,7 @@ class TaxonomyService:
         assigned_by: str,
         confidence: float | None,
         reasoning: str | None,
+        alternatives: list[dict[str, object]] | None = None,
         commit: bool,
     ) -> TaxonomyContentAssignment:
         await self.repository.override_current_assignments(
@@ -641,7 +730,7 @@ class TaxonomyService:
             confidence=confidence,
             reasoning=reasoning,
             assigned_by=assigned_by,
-            alternatives=[],
+            alternatives=alternatives or [],
             category_name_snapshot=category.name,
             category_path_snapshot=category.path,
             is_current=True,
@@ -652,6 +741,51 @@ class TaxonomyService:
             await self.session.commit()
             await self.session.refresh(assignment)
         return assignment
+
+    async def _classification_alternatives(
+        self,
+        *,
+        owner_user_id: str,
+        candidates: list[SemanticSearchResult],
+    ) -> list[dict[str, object]]:
+        alternatives: list[dict[str, object]] = []
+        for candidate in candidates:
+            category = await self.repository.get_category(
+                owner_user_id=owner_user_id,
+                category_id=candidate.source_id,
+                include_archived=False,
+            )
+            if category is None:
+                continue
+            alternatives.append(
+                {
+                    "category_id": category.id,
+                    "category_name_snapshot": category.name,
+                    "category_path_snapshot": category.path,
+                    "score": candidate.score,
+                    "chunk_id": candidate.chunk_id,
+                }
+            )
+        return alternatives
+
+    @staticmethod
+    def _build_classification_query(
+        *,
+        title: str,
+        url: str | None,
+        tags: list[str],
+        text_excerpt: str | None,
+    ) -> str:
+        lines = [
+            "Type: content_object",
+            f"Title: {title}",
+            f"URL: {url or ''}",
+            f"Tags: {', '.join(tags)}",
+            "Content:",
+        ]
+        if text_excerpt:
+            lines.append(text_excerpt)
+        return "\n".join(lines).strip()
 
     async def _ensure_unique_category(
         self,

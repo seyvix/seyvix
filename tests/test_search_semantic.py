@@ -91,6 +91,45 @@ def _create_indexed_category_profile(
     return category
 
 
+def _create_indexed_content_object(
+    client: TestClient,
+    headers: dict[str, str],
+    *,
+    title: str,
+    text: str,
+) -> dict[str, object]:
+    note_response = client.post(
+        "/api/v1/notes",
+        headers=headers,
+        json={
+            "media_type": "text",
+            "title": title,
+            "text": text,
+            "tag_names": ["semantic"],
+        },
+    )
+    assert note_response.status_code == 201, note_response.text
+    note = note_response.json()
+    enqueue_response = client.post(
+        "/api/v1/vectorization/index",
+        headers=headers,
+        json={
+            "source": "content",
+            "source_type": "content_object",
+            "source_id": note["id"],
+        },
+    )
+    assert enqueue_response.status_code == 202, enqueue_response.text
+
+    async def run_worker() -> int:
+        session_factory = _worker_session_factory()
+        async with session_factory() as session:
+            return await VectorizationWorker(session).run_once(limit=10)
+
+    assert asyncio.run(run_worker()) == 1
+    return note
+
+
 def test_semantic_search_requires_authentication(content_client: TestClient) -> None:
     response = content_client.post(
         "/api/v1/search/semantic",
@@ -137,3 +176,71 @@ def test_semantic_search_returns_owner_scoped_vectorized_chunks(
 
     assert other_response.status_code == 200, other_response.text
     assert other_response.json()["results"] == []
+
+
+def test_semantic_search_source_filters_scope_results(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client, telegram_id=300300)
+    taxonomy_category = _create_indexed_category_profile(
+        content_client,
+        headers,
+        slug="taxonomy-only",
+        summary="Taxonomy profile for search filtering.",
+    )
+    content_note = _create_indexed_content_object(
+        content_client,
+        headers,
+        title="Content search note",
+        text="Content object body for filtered semantic search.",
+    )
+
+    unfiltered = content_client.post(
+        "/api/v1/search/semantic",
+        headers=headers,
+        json={"query": "semantic search", "limit": 10},
+    )
+    taxonomy_only = content_client.post(
+        "/api/v1/search/semantic",
+        headers=headers,
+        json={
+            "query": "semantic search",
+            "source": "taxonomy",
+            "source_type": "category_profile",
+            "limit": 10,
+        },
+    )
+    content_only = content_client.post(
+        "/api/v1/search/semantic",
+        headers=headers,
+        json={
+            "query": "semantic search",
+            "source": "content",
+            "source_type": "content_object",
+            "limit": 10,
+        },
+    )
+    one_source = content_client.post(
+        "/api/v1/search/semantic",
+        headers=headers,
+        json={
+            "query": "semantic search",
+            "source": "content",
+            "source_type": "content_object",
+            "source_id": content_note["id"],
+            "limit": 10,
+        },
+    )
+
+    assert unfiltered.status_code == 200, unfiltered.text
+    assert {result["source"] for result in unfiltered.json()["results"]} == {
+        "taxonomy",
+        "content",
+    }
+    assert taxonomy_only.status_code == 200, taxonomy_only.text
+    assert {result["source"] for result in taxonomy_only.json()["results"]} == {"taxonomy"}
+    assert taxonomy_only.json()["results"][0]["source_id"] == taxonomy_category["id"]
+    assert content_only.status_code == 200, content_only.text
+    assert {result["source"] for result in content_only.json()["results"]} == {"content"}
+    assert one_source.status_code == 200, one_source.text
+    assert {result["source_id"] for result in one_source.json()["results"]} == {content_note["id"]}

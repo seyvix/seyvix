@@ -27,3 +27,4 @@ class ContentClassificationInput(BaseModel):
     tags: list[str]
     metadata: dict[str, str | int | bool | None]
     created_at: datetime
+    updated_at: datetime

@@ -78,6 +78,8 @@ class Settings(BaseSettings):
     vector_worker_batch_size: int = 10
     vector_worker_poll_interval_seconds: int = 10
     vector_worker_lock_timeout_seconds: int = 300
+    taxonomy_classification_high_threshold: float = 0.80
+    taxonomy_classification_medium_threshold: float = 0.60
     snapshot_office_converter_command: str | None = "libreoffice"
     cors_allowed_origins: list[str] = Field(default_factory=list)
     cors_allow_origin_regex: str | None = None

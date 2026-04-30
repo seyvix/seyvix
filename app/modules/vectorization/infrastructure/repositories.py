@@ -64,6 +64,25 @@ class VectorizationRepository:
         )
         return list(await self.session.scalars(query))
 
+    async def list_sources_by_scope(
+        self,
+        *,
+        owner_user_id: str,
+        source: str,
+        source_type: str,
+    ) -> list[VectorizationSource]:
+        query = (
+            select(VectorizationSource)
+            .where(
+                VectorizationSource.owner_user_id == owner_user_id,
+                VectorizationSource.source == source,
+                VectorizationSource.source_type == source_type,
+                VectorizationSource.status != "deleted",
+            )
+            .order_by(VectorizationSource.updated_at.desc())
+        )
+        return list(await self.session.scalars(query))
+
     async def list_chunks(self, *, owner_user_id: str, limit: int) -> list[VectorizationChunk]:
         query = (
             select(VectorizationChunk)
@@ -113,6 +132,22 @@ class VectorizationRepository:
         query = select(VectorizationSource).where(
             VectorizationSource.owner_user_id == owner_user_id,
             VectorizationSource.external_id == external_id,
+        )
+        return cast(VectorizationSource | None, await self.session.scalar(query))
+
+    async def get_source_by_scope(
+        self,
+        *,
+        owner_user_id: str,
+        source: str,
+        source_type: str,
+        source_id: str,
+    ) -> VectorizationSource | None:
+        query = select(VectorizationSource).where(
+            VectorizationSource.owner_user_id == owner_user_id,
+            VectorizationSource.source == source,
+            VectorizationSource.source_type == source_type,
+            VectorizationSource.source_id == source_id,
         )
         return cast(VectorizationSource | None, await self.session.scalar(query))
 
@@ -232,3 +267,31 @@ class VectorizationRepository:
                     embedding_hash=embedding_hash,
                 )
             )
+
+    async def delete_source_vectors(self, source_record: VectorizationSource) -> None:
+        existing_chunk_ids = list(
+            await self.session.scalars(
+                select(VectorizationChunk.id).where(
+                    VectorizationChunk.source_record_id == source_record.id
+                )
+            )
+        )
+        if existing_chunk_ids:
+            await self.session.execute(
+                delete(VectorizationEmbedding).where(
+                    VectorizationEmbedding.chunk_id.in_(existing_chunk_ids)
+                )
+            )
+        await self.session.execute(
+            delete(VectorizationChunk).where(
+                VectorizationChunk.source_record_id == source_record.id
+            )
+        )
+        await self.session.execute(
+            delete(VectorizationDocument).where(
+                VectorizationDocument.source_record_id == source_record.id
+            )
+        )
+        source_record.status = "deleted"
+        source_record.source_hash = None
+        source_record.last_error = None

@@ -342,6 +342,7 @@ class ContentService:
                 "is_favorite": content_object.is_favorite,
             },
             created_at=content_object.created_at,
+            updated_at=content_object.updated_at,
         )
 
     async def get_asset_file(

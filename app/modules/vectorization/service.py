@@ -106,6 +106,58 @@ class VectorizationService:
             reason=reason,
         )
 
+    async def enqueue_reindex_request(
+        self,
+        *,
+        owner_user_id: str,
+        source: str,
+        source_type: str,
+        priority: int,
+        reason: str | None,
+    ) -> list[VectorizationJob]:
+        if not self.document_registry.has_provider(source=source, source_type=source_type):
+            raise VectorizationProviderNotFoundError(
+                f"No vectorization document provider for {source}/{source_type}."
+            )
+        sources = await self.repository.list_sources_by_scope(
+            owner_user_id=owner_user_id,
+            source=source,
+            source_type=source_type,
+        )
+        jobs: list[VectorizationJob] = []
+        for source_record in sources:
+            jobs.append(
+                await self.repository.enqueue_job(
+                    owner_user_id=owner_user_id,
+                    source=source_record.source,
+                    source_type=source_record.source_type,
+                    source_id=source_record.source_id,
+                    priority=priority,
+                    reason=reason,
+                )
+            )
+        return jobs
+
+    async def delete_source_vectors(
+        self,
+        *,
+        owner_user_id: str,
+        source: str,
+        source_type: str,
+        source_id: str,
+    ) -> str:
+        source_record = await self.repository.get_source_by_scope(
+            owner_user_id=owner_user_id,
+            source=source,
+            source_type=source_type,
+            source_id=source_id,
+        )
+        if source_record is None:
+            return "deleted"
+        await self.repository.delete_source_vectors(source_record)
+        await self.session.commit()
+        return source_record.status
+
     async def process_job(self, job: VectorizationJob) -> None:
         provider = self.document_registry.get(source=job.source, source_type=job.source_type)
         document = await provider.build_document(

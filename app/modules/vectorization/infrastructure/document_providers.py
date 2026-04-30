@@ -4,9 +4,11 @@ from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.content.service import ContentService, NoteNotFoundError
 from app.modules.taxonomy.service import TaxonomyNotFoundError, TaxonomyService
 from app.modules.vectorization.contracts import (
     VectorizationDocumentInput,
+    build_content_object_vector_subject,
     vectorization_document_from_subject,
 )
 
@@ -82,11 +84,61 @@ class TaxonomyCategoryProfileDocumentProvider:
         )
 
 
+class ContentObjectDocumentProvider:
+    def __init__(self, session: AsyncSession) -> None:
+        self.content_service = ContentService(session)
+        self.taxonomy_service = TaxonomyService(session)
+
+    async def build_document(
+        self,
+        *,
+        owner_user_id: str,
+        source_id: str,
+    ) -> VectorizationDocumentInput:
+        try:
+            classification_input = await self.content_service.build_classification_input(
+                owner_user_id=owner_user_id,
+                content_object_id=source_id,
+                text_excerpt_max_chars=50000,
+            )
+        except NoteNotFoundError as exc:
+            raise DocumentNotFoundError("Content object source not found.") from exc
+
+        assignment = await self.taxonomy_service.get_current_assignment(
+            owner_user_id=owner_user_id,
+            content_object_id=source_id,
+        )
+        subject = build_content_object_vector_subject(
+            content_object_id=classification_input.content_object_id,
+            title=classification_input.title,
+            url=classification_input.url,
+            tags=classification_input.tags,
+            taxonomy_category=assignment.category_path_snapshot if assignment is not None else None,
+            content=classification_input.text_excerpt,
+            metadata=classification_input.metadata,
+            source_updated_at=classification_input.updated_at,
+        )
+        return vectorization_document_from_subject(
+            owner_user_id=owner_user_id,
+            source="content",
+            source_type="content_object",
+            source_id=source_id,
+            chunking_strategy="content_text",
+            representation_type="content_text",
+            subject=subject,
+        )
+
+
 def build_document_provider_registry(session: AsyncSession) -> DocumentProviderRegistry:
     registry = DocumentProviderRegistry()
     registry.register(
         source="taxonomy",
         source_type="category_profile",
         provider=TaxonomyCategoryProfileDocumentProvider(session),
+    )
+    registry.register(
+        source="content",
+        source_type="content_object",
+        provider=ContentObjectDocumentProvider(session),
     )
     return registry

@@ -18,6 +18,28 @@ class VectorizationIndexResponse(BaseModel):
     status: str
 
 
+class VectorizationReindexRequestBody(BaseModel):
+    source: str = Field(min_length=1, max_length=64)
+    source_type: str = Field(min_length=1, max_length=64)
+    priority: int = Field(default=100, ge=0, le=1000)
+    reason: str | None = Field(default=None, max_length=255)
+
+
+class VectorizationReindexResponse(BaseModel):
+    job_count: int
+    job_ids: list[str]
+
+
+class VectorizationDeleteSourceVectorsRequestBody(BaseModel):
+    source: str = Field(min_length=1, max_length=64)
+    source_type: str = Field(min_length=1, max_length=64)
+    source_id: str = Field(min_length=1, max_length=255)
+
+
+class VectorizationDeleteSourceVectorsResponse(BaseModel):
+    status: str
+
+
 class VectorizationJobResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

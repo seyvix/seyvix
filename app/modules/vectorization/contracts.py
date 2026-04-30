@@ -82,6 +82,9 @@ class VectorizedChunkSearchReader(Protocol):
         model: str,
         dimensions: int,
         limit: int,
+        source: str | None = None,
+        source_type: str | None = None,
+        source_id: str | None = None,
     ) -> list[VectorizedChunkSearchResult]:
         raise NotImplementedError
 
@@ -137,6 +140,48 @@ def build_taxonomy_category_profile_vector_subject(
             "category_depth": category_depth,
             "source": "taxonomy",
         },
+        source_updated_at=source_updated_at,
+        dirty_key=source_updated_at.isoformat(),
+    )
+
+
+def build_content_object_vector_subject(
+    *,
+    content_object_id: str,
+    title: str,
+    url: str | None,
+    tags: list[str],
+    taxonomy_category: str | None,
+    content: str | None,
+    metadata: dict[str, str | int | bool | None],
+    source_updated_at: datetime,
+) -> VectorizationSubject:
+    lines = [
+        "Type: content_object",
+        f"Title: {title}",
+        f"URL: {url or ''}",
+        f"Tags: {', '.join(tags)}",
+        f"Taxonomy category: {taxonomy_category or ''}",
+        "Content:",
+    ]
+    if content:
+        lines.append(content)
+    source_text = "\n".join(lines).strip()
+    subject_metadata: dict[str, str | int] = {
+        "content_object_id": content_object_id,
+        "source": "content",
+    }
+    for key, value in metadata.items():
+        if isinstance(value, str | int):
+            subject_metadata[key] = value
+        elif isinstance(value, bool):
+            subject_metadata[key] = int(value)
+    if taxonomy_category is not None:
+        subject_metadata["taxonomy_category"] = taxonomy_category
+    return VectorizationSubject(
+        external_id=f"content_object:{content_object_id}",
+        source_text=source_text,
+        metadata=subject_metadata,
         source_updated_at=source_updated_at,
         dirty_key=source_updated_at.isoformat(),
     )

@@ -27,6 +27,7 @@ from app.modules.vectorization.infrastructure.embedding_providers import (
 )
 from app.modules.vectorization.models import (
     VectorizationChunk,
+    VectorizationDocument,
     VectorizationEmbedding,
     VectorizationJob,
     VectorizationSource,
@@ -190,6 +191,88 @@ def test_chunking_is_deterministic_and_enforces_limits() -> None:
         )
 
 
+def test_chunking_strategies_are_explicit_and_stable() -> None:
+    limits = ChunkingLimits(
+        max_document_chars=1000,
+        max_chunks_per_document=3,
+        max_tokens_per_chunk=4,
+        overlap_tokens=1,
+        config_version="v1",
+    )
+
+    short = chunk_text(
+        "profile summary keywords",
+        document_external_id="taxonomy-doc",
+        strategy="short_document",
+        metadata={"source": "taxonomy"},
+        limits=limits,
+    )
+    content = chunk_text(
+        "one two three four five six seven eight nine ten",
+        document_external_id="content-doc",
+        strategy="content_text",
+        metadata={"source": "content"},
+        limits=limits,
+    )
+    snapshot = chunk_text(
+        "one two three four five six",
+        document_external_id="snapshot-doc",
+        strategy="snapshot_text",
+        metadata={},
+        limits=limits,
+    )
+    metadata_only = chunk_text(
+        "type title url tags taxonomy",
+        document_external_id="metadata-doc",
+        strategy="metadata_only",
+        metadata={},
+        limits=limits,
+    )
+
+    assert [chunk.text for chunk in short] == ["profile summary keywords"]
+    assert [chunk.text for chunk in content] == [
+        "one two three four",
+        "four five six seven",
+        "seven eight nine ten",
+    ]
+    assert [chunk.text for chunk in snapshot] == [
+        "one two three four",
+        "four five six",
+    ]
+    assert [chunk.text for chunk in metadata_only] == [
+        "type title url tags",
+        "tags taxonomy",
+    ]
+    assert [chunk.chunk_external_id for chunk in content] == [
+        "content-doc:chunk:0",
+        "content-doc:chunk:1",
+        "content-doc:chunk:2",
+    ]
+
+    with pytest.raises(ValueError, match="maximum chunk count"):
+        chunk_text(
+            "one two three four five six seven eight nine ten eleven twelve thirteen fourteen",
+            document_external_id="content-doc",
+            strategy="content_text",
+            metadata={},
+            limits=limits,
+        )
+    with pytest.raises(ValueError, match="overlap"):
+        chunk_text(
+            "one two",
+            document_external_id="content-doc",
+            strategy="content_text",
+            metadata={},
+            limits=limits.__class__(
+                max_document_chars=100,
+                max_chunks_per_document=10,
+                max_tokens_per_chunk=4,
+                overlap_tokens=4,
+                config_version="v1",
+            ),
+        )
+
+
 def test_source_hash_changes_with_text_and_indexing_config() -> None:
     document = VectorizationDocumentInput(
         owner_user_id="user-id",
@@ -332,6 +415,285 @@ def test_authenticated_index_endpoint_enqueues_owner_scoped_job(
     assert jobs.status_code == 200
     assert jobs.json()[0]["source_id"] == category["id"]
     assert jobs.json()[0]["priority"] == 50
+
+
+def _create_text_note(
+    client: TestClient,
+    headers: dict[str, str],
+    *,
+    title: str,
+    text: str,
+    tag_names: list[str] | None = None,
+    folder_path: str | None = None,
+) -> dict[str, object]:
+    response = client.post(
+        "/api/v1/notes",
+        headers=headers,
+        json={
+            "media_type": "text",
+            "title": title,
+            "text": text,
+            "tag_names": tag_names or [],
+            "folder_path": folder_path,
+        },
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def test_content_object_vectorization_provider_indexes_and_replaces_changed_content(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client, telegram_id=300500)
+    other_headers = _auth_headers(content_client, telegram_id=300600)
+    note = _create_text_note(
+        content_client,
+        headers,
+        title="vLLM latency notes",
+        text=" ".join(f"latency-token-{index}" for index in range(30)),
+        tag_names=["AI", "Performance"],
+        folder_path="research/ai",
+    )
+
+    denied = content_client.post(
+        "/api/v1/vectorization/index",
+        headers=other_headers,
+        json={
+            "source": "content",
+            "source_type": "content_object",
+            "source_id": note["id"],
+        },
+    )
+    assert denied.status_code == 202
+
+    async def failed_owner_scenario() -> str:
+        session_factory = _worker_session_factory()
+        async with session_factory() as session:
+            await VectorizationWorker(session).run_once(limit=10)
+            job = await session.scalar(select(VectorizationJob))
+            assert job is not None
+            return str(job.last_error)
+
+    assert "not found" in asyncio.run(failed_owner_scenario()).lower()
+
+    enqueue = content_client.post(
+        "/api/v1/vectorization/index",
+        headers=headers,
+        json={
+            "source": "content",
+            "source_type": "content_object",
+            "source_id": note["id"],
+        },
+    )
+    assert enqueue.status_code == 202, enqueue.text
+
+    async def index_scenario() -> tuple[str, set[str], int, str, str]:
+        session_factory = _worker_session_factory()
+        async with session_factory() as session:
+            processed = await VectorizationWorker(session).run_once(limit=10)
+            assert processed == 1
+            source = await session.scalar(
+                select(VectorizationSource).where(VectorizationSource.source == "content")
+            )
+            assert source is not None
+            document = await session.scalar(
+                select(VectorizationDocument).where(
+                    VectorizationDocument.source_record_id == source.id
+                )
+            )
+            assert document is not None
+            chunks = list(
+                await session.scalars(
+                    select(VectorizationChunk).where(
+                        VectorizationChunk.source_record_id == source.id
+                    )
+                )
+            )
+            embeddings = list(await session.scalars(select(VectorizationEmbedding)))
+            old_chunk_ids = {chunk.id for chunk in chunks}
+
+            await VectorizationService(session).enqueue_index_request(
+                owner_user_id=source.owner_user_id,
+                source="content",
+                source_type="content_object",
+                source_id=str(note["id"]),
+                priority=100,
+                reason="manual",
+            )
+            skipped = await VectorizationWorker(session).run_once(limit=10)
+            chunks_after = list(
+                await session.scalars(
+                    select(VectorizationChunk).where(
+                        VectorizationChunk.source_record_id == source.id
+                    )
+                )
+            )
+
+            return (
+                source.status,
+                old_chunk_ids,
+                skipped,
+                document.text,
+                f"{len(chunks_after)}:{len(embeddings)}",
+            )
+
+    status_value, old_chunk_ids, skipped, document_text, counts = asyncio.run(index_scenario())
+    assert status_value == "synced"
+    assert skipped == 1
+    assert "Type: content_object" in document_text
+    assert "Title: vLLM latency notes" in document_text
+    assert "Tags: ai, performance" in document_text
+    assert "Taxonomy category: research/ai" in document_text
+    assert "Content:" in document_text
+    assert counts.split(":")[0] == counts.split(":")[1]
+
+    update = content_client.patch(
+        f"/api/v1/notes/{note['slug']}",
+        headers=headers,
+        json={"title": "vLLM latency notes updated"},
+    )
+    assert update.status_code == 200, update.text
+
+    async def changed_reindex_scenario() -> set[str]:
+        session_factory = _worker_session_factory()
+        async with session_factory() as session:
+            source = await session.scalar(
+                select(VectorizationSource).where(VectorizationSource.source == "content")
+            )
+            assert source is not None
+            await VectorizationService(session).enqueue_index_request(
+                owner_user_id=source.owner_user_id,
+                source="content",
+                source_type="content_object",
+                source_id=str(note["id"]),
+                priority=100,
+                reason="manual",
+            )
+            await VectorizationWorker(session).run_once(limit=10)
+            chunks = list(
+                await session.scalars(
+                    select(VectorizationChunk).where(
+                        VectorizationChunk.source_record_id == source.id
+                    )
+                )
+            )
+            return {chunk.id for chunk in chunks}
+
+    new_chunk_ids = asyncio.run(changed_reindex_scenario())
+    assert old_chunk_ids.isdisjoint(new_chunk_ids)
+
+
+def test_vectorization_reindex_and_delete_source_vectors_are_owner_scoped_and_idempotent(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client, telegram_id=300700)
+    other_headers = _auth_headers(content_client, telegram_id=300800)
+    category = _create_category(content_client, headers, slug="ai", name="AI")
+    _put_profile(content_client, headers, str(category["id"]), "AI profile.")
+    note = _create_text_note(
+        content_client,
+        headers,
+        title="Indexed content",
+        text="Content body for vector maintenance.",
+    )
+
+    for payload in [
+        {
+            "source": "taxonomy",
+            "source_type": "category_profile",
+            "source_id": category["id"],
+        },
+        {
+            "source": "content",
+            "source_type": "content_object",
+            "source_id": note["id"],
+        },
+    ]:
+        response = content_client.post("/api/v1/vectorization/index", headers=headers, json=payload)
+        assert response.status_code == 202, response.text
+
+    async def index_all() -> tuple[int, int]:
+        session_factory = _worker_session_factory()
+        async with session_factory() as session:
+            processed = await VectorizationWorker(session).run_once(limit=10)
+            source_count = len(list(await session.scalars(select(VectorizationSource))))
+            chunk_count = len(list(await session.scalars(select(VectorizationChunk))))
+            return source_count, chunk_count if processed == 2 else -1
+
+    source_count, chunk_count = asyncio.run(index_all())
+    assert source_count == 2
+    assert chunk_count > 0
+
+    other_reindex = content_client.post(
+        "/api/v1/vectorization/reindex",
+        headers=other_headers,
+        json={"source": "taxonomy", "source_type": "category_profile"},
+    )
+    assert other_reindex.status_code == 202, other_reindex.text
+    assert other_reindex.json()["job_count"] == 0
+
+    reindex_taxonomy = content_client.post(
+        "/api/v1/vectorization/reindex",
+        headers=headers,
+        json={"source": "taxonomy", "source_type": "category_profile"},
+    )
+    reindex_content = content_client.post(
+        "/api/v1/vectorization/reindex",
+        headers=headers,
+        json={"source": "content", "source_type": "content_object"},
+    )
+
+    assert reindex_taxonomy.status_code == 202, reindex_taxonomy.text
+    assert reindex_taxonomy.json()["job_count"] == 1
+    assert reindex_content.status_code == 202, reindex_content.text
+    assert reindex_content.json()["job_count"] == 1
+
+    delete = content_client.post(
+        "/api/v1/vectorization/delete-source-vectors",
+        headers=headers,
+        json={
+            "source": "content",
+            "source_type": "content_object",
+            "source_id": note["id"],
+        },
+    )
+    repeated_delete = content_client.post(
+        "/api/v1/vectorization/delete-source-vectors",
+        headers=headers,
+        json={
+            "source": "content",
+            "source_type": "content_object",
+            "source_id": note["id"],
+        },
+    )
+
+    assert delete.status_code == 200, delete.text
+    assert delete.json()["status"] == "deleted"
+    assert repeated_delete.status_code == 200, repeated_delete.text
+    assert repeated_delete.json()["status"] == "deleted"
+
+    async def assert_deleted_source() -> tuple[str, int]:
+        session_factory = _worker_session_factory()
+        async with session_factory() as session:
+            source = await session.scalar(
+                select(VectorizationSource).where(
+                    VectorizationSource.source == "content",
+                    VectorizationSource.source_id == str(note["id"]),
+                )
+            )
+            assert source is not None
+            chunks = list(
+                await session.scalars(
+                    select(VectorizationChunk).where(
+                        VectorizationChunk.source_record_id == source.id
+                    )
+                )
+            )
+            return source.status, len(chunks)
+
+    deleted_status, deleted_chunks = asyncio.run(assert_deleted_source())
+    assert deleted_status == "deleted"
+    assert deleted_chunks == 0
 
 
 def test_worker_processes_taxonomy_profile_and_reindex_is_idempotent(

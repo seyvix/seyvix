@@ -42,6 +42,9 @@ async def semantic_search(
             owner_user_id=context.user.id,
             query=payload.query,
             limit=payload.limit,
+            source=payload.source,
+            source_type=payload.source_type,
+            source_id=payload.source_id,
         )
     except SearchValidationError as exc:
         raise AppError(

@@ -43,6 +43,9 @@ class SemanticSearchService:
         owner_user_id: str,
         query: str,
         limit: int,
+        source: str | None = None,
+        source_type: str | None = None,
+        source_id: str | None = None,
     ) -> list[SemanticSearchResult]:
         normalized_query = query.strip()
         if not normalized_query:
@@ -61,5 +64,8 @@ class SemanticSearchService:
             model=self.settings.vector_embedding_model,
             dimensions=self.settings.vector_embedding_dimensions,
             limit=limit,
+            source=source,
+            source_type=source_type,
+            source_id=source_id,
         )
         return [SemanticSearchResult.model_validate(match.model_dump()) for match in matches]

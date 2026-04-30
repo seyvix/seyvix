@@ -12,9 +12,13 @@ from app.modules.auth.presentation.rest.router import get_auth_context
 from app.modules.auth.service import AuthContext
 from app.modules.vectorization.schemas import (
     VectorizationChunkResponse,
+    VectorizationDeleteSourceVectorsRequestBody,
+    VectorizationDeleteSourceVectorsResponse,
     VectorizationIndexRequestBody,
     VectorizationIndexResponse,
     VectorizationJobResponse,
+    VectorizationReindexRequestBody,
+    VectorizationReindexResponse,
     VectorizationSourceResponse,
 )
 from app.modules.vectorization.service import (
@@ -63,6 +67,62 @@ async def enqueue_index(
             message="Vectorization provider not found for requested source.",
         ) from exc
     return VectorizationIndexResponse(job_id=job.id, status=job.status)
+
+
+@router.post(
+    "/reindex",
+    response_model=VectorizationReindexResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Enqueue reindexing jobs for indexed sources in a source scope",
+    responses={
+        202: {"description": "Reindex jobs enqueued."},
+        401: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+    },
+)
+async def enqueue_reindex(
+    payload: VectorizationReindexRequestBody,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[VectorizationService, Depends(get_vectorization_service)],
+) -> VectorizationReindexResponse:
+    try:
+        jobs = await service.enqueue_reindex_request(
+            owner_user_id=context.user.id,
+            source=payload.source,
+            source_type=payload.source_type,
+            priority=payload.priority,
+            reason=payload.reason,
+        )
+    except VectorizationProviderNotFoundError as exc:
+        raise AppError(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            code="vectorization_provider_not_found",
+            message="Vectorization provider not found for requested source.",
+        ) from exc
+    return VectorizationReindexResponse(
+        job_count=len(jobs),
+        job_ids=[job.id for job in jobs],
+    )
+
+
+@router.post(
+    "/delete-source-vectors",
+    response_model=VectorizationDeleteSourceVectorsResponse,
+    summary="Delete indexed vectors for one source",
+    responses={401: {"model": ErrorResponse}},
+)
+async def delete_source_vectors(
+    payload: VectorizationDeleteSourceVectorsRequestBody,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[VectorizationService, Depends(get_vectorization_service)],
+) -> VectorizationDeleteSourceVectorsResponse:
+    status_value = await service.delete_source_vectors(
+        owner_user_id=context.user.id,
+        source=payload.source,
+        source_type=payload.source_type,
+        source_id=payload.source_id,
+    )
+    return VectorizationDeleteSourceVectorsResponse(status=status_value)
 
 
 @router.get(

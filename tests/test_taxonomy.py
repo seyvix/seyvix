@@ -1,14 +1,20 @@
+import asyncio
 import hashlib
 import hmac
+import os
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from app.core.config import get_settings
+from app.core.database import build_session_factory
 from app.modules.content.models import ContentObject
 from app.modules.content.service import ContentService
+from app.modules.search.schemas import SemanticSearchResult
 from app.modules.taxonomy.service import TaxonomyService
 from app.modules.vectorization.contracts import build_taxonomy_category_profile_vector_subject
+from app.modules.vectorization.worker import VectorizationWorker
 
 TELEGRAM_BOT_TOKEN = "123456:test-bot-token"
 
@@ -70,6 +76,13 @@ def _create_note(client: TestClient, headers: dict[str, str], title: str) -> dic
     )
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def _worker_session_factory():
+    database_url = os.getenv("TEST_DATABASE_URL")
+    if not database_url:
+        raise RuntimeError("Set TEST_DATABASE_URL to run DB-backed taxonomy tests.")
+    return build_session_factory(database_url)
 
 
 def _template_paths(items: list[dict[str, object]]) -> set[str]:
@@ -596,3 +609,224 @@ def test_content_classification_input_contract(content_client: TestClient) -> No
     assert payload["metadata"]["kind"] == "simple"
     assert payload["metadata"]["media_type"] == "text"
     assert payload["created_at"] == note["created_at"]
+
+
+class _FakeSemanticSearchService:
+    def __init__(self, results: list[SemanticSearchResult]) -> None:
+        self.results = results
+        self.calls: list[dict[str, object]] = []
+
+    async def semantic_search(
+        self,
+        *,
+        owner_user_id: str,
+        query: str,
+        limit: int,
+        source: str | None = None,
+        source_type: str | None = None,
+        source_id: str | None = None,
+    ) -> list[SemanticSearchResult]:
+        self.calls.append(
+            {
+                "owner_user_id": owner_user_id,
+                "query": query,
+                "limit": limit,
+                "source": source,
+                "source_type": source_type,
+                "source_id": source_id,
+            }
+        )
+        return self.results[:limit]
+
+
+def test_taxonomy_semantic_classification_assigns_proposes_and_preserves_history(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client, telegram_id=300900)
+    inference = _create_category(content_client, headers, slug="inference", name="Inference")
+    training = _create_category(content_client, headers, slug="training", name="Training")
+    manual = _create_category(content_client, headers, slug="manual", name="Manual")
+    high_note = _create_note(content_client, headers, "vLLM latency")
+    medium_note = _create_note(content_client, headers, "Model training")
+    low_note = _create_note(content_client, headers, "Shopping list")
+
+    manual_assignment = content_client.post(
+        f"/api/v1/taxonomy/content/{high_note['id']}/assignments",
+        headers=headers,
+        json={"category_id": manual["id"], "reasoning": "Manual override."},
+    )
+    assert manual_assignment.status_code == 201, manual_assignment.text
+
+    async def scenario() -> tuple[dict[str, object], dict[str, object], object, list[str], str]:
+        async with content_client.app.state.session_factory() as session:
+            service = TaxonomyService(session)
+            high_search = _FakeSemanticSearchService(
+                [
+                    SemanticSearchResult(
+                        source="taxonomy",
+                        source_type="category_profile",
+                        source_id=str(inference["id"]),
+                        external_id=f"taxonomy_category_profile:{inference['id']}",
+                        chunk_id="chunk-high",
+                        chunk_external_id="taxonomy:chunk:0",
+                        text="Inference profile",
+                        metadata={"category_path": "inference"},
+                        distance=0.15,
+                        score=0.85,
+                    ),
+                    SemanticSearchResult(
+                        source="taxonomy",
+                        source_type="category_profile",
+                        source_id=str(training["id"]),
+                        external_id=f"taxonomy_category_profile:{training['id']}",
+                        chunk_id="chunk-alt",
+                        chunk_external_id="taxonomy:chunk:1",
+                        text="Training profile",
+                        metadata={"category_path": "training"},
+                        distance=0.25,
+                        score=0.75,
+                    ),
+                ]
+            )
+            high = await service.classify_content_object(
+                owner_user_id=str(inference["owner_user_id"]),
+                content_object_id=str(high_note["id"]),
+                semantic_search_service=high_search,
+            )
+
+            medium_search = _FakeSemanticSearchService(
+                [
+                    SemanticSearchResult(
+                        source="taxonomy",
+                        source_type="category_profile",
+                        source_id=str(training["id"]),
+                        external_id=f"taxonomy_category_profile:{training['id']}",
+                        chunk_id="chunk-medium",
+                        chunk_external_id="taxonomy:chunk:2",
+                        text="Training profile",
+                        metadata={},
+                        distance=0.35,
+                        score=0.65,
+                    )
+                ]
+            )
+            medium = await service.classify_content_object(
+                owner_user_id=str(training["owner_user_id"]),
+                content_object_id=str(medium_note["id"]),
+                semantic_search_service=medium_search,
+            )
+
+            low_search = _FakeSemanticSearchService(
+                [
+                    SemanticSearchResult(
+                        source="taxonomy",
+                        source_type="category_profile",
+                        source_id=str(training["id"]),
+                        external_id=f"taxonomy_category_profile:{training['id']}",
+                        chunk_id="chunk-low",
+                        chunk_external_id="taxonomy:chunk:3",
+                        text="Training profile",
+                        metadata={},
+                        distance=0.55,
+                        score=0.45,
+                    )
+                ]
+            )
+            low = await service.classify_content_object(
+                owner_user_id=str(training["owner_user_id"]),
+                content_object_id=str(low_note["id"]),
+                semantic_search_service=low_search,
+            )
+
+            calls = [
+                str(high_search.calls[0]["source"]),
+                str(high_search.calls[0]["source_type"]),
+            ]
+            assignments = await service.list_assignments(
+                owner_user_id=str(inference["owner_user_id"]),
+                content_object_id=str(high_note["id"]),
+            )
+            return (
+                TaxonomyService.assignment_response(high).model_dump(mode="json"),
+                TaxonomyService.assignment_response(medium).model_dump(mode="json"),
+                low,
+                calls,
+                ",".join(assignment.status for assignment in assignments),
+            )
+
+    high, medium, low, filters, history_statuses = content_client.portal.call(scenario)
+
+    assert high["status"] == "accepted"
+    assert high["assigned_by"] == "system"
+    assert high["category_id"] == inference["id"]
+    assert high["confidence"] == 0.85
+    assert high["alternatives"][0]["category_id"] == inference["id"]
+    assert high["alternatives"][1]["category_id"] == training["id"]
+    assert medium["status"] == "proposed"
+    assert medium["category_id"] == training["id"]
+    assert low is None
+    assert filters == ["taxonomy", "category_profile"]
+    assert "overridden" in history_statuses
+
+
+def test_taxonomy_classify_endpoint_uses_semantic_assignment_flow(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client, telegram_id=301000)
+    category = _create_category(content_client, headers, slug="inference", name="Inference")
+    profile_response = content_client.put(
+        f"/api/v1/taxonomy/categories/{category['id']}/profile",
+        headers=headers,
+        json={
+            "summary": "Runtime serving latency and vLLM inference.",
+            "keywords": ["vllm", "latency"],
+            "positive_examples": ["vLLM latency note"],
+            "negative_examples": [],
+        },
+    )
+    assert profile_response.status_code == 200, profile_response.text
+    note = _create_note(content_client, headers, "Endpoint classification")
+
+    enqueue = content_client.post(
+        "/api/v1/vectorization/index",
+        headers=headers,
+        json={
+            "source": "taxonomy",
+            "source_type": "category_profile",
+            "source_id": category["id"],
+        },
+    )
+    assert enqueue.status_code == 202, enqueue.text
+
+    async def run_worker() -> int:
+        session_factory = _worker_session_factory()
+        async with session_factory() as session:
+            return await VectorizationWorker(session).run_once(limit=10)
+
+    assert asyncio.run(run_worker()) == 1
+
+    previous_high = os.environ.get("TAXONOMY_CLASSIFICATION_HIGH_THRESHOLD")
+    previous_medium = os.environ.get("TAXONOMY_CLASSIFICATION_MEDIUM_THRESHOLD")
+    os.environ["TAXONOMY_CLASSIFICATION_HIGH_THRESHOLD"] = "-1"
+    os.environ["TAXONOMY_CLASSIFICATION_MEDIUM_THRESHOLD"] = "-1"
+    get_settings.cache_clear()
+    try:
+        endpoint_response = content_client.post(
+            f"/api/v1/taxonomy/content/{note['id']}/classify",
+            headers=headers,
+        )
+    finally:
+        if previous_high is None:
+            os.environ.pop("TAXONOMY_CLASSIFICATION_HIGH_THRESHOLD", None)
+        else:
+            os.environ["TAXONOMY_CLASSIFICATION_HIGH_THRESHOLD"] = previous_high
+        if previous_medium is None:
+            os.environ.pop("TAXONOMY_CLASSIFICATION_MEDIUM_THRESHOLD", None)
+        else:
+            os.environ["TAXONOMY_CLASSIFICATION_MEDIUM_THRESHOLD"] = previous_medium
+        get_settings.cache_clear()
+
+    assert endpoint_response.status_code == 200, endpoint_response.text
+    assert endpoint_response.json()["status"] == "accepted"
+    assert endpoint_response.json()["assigned_by"] == "system"
+    assert endpoint_response.json()["category_id"] == category["id"]

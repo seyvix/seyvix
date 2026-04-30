@@ -5,6 +5,9 @@ from pydantic import BaseModel, Field
 
 class SemanticSearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
+    source: str | None = Field(default=None, min_length=1, max_length=64)
+    source_type: str | None = Field(default=None, min_length=1, max_length=64)
+    source_id: str | None = Field(default=None, min_length=1, max_length=255)
     limit: int = Field(default=10, ge=1, le=50)
 
 

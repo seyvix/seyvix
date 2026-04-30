@@ -378,6 +378,27 @@ async def get_current_assignment(
 
 
 @router.post(
+    "/content/{content_object_id}/classify",
+    response_model=TaxonomyAssignmentResponse | None,
+    summary="Classify a content object using semantic taxonomy category candidates",
+    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+)
+async def classify_content_object(
+    content_object_id: str,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[TaxonomyService, Depends(get_taxonomy_service)],
+) -> TaxonomyAssignmentResponse | None:
+    try:
+        assignment = await service.classify_content_object(
+            owner_user_id=context.user.id,
+            content_object_id=content_object_id,
+        )
+    except TaxonomyNotFoundError as exc:
+        raise _not_found("Content object not found.") from exc
+    return service.assignment_response(assignment) if assignment is not None else None
+
+
+@router.post(
     "/content/{content_object_id}/assignments/{assignment_id}/accept",
     response_model=TaxonomyAssignmentResponse,
     summary="Accept taxonomy assignment",
