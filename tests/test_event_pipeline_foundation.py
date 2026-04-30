@@ -24,6 +24,12 @@ from app.modules.snapshots.infrastructure.repositories import (
     SnapshotSettingsRepository,
 )
 from app.modules.snapshots.models import SnapshotJob, SnapshotUserSettings
+from app.modules.tags.models import TaggingJob
+from app.modules.tags.worker import TagsEventConsumer
+from app.modules.taxonomy.models import TaxonomyClassificationJob
+from app.modules.taxonomy.worker import TaxonomyEventConsumer
+from app.modules.vectorization.models import VectorizationJob
+from app.modules.vectorization.worker import VectorizationEventConsumer
 from app.platform.events.idempotency import EventAlreadyProcessedError, ProcessedEventStore
 from app.platform.events.outbox import EventOutboxRepository
 from app.platform.storage.service import LocalVolumeStorage, StorageKeyBuilder
@@ -324,6 +330,130 @@ def test_failed_snapshot_job_is_requeued_instead_of_getting_stuck() -> None:
         assert jobs[0].attempts == 0
         assert jobs[0].error_message is None
         assert jobs[0].source_event_id == "event-2"
+
+    try:
+        asyncio.run(scenario())
+    except OSError as exc:
+        pytest.skip(f"PostgreSQL is not available for event pipeline tests: {exc}")
+
+
+def test_content_event_creates_module_jobs_idempotently() -> None:
+    async def scenario() -> None:
+        session_factory = await _prepare_database(_test_database_url())
+        owner_user_id = str(uuid4())
+        content_object_id = str(uuid4())
+
+        async with session_factory() as session:
+            user = User(id=owner_user_id, telegram_id="100500", display_name="User")
+            content_object = ContentObject(
+                id=content_object_id,
+                owner_user_id=owner_user_id,
+                slug="event-pipeline",
+                title="Event pipeline",
+                kind="simple",
+                media_type="text",
+                storage_path=f"content-assets/{content_object_id}",
+            )
+            session.add_all([user, content_object])
+            await session.commit()
+
+        envelope = EventEnvelope.new(
+            event_name="content.object.created",
+            entity_id=content_object_id,
+            correlation_id="correlation-1",
+            user_id=owner_user_id,
+            payload=ContentObjectChangedPayload(
+                content_object_id=content_object_id,
+                asset_ids=[],
+                storage_refs=[],
+            ),
+        )
+
+        async with session_factory() as session:
+            assert await VectorizationEventConsumer(session).handle_event(envelope) == 1
+            assert await TaxonomyEventConsumer(session).handle_event(envelope) == 1
+            assert await TagsEventConsumer(session).handle_event(envelope) == 1
+            await session.commit()
+
+        async with session_factory() as session:
+            assert await VectorizationEventConsumer(session).handle_event(envelope) == 0
+            assert await TaxonomyEventConsumer(session).handle_event(envelope) == 0
+            assert await TagsEventConsumer(session).handle_event(envelope) == 0
+            await session.commit()
+
+        async with session_factory() as session:
+            vector_jobs = list(await session.scalars(select(VectorizationJob)))
+            taxonomy_jobs = list(await session.scalars(select(TaxonomyClassificationJob)))
+            tagging_jobs = list(await session.scalars(select(TaggingJob)))
+
+        assert len(vector_jobs) == 1
+        assert vector_jobs[0].source == "content"
+        assert vector_jobs[0].source_type == "content_object"
+        assert vector_jobs[0].source_id == content_object_id
+        assert vector_jobs[0].status == "pending"
+
+        assert len(taxonomy_jobs) == 1
+        assert taxonomy_jobs[0].content_object_id == content_object_id
+        assert taxonomy_jobs[0].status == "pending"
+        assert taxonomy_jobs[0].source_event_id == envelope.event_id
+
+        assert len(tagging_jobs) == 1
+        assert tagging_jobs[0].content_object_id == content_object_id
+        assert tagging_jobs[0].job_type == "suggest_content_tags"
+        assert tagging_jobs[0].status == "pending"
+
+    try:
+        asyncio.run(scenario())
+    except OSError as exc:
+        pytest.skip(f"PostgreSQL is not available for event pipeline tests: {exc}")
+
+
+def test_taxonomy_completion_event_does_not_create_tag_suggestion_job() -> None:
+    async def scenario() -> None:
+        session_factory = await _prepare_database(_test_database_url())
+        owner_user_id = str(uuid4())
+        content_object_id = str(uuid4())
+
+        async with session_factory() as session:
+            user = User(id=owner_user_id, telegram_id="100500", display_name="User")
+            content_object = ContentObject(
+                id=content_object_id,
+                owner_user_id=owner_user_id,
+                slug="tag-review",
+                title="Tag review",
+                kind="simple",
+                media_type="text",
+                storage_path=f"content-assets/{content_object_id}",
+            )
+            session.add_all([user, content_object])
+            await session.commit()
+
+        envelope = EventEnvelope.new(
+            event_name="taxonomy.classification.completed",
+            entity_id=content_object_id,
+            correlation_id="correlation-1",
+            user_id=owner_user_id,
+            payload={
+                "content_object_id": content_object_id,
+                "assignment_id": None,
+                "status": "no_assignment",
+                "assigned_by": None,
+                "confidence": None,
+            },
+        )
+
+        async with session_factory() as session:
+            assert await TagsEventConsumer(session).handle_event(envelope) == 0
+            await session.commit()
+
+        async with session_factory() as session:
+            assert await TagsEventConsumer(session).handle_event(envelope) == 0
+            await session.commit()
+
+        async with session_factory() as session:
+            jobs = list(await session.scalars(select(TaggingJob)))
+
+        assert jobs == []
 
     try:
         asyncio.run(scenario())

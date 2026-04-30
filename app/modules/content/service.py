@@ -410,6 +410,7 @@ class ContentService:
                 content_object=content_object,
                 tag_names=tag_names,
             )
+        self._enqueue_content_changed_event(content_object, event_name="content.object.updated")
         await self.session.commit()
         loaded = await self._load_note(owner_user_id=owner_user_id, slug=slug)
         return await self._to_card(loaded)
@@ -423,6 +424,7 @@ class ContentService:
     ) -> NoteCardResponse:
         content_object = await self._load_note(owner_user_id=owner_user_id, slug=slug)
         content_object.is_favorite = is_favorite
+        self._enqueue_content_changed_event(content_object, event_name="content.object.updated")
         await self.session.commit()
         loaded = await self._load_note(owner_user_id=owner_user_id, slug=slug)
         return await self._to_card(loaded)
@@ -544,6 +546,7 @@ class ContentService:
                     sql_delete(ContentObject).where(ContentObject.id == child_id)
                 )
 
+        self._enqueue_content_changed_event(collection, event_name="content.object.updated")
         await self.session.commit()
 
     async def delete_notes(self, *, owner_user_id: str, slugs: list[str]) -> None:
@@ -565,6 +568,7 @@ class ContentService:
 
         # Remove storage directories first
         for obj in to_delete.values():
+            self._enqueue_content_changed_event(obj, event_name="content.object.deleted")
             self.storage.remove_directory(obj)
 
         # Bulk DELETE via raw SQL — avoids ORM cascade conflicts when both
