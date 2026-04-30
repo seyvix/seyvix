@@ -83,7 +83,11 @@ class Settings(BaseSettings):
     taxonomy_llm_classification_accept_threshold: float = 0.80
     taxonomy_llm_classification_propose_threshold: float = 0.60
     taxonomy_llm_classification_fallback_to_semantic: bool = True
-    taxonomy_llm_classification_model: str = "taxonomy-classification-judge"
+    taxonomy_llm_classification_model: str = "qwen3:4b-thinking"
+    llm_structured_provider: Literal["disabled", "http", "ollama"] = "disabled"
+    llm_structured_base_url: str | None = None
+    llm_structured_api_key: str | None = None
+    llm_structured_timeout_seconds: int = 120
     snapshot_office_converter_command: str | None = "libreoffice"
     cors_allowed_origins: list[str] = Field(default_factory=list)
     cors_allow_origin_regex: str | None = None
