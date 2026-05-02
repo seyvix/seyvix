@@ -1,11 +1,13 @@
 import { createBrowserRouter, RouterProvider, Navigate, Outlet } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { AnimatePresence, motion } from 'framer-motion'
 import AppLayout from './components/AppLayout/AppLayout'
 import { UploadProvider } from './contexts/UploadContext'
 import { LocalNotesProvider } from './contexts/LocalNotesContext'
 import { UploadToast } from './components/UploadToast/UploadToast'
 import { SettingsProvider } from './contexts/SettingsContext'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
+import LoaderScreen from './components/LoaderScreen/LoaderScreen'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -16,7 +18,6 @@ const queryClient = new QueryClient({
   },
 })
 
-// Защищённый роут: ждём bootstrap, затем проверяем авторизацию
 function RequireAuth() {
   const { user, isReady } = useAuth()
   if (!isReady) return null
@@ -24,7 +25,6 @@ function RequireAuth() {
   return <Outlet />
 }
 
-// Роут для гостей: если уже залогинен — перенаправляем на /notes
 function RequireGuest() {
   const { user, isReady } = useAuth()
   if (!isReady) return null
@@ -33,12 +33,10 @@ function RequireGuest() {
 }
 
 const router = createBrowserRouter([
-  // Полностью открытый роут — обрабатывает Telegram redirect с ?code или ?error
   {
     path: '/auth/callback',
     lazy: async () => ({ Component: (await import('./pages/AuthCallbackPage')).default }),
   },
-  // Публичный роут — без сайдбара
   {
     element: <RequireGuest />,
     children: [
@@ -48,7 +46,6 @@ const router = createBrowserRouter([
       },
     ],
   },
-  // Защищённые роуты — с сайдбаром
   {
     element: <RequireAuth />,
     children: [
@@ -85,6 +82,29 @@ const router = createBrowserRouter([
   },
 ])
 
+function AppInner() {
+  const { isReady } = useAuth()
+
+  return (
+    <AnimatePresence mode="wait">
+      {!isReady ? (
+        <LoaderScreen key="bootstrap" />
+      ) : (
+        <motion.div
+          key="app"
+          style={{ height: '100%' }}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.2 }}
+        >
+          <RouterProvider router={router} />
+          <UploadToast />
+        </motion.div>
+      )}
+    </AnimatePresence>
+  )
+}
+
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
@@ -92,8 +112,7 @@ export default function App() {
         <SettingsProvider>
           <LocalNotesProvider>
             <UploadProvider>
-              <RouterProvider router={router} />
-              <UploadToast />
+              <AppInner />
             </UploadProvider>
           </LocalNotesProvider>
         </SettingsProvider>
