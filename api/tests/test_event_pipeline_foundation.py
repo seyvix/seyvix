@@ -30,6 +30,7 @@ from app.modules.taxonomy.models import TaxonomyClassificationJob
 from app.modules.taxonomy.worker import TaxonomyEventConsumer
 from app.modules.vectorization.models import VectorizationJob
 from app.modules.vectorization.worker import VectorizationEventConsumer
+from app.platform.events import topology
 from app.platform.events.idempotency import EventAlreadyProcessedError, ProcessedEventStore
 from app.platform.events.outbox import EventOutboxRepository
 from app.platform.storage.service import LocalVolumeStorage, StorageKeyBuilder
@@ -70,6 +71,38 @@ def test_worker_entrypoint_loads_models_needed_by_foreign_keys() -> None:
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_rabbit_connection_retry_waits_for_broker(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts = 0
+    delays: list[float] = []
+    connection = object()
+
+    async def connect_robust(rabbitmq_url: str) -> object:
+        nonlocal attempts
+        assert rabbitmq_url == "amqp://guest:guest@rabbitmq:5672/"
+        attempts += 1
+        if attempts == 1:
+            raise OSError("broker is still booting")
+        return connection
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(topology.aio_pika, "connect_robust", connect_robust)
+    monkeypatch.setattr(topology.asyncio, "sleep", sleep)
+
+    result = asyncio.run(
+        topology._connect_rabbit_with_retry(
+            "amqp://guest:guest@rabbitmq:5672/",
+            max_attempts=2,
+            retry_delay_seconds=0.01,
+        )
+    )
+
+    assert result is connection
+    assert attempts == 2
+    assert delays == [0.01]
 
 
 def test_event_envelope_builds_versioned_traceable_content_event() -> None:

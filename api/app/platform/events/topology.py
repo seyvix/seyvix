@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 import aio_pika
+from aio_pika.abc import AbstractRobustConnection
 from faststream.rabbit import ExchangeType, QueueType, RabbitExchange, RabbitQueue
 
 from app.core.config import Settings
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,9 +143,36 @@ def build_rabbit_topology(settings: Settings) -> RabbitTopology:
     )
 
 
+async def _connect_rabbit_with_retry(
+    rabbitmq_url: str,
+    *,
+    max_attempts: int = 12,
+    retry_delay_seconds: float = 5.0,
+) -> AbstractRobustConnection:
+    last_error: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await aio_pika.connect_robust(rabbitmq_url)
+        except Exception as exc:
+            last_error = exc
+            if attempt == max_attempts:
+                break
+            logger.warning(
+                "rabbitmq.topology.connect.retry",
+                attempt=attempt,
+                max_attempts=max_attempts,
+                error=str(exc),
+            )
+            await asyncio.sleep(retry_delay_seconds)
+
+    if last_error is None:
+        raise RuntimeError("RabbitMQ connection retry failed without an exception.")
+    raise last_error
+
+
 async def declare_rabbit_topology(settings: Settings) -> None:
     topology = build_rabbit_topology(settings)
-    connection = await aio_pika.connect_robust(settings.rabbitmq_url)
+    connection = await _connect_rabbit_with_retry(settings.rabbitmq_url)
     async with connection:
         channel = await connection.channel()
         events_exchange = await channel.declare_exchange(

@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.core.config import Settings, get_settings
 from app.core.database import build_session_factory
@@ -18,6 +18,7 @@ from app.modules.search.schemas import SemanticSearchResult
 from app.modules.taxonomy.models import TaxonomyClassificationJob
 from app.modules.taxonomy.service import TaxonomyLLMClassificationError, TaxonomyService
 from app.modules.vectorization.contracts import build_taxonomy_category_profile_vector_subject
+from app.modules.vectorization.models import VectorizationJob
 from app.modules.vectorization.worker import VectorizationWorker
 
 TELEGRAM_BOT_TOKEN = "123456:test-bot-token"
@@ -343,6 +344,46 @@ def test_templates_initialize_user_taxonomy_and_module_registration(
     modules_response = content_client.get("/api/v1/modules", headers=headers)
     assert modules_response.status_code == 200
     assert "taxonomy" in {module["name"] for module in modules_response.json()}
+
+
+def test_interest_onboarding_initializes_taxonomy_and_profile_index_jobs(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client, telegram_id=300700)
+
+    response = content_client.post(
+        "/api/v1/taxonomy/initialize/interests",
+        headers=headers,
+        json={
+            "interest_slugs": ["software", "ai"],
+            "custom_description": "Интересуют FastAPI, векторный поиск и pet-проекты.",
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    assert payload["created_categories_count"] >= 8
+
+    tree_response = content_client.get("/api/v1/taxonomy/categories/tree", headers=headers)
+    assert tree_response.status_code == 200
+    paths = _template_paths(tree_response.json())
+    assert {"programming/python", "ai/llm", "custom-interests"}.issubset(paths)
+
+    async def count_profile_index_jobs() -> int:
+        async with content_client.app.state.session_factory() as session:
+            return int(
+                await session.scalar(
+                    select(func.count())
+                    .select_from(VectorizationJob)
+                    .where(
+                        VectorizationJob.source == "taxonomy",
+                        VectorizationJob.source_type == "category_profile",
+                    )
+                )
+                or 0
+            )
+
+    assert content_client.portal.call(count_profile_index_jobs) >= payload["created_profiles_count"]
 
 
 def test_content_creation_uses_taxonomy_assignment_not_legacy_category_id(
@@ -1005,6 +1046,79 @@ def test_taxonomy_llm_judge_dry_run_uses_only_semantic_candidates(
     assert "choose only from provided candidates" in prompt.lower()
     assert str(inference["id"]) in prompt
     assert str(training["id"]) in prompt
+
+
+def test_taxonomy_llm_judge_uses_textual_candidates_when_vector_index_is_empty(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client, telegram_id=301150)
+    programming = _create_category(
+        content_client,
+        headers,
+        slug="programming",
+        name="Programming",
+    )
+    python = _create_category(
+        content_client,
+        headers,
+        parent_id=programming["id"],
+        slug="python",
+        name="Python",
+    )
+    note = _create_note(content_client, headers, "FastAPI async SQLAlchemy")
+
+    profile_response = content_client.put(
+        f"/api/v1/taxonomy/categories/{python['id']}/profile",
+        headers=headers,
+        json={
+            "summary": "Python backend notes, FastAPI, asyncio, SQLAlchemy.",
+            "keywords": ["python", "fastapi", "asyncio", "sqlalchemy"],
+            "positive_examples": ["FastAPI async repository note"],
+            "negative_examples": ["CSS layout idea"],
+        },
+    )
+    assert profile_response.status_code == 200
+
+    llm = _FakeLLMStructuredGenerator(
+        {
+            "selected_category_id": python["id"],
+            "confidence": 0.88,
+            "should_assign": True,
+            "status": "accepted",
+            "reasoning": "The note is about Python backend tooling.",
+            "alternatives": [],
+        }
+    )
+    empty_semantic = _FakeSemanticSearchService([])
+
+    async def scenario() -> tuple[dict[str, object], int, str]:
+        async with content_client.app.state.session_factory() as session:
+            service = TaxonomyService(session, llm_generator=llm)
+            response = await service.classify_content_object_with_response(
+                owner_user_id=str(python["owner_user_id"]),
+                content_object_id=str(note["id"]),
+                mode="llm_judge",
+                candidate_limit=5,
+                dry_run=False,
+                semantic_search_service=empty_semantic,
+            )
+            assignments = await service.list_assignments(
+                owner_user_id=str(python["owner_user_id"]),
+                content_object_id=str(note["id"]),
+            )
+            return (
+                response.model_dump(mode="json"),
+                len(assignments),
+                llm.calls[0]["prompt"],
+            )
+
+    response, assignment_count, prompt = content_client.portal.call(scenario)
+
+    assert response["assigned"] is True
+    assert response["selected_category"]["id"] == python["id"]
+    assert response["status"] == "accepted"
+    assert assignment_count == 1
+    assert "programming/python" in prompt
 
 
 def test_taxonomy_llm_judge_creates_assignment_and_audit_metadata(

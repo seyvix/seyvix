@@ -6,7 +6,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, Protocol, cast
 from uuid import uuid4
 
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.contracts.events import EventEnvelope, TaxonomyClassificationCompletedPayload
@@ -44,6 +45,7 @@ from app.modules.vectorization.contracts import (
     VectorizationSubject,
     build_taxonomy_category_profile_vector_subject,
 )
+from app.modules.vectorization.models import VectorizationJob
 from app.platform.events.outbox import EventOutboxRepository
 
 SLUG_PATTERN = re.compile(r"^[a-z0-9_-]+$")
@@ -88,11 +90,23 @@ class InitializeTaxonomyResult:
     created_profiles_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class InterestOption:
+    slug: str
+    name: str
+    description: str
+
+
 @dataclass(slots=True)
 class ClassificationCandidate:
     result: SemanticSearchResult
     category: TaxonomyCategory
     profile: TaxonomyCategoryProfile | None
+
+
+class _GeneratedInterestNode(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    children: list[_GeneratedInterestNode] = Field(default_factory=list, max_length=8)
 
 
 class TaxonomyService:
@@ -287,6 +301,11 @@ class TaxonomyService:
             )
             category.slug = new_slug
             category.path = new_path
+        await self._enqueue_category_profile_index(
+            owner_user_id=owner_user_id,
+            category_id=category.id,
+            priority=50,
+        )
         await self.session.commit()
         await self.session.refresh(category)
         return category
@@ -401,6 +420,11 @@ class TaxonomyService:
         profile.keywords = keywords
         profile.positive_examples = positive_examples
         profile.negative_examples = negative_examples
+        await self._enqueue_category_profile_index(
+            owner_user_id=owner_user_id,
+            category_id=category_id,
+            priority=100,
+        )
         await self.session.commit()
         await self.session.refresh(profile)
         return profile
@@ -679,6 +703,12 @@ class TaxonomyService:
             owner_user_id=owner_user_id,
             search_results=search_results,
         )
+        if not candidates:
+            candidates = await self._load_textual_classification_candidates(
+                owner_user_id=owner_user_id,
+                classification_text=query,
+                limit=candidate_limit,
+            )
         if not candidates:
             return self._classification_response(
                 content_object_id=content_object_id,
@@ -1026,6 +1056,113 @@ class TaxonomyService:
             seen_category_ids.add(category.id)
         return candidates
 
+    async def _load_textual_classification_candidates(
+        self,
+        *,
+        owner_user_id: str,
+        classification_text: str,
+        limit: int,
+    ) -> list[ClassificationCandidate]:
+        query_tokens = self._classification_tokens(classification_text)
+        if not query_tokens:
+            return []
+        categories = await self.repository.list_categories_with_profiles(
+            owner_user_id=owner_user_id,
+            include_archived=False,
+        )
+        scored: list[tuple[float, TaxonomyCategory, TaxonomyCategoryProfile | None, str]] = []
+        for category in categories:
+            profile = category.profile
+            document = self._category_textual_candidate_document(category, profile)
+            document_tokens = self._classification_tokens(document)
+            if not document_tokens:
+                continue
+            matches = query_tokens & document_tokens
+            if not matches:
+                continue
+            keyword_matches = set()
+            if profile is not None:
+                keyword_matches = query_tokens & self._classification_tokens(
+                    " ".join(profile.keywords)
+                )
+            score = min(
+                0.95,
+                0.52
+                + (len(matches) * 0.045)
+                + (len(keyword_matches) * 0.06)
+                + (category.depth * 0.015),
+            )
+            scored.append((score, category, profile, document))
+
+        scored.sort(key=lambda item: (item[0], item[1].depth, -item[1].sort_order), reverse=True)
+        candidates: list[ClassificationCandidate] = []
+        for score, category, profile, document in scored[:limit]:
+            candidates.append(
+                ClassificationCandidate(
+                    result=SemanticSearchResult(
+                        source="taxonomy",
+                        source_type="category_profile",
+                        source_id=category.id,
+                        external_id=f"taxonomy_category_profile:{category.id}",
+                        chunk_id=f"textual:{category.id}",
+                        chunk_external_id=f"taxonomy_category_profile:{category.id}:textual",
+                        text=document,
+                        metadata={
+                            "category_path": category.path,
+                            "candidate_source": "textual_profile_fallback",
+                        },
+                        distance=1 - score,
+                        score=score,
+                    ),
+                    category=category,
+                    profile=profile,
+                )
+            )
+        return candidates
+
+    @staticmethod
+    def _category_textual_candidate_document(
+        category: TaxonomyCategory,
+        profile: TaxonomyCategoryProfile | None,
+    ) -> str:
+        parts = [
+            category.path.replace("/", " "),
+            category.name,
+            category.description or "",
+        ]
+        if profile is not None:
+            parts.extend(
+                [
+                    profile.summary or "",
+                    " ".join(profile.keywords),
+                    " ".join(profile.positive_examples),
+                    " ".join(profile.negative_examples),
+                ]
+            )
+        return "\n".join(part for part in parts if part)
+
+    @staticmethod
+    def _classification_tokens(text: str) -> set[str]:
+        return {
+            token.casefold()
+            for token in re.findall(r"[0-9A-Za-zА-Яа-яЁё]{2,}", text)
+            if token.casefold()
+            not in {
+                "type",
+                "content",
+                "object",
+                "title",
+                "tags",
+                "url",
+                "and",
+                "the",
+                "для",
+                "про",
+                "или",
+                "это",
+            }
+        }
+
     def _build_llm_judge_prompt(
         self,
         *,
@@ -1109,6 +1246,16 @@ class TaxonomyService:
         await self._ensure_templates_seeded()
         return await self.repository.list_templates()
 
+    def list_interest_options(self) -> list[InterestOption]:
+        return [
+            InterestOption(
+                slug=slug,
+                name=str(config["name"]),
+                description=str(config["description"]),
+            )
+            for slug, config in self._interest_presets().items()
+        ]
+
     async def get_template(self, *, template_slug: str) -> TaxonomyTemplate:
         await self._ensure_templates_seeded()
         template = await self.repository.get_template_by_slug(slug=template_slug)
@@ -1160,6 +1307,11 @@ class TaxonomyService:
                 negative_examples=template_category.profile_negative_examples,
             )
             self.repository.add_profile(profile)
+            await self._enqueue_category_profile_index(
+                owner_user_id=owner_user_id,
+                category_id=category.id,
+                priority=100,
+            )
             created_profiles += 1
 
         if not any(category.path == "inbox" for category in created_by_template_id.values()):
@@ -1185,12 +1337,92 @@ class TaxonomyService:
                     negative_examples=["well-classified project material"],
                 )
             )
+            await self._enqueue_category_profile_index(
+                owner_user_id=owner_user_id,
+                category_id=inbox.id,
+                priority=100,
+            )
             created_profiles += 1
         await self.session.commit()
         return InitializeTaxonomyResult(
             owner_user_id=owner_user_id,
             template_slug=template.slug,
             created_categories_count=len(created_by_template_id),
+            created_profiles_count=created_profiles,
+        )
+
+    async def initialize_from_interests(
+        self,
+        *,
+        owner_user_id: str,
+        interest_slugs: list[str],
+        custom_description: str | None,
+    ) -> InitializeTaxonomyResult:
+        if await self.repository.has_categories(owner_user_id=owner_user_id):
+            raise TaxonomyConflictError
+
+        selected_slugs = list(
+            dict.fromkeys(slug.strip() for slug in interest_slugs if slug.strip())
+        )
+        custom_description = custom_description.strip() if custom_description else None
+        if not selected_slugs and not custom_description:
+            raise TaxonomyValidationError
+
+        presets = self._interest_presets()
+        unknown = [slug for slug in selected_slugs if slug not in presets]
+        if unknown:
+            raise TaxonomyValidationError
+
+        tree = [self._node("Inbox")]
+        for slug in selected_slugs:
+            tree.extend(cast(list[dict[str, object]], presets[slug]["tree"]))
+        if custom_description:
+            tree.extend(await self._custom_interest_tree(custom_description))
+
+        created_by_path: dict[str, TaxonomyCategory] = {}
+        created_profiles = 0
+        for item in self._flatten_template_tree(tree):
+            path = str(item["path"])
+            if path in created_by_path:
+                continue
+            parent_path = path.rsplit("/", 1)[0] if "/" in path else None
+            parent = created_by_path.get(parent_path) if parent_path is not None else None
+            category = TaxonomyCategory(
+                owner_user_id=owner_user_id,
+                parent_id=parent.id if parent is not None else None,
+                slug=str(item["slug"]),
+                name=str(item["name"]),
+                description=str(item["description"]),
+                path=path,
+                depth=cast(int, item["depth"]),
+                sort_order=cast(int, item["sort_order"]),
+                source="system" if path == "inbox" else "onboarding",
+                is_system=path == "inbox",
+            )
+            self.repository.add_category(category)
+            await self.session.flush()
+            created_by_path[path] = category
+            self.repository.add_profile(
+                TaxonomyCategoryProfile(
+                    category_id=category.id,
+                    summary=str(item["profile_summary"]),
+                    keywords=cast(list[str], item["profile_keywords"]),
+                    positive_examples=cast(list[str], item["profile_positive_examples"]),
+                    negative_examples=cast(list[str], item["profile_negative_examples"]),
+                )
+            )
+            await self._enqueue_category_profile_index(
+                owner_user_id=owner_user_id,
+                category_id=category.id,
+                priority=100,
+            )
+            created_profiles += 1
+
+        await self.session.commit()
+        return InitializeTaxonomyResult(
+            owner_user_id=owner_user_id,
+            template_slug="interests",
+            created_categories_count=len(created_by_path),
             created_profiles_count=created_profiles,
         )
 
@@ -1399,6 +1631,36 @@ class TaxonomyService:
         if content_object is None:
             raise TaxonomyNotFoundError
 
+    async def _enqueue_category_profile_index(
+        self,
+        *,
+        owner_user_id: str,
+        category_id: str,
+        priority: int,
+    ) -> None:
+        existing = await self.session.scalar(
+            select(VectorizationJob.id).where(
+                VectorizationJob.owner_user_id == owner_user_id,
+                VectorizationJob.source == "taxonomy",
+                VectorizationJob.source_type == "category_profile",
+                VectorizationJob.source_id == category_id,
+                VectorizationJob.status.in_(("pending", "processing")),
+            )
+        )
+        if existing is not None:
+            return
+        self.session.add(
+            VectorizationJob(
+                owner_user_id=owner_user_id,
+                job_type="index_source",
+                source="taxonomy",
+                source_type="category_profile",
+                source_id=category_id,
+                status="pending",
+                priority=priority,
+            )
+        )
+
     async def _load_assignment(
         self,
         owner_user_id: str,
@@ -1580,7 +1842,9 @@ class TaxonomyService:
                     {
                         "slug": slug,
                         "name": name,
-                        "description": f"Materials related to {name}.",
+                        "description": str(
+                            node.get("description") or f"Materials related to {name}."
+                        ),
                         "path": path,
                         "depth": depth,
                         "sort_order": index * 10,
@@ -1591,6 +1855,169 @@ class TaxonomyService:
 
         visit(tree, "", 0)
         return flattened
+
+    async def _custom_interest_tree(self, custom_description: str) -> list[dict[str, object]]:
+        try:
+            result = await self.llm_generator.generate_structured(
+                prompt=self._build_custom_interest_prompt(custom_description),
+                schema=self._custom_interest_schema(),
+                model_config={
+                    "model": self.settings.taxonomy_llm_classification_model,
+                    "temperature": 0.2,
+                    "max_tokens": 900,
+                },
+            )
+            raw_nodes = result.get("categories")
+            if not isinstance(raw_nodes, list):
+                raise TaxonomyValidationError
+            nodes = [
+                self._generated_node_to_template_node(_GeneratedInterestNode.model_validate(node))
+                for node in raw_nodes[:6]
+            ]
+            if nodes:
+                return nodes
+        except (LLMGenerationError, TaxonomyValidationError, ValidationError):
+            pass
+        return [
+            self._node(
+                "Custom Interests",
+                [
+                    self._node("Research"),
+                    self._node("Projects"),
+                    self._node("Learning"),
+                ],
+            )
+            | {
+                "description": f"User-described interests: {custom_description[:500]}",
+            }
+        ]
+
+    @staticmethod
+    def _generated_node_to_template_node(node: _GeneratedInterestNode) -> dict[str, object]:
+        return {
+            "name": node.name,
+            "children": [
+                TaxonomyService._generated_node_to_template_node(child)
+                for child in node.children[:8]
+            ],
+        }
+
+    @staticmethod
+    def _build_custom_interest_prompt(custom_description: str) -> str:
+        return (
+            "Create a concise personal knowledge taxonomy from the user's interests. "
+            "Return 3-6 top-level categories, with up to 4 useful children each. "
+            "Use short category names. Do not include generic labels like Misc or Other. "
+            "Return JSON only.\n\n"
+            f"User interests:\n{custom_description[:2000]}"
+        )
+
+    @staticmethod
+    def _custom_interest_schema() -> dict[str, Any]:
+        child_schema: dict[str, Any] = {
+            "type": "object",
+            "required": ["name", "children"],
+            "properties": {
+                "name": {"type": "string", "minLength": 1, "maxLength": 80},
+                "children": {"type": "array", "maxItems": 0},
+            },
+        }
+        node_schema: dict[str, Any] = {
+            "type": "object",
+            "required": ["name", "children"],
+            "properties": {
+                "name": {"type": "string", "minLength": 1, "maxLength": 80},
+                "children": {"type": "array", "maxItems": 8, "items": child_schema},
+            },
+        }
+        return {
+            "type": "object",
+            "required": ["categories"],
+            "properties": {
+                "categories": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 6,
+                    "items": node_schema,
+                }
+            },
+        }
+
+    @classmethod
+    def _interest_presets(cls) -> dict[str, dict[str, object]]:
+        node = cls._node
+        return {
+            "software": {
+                "name": "Programming",
+                "description": "Backend, frontend, languages, databases, and architecture.",
+                "tree": [
+                    node(
+                        "Programming",
+                        [
+                            node("Python"),
+                            node("JavaScript"),
+                            node("Backend"),
+                            node("Frontend"),
+                            node("Databases"),
+                            node("Architecture"),
+                        ],
+                    )
+                ],
+            },
+            "ai": {
+                "name": "AI",
+                "description": "LLMs, agents, RAG, machine learning, and AI tools.",
+                "tree": [
+                    node(
+                        "AI",
+                        [
+                            node("LLM"),
+                            node("Agents"),
+                            node("RAG"),
+                            node("Machine Learning"),
+                            node("Tools"),
+                        ],
+                    )
+                ],
+            },
+            "design": {
+                "name": "Design",
+                "description": "UX, interfaces, visual references, and product design.",
+                "tree": [
+                    node("Design", [node("UX"), node("UI"), node("Research"), node("References")])
+                ],
+            },
+            "business": {
+                "name": "Business",
+                "description": "Product, strategy, marketing, sales, and operations.",
+                "tree": [
+                    node(
+                        "Business",
+                        [node("Product"), node("Strategy"), node("Marketing"), node("Sales")],
+                    )
+                ],
+            },
+            "science": {
+                "name": "Science",
+                "description": "Research papers, experiments, data, and technical domains.",
+                "tree": [
+                    node(
+                        "Science",
+                        [node("Papers"), node("Experiments"), node("Data"), node("Notes")],
+                    )
+                ],
+            },
+            "life": {
+                "name": "Personal",
+                "description": "Learning, health, finance, travel, ideas, and personal notes.",
+                "tree": [
+                    node(
+                        "Personal",
+                        [node("Learning"), node("Health"), node("Finance"), node("Ideas")],
+                    )
+                ],
+            },
+        }
 
     @classmethod
     def _default_template_tree(cls) -> list[dict[str, object]]:

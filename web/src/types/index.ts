@@ -23,6 +23,20 @@ export interface TaxonomyCategory {
   path: string
 }
 
+export interface TaxonomyTreeItem extends TaxonomyCategory {
+  depth: number
+  description: string | null
+  isSystem: boolean
+  isArchived: boolean
+  children: TaxonomyTreeItem[]
+}
+
+export interface TaxonomyInterestOption {
+  slug: string
+  name: string
+  description: string
+}
+
 export interface Folder {
   id: string
   slug: string

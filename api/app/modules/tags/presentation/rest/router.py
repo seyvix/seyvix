@@ -11,7 +11,7 @@ from app.api.errors import AppError
 from app.api.schemas import ErrorResponse
 from app.modules.auth.presentation.rest.router import get_auth_context
 from app.modules.auth.service import AuthContext
-from app.modules.tags.models import ContentTagAssignment, Tag
+from app.modules.tags.models import ContentTagAssignment, Tag, TaggingJob
 from app.modules.tags.schemas import (
     ContentTagAssignmentResponse,
     ContentTagDryRunResponse,
@@ -77,7 +77,7 @@ def _assignment_response(assignment: ContentTagAssignment) -> ContentTagAssignme
     )
 
 
-def _job_response(job) -> TaggingJobDetailResponse:
+def _job_response(job: TaggingJob) -> TaggingJobDetailResponse:
     return TaggingJobDetailResponse(
         id=job.id,
         content_object_id=job.content_object_id,

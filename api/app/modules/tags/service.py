@@ -595,6 +595,7 @@ class TagsService:
             for asset in content_object.assets
             if asset.text_content is not None and asset.text_content.strip()
         ).strip()
+        text = TagsService._strip_filename_heading(text)
         return text[:max_chars] if text else None
 
     @staticmethod
@@ -629,13 +630,11 @@ class TagsService:
     @classmethod
     def _candidate_matching_text(cls, content_object: ContentObject) -> str:
         parts = [
-            content_object.title,
-            content_object.kind,
-            content_object.media_type,
-            content_object.source_filename,
-            content_object.mime_type,
+            cls._semantic_title(content_object.title),
             cls._text_excerpt(content_object, max_chars=4000),
         ]
+        if content_object.media_type == "link":
+            parts.append(content_object.source_filename)
         return " ".join(part for part in parts if part).casefold()
 
     @staticmethod
@@ -653,3 +652,28 @@ class TagsService:
             }
             score += sum(1 for token in tokens if token in text)
         return score
+
+    @classmethod
+    def _semantic_title(cls, title: str) -> str | None:
+        return None if cls._looks_like_filename_heading(title) else title
+
+    @classmethod
+    def _strip_filename_heading(cls, text: str) -> str:
+        lines = text.splitlines()
+        if not lines:
+            return text
+        first_content_index = next(
+            (index for index, line in enumerate(lines) if line.strip()), None
+        )
+        if first_content_index is None:
+            return ""
+        first_line = lines[first_content_index].strip()
+        if not cls._looks_like_filename_heading(first_line):
+            return text
+        del lines[first_content_index]
+        return "\n".join(lines).strip()
+
+    @staticmethod
+    def _looks_like_filename_heading(line: str) -> bool:
+        text = line.strip().lstrip("#").strip()
+        return bool(re.fullmatch(r"[\w .()\-\u0400-\u04FF]+\.[A-Za-z0-9]{1,8}", text))

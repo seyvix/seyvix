@@ -5,7 +5,14 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-TaxonomyCategorySource = Literal["template", "user", "system", "legacy_migration"]
+TaxonomyCategorySource = Literal[
+    "template",
+    "user",
+    "system",
+    "legacy_migration",
+    "onboarding",
+    "llm",
+]
 AssignmentStatus = Literal["proposed", "accepted", "rejected", "overridden"]
 AssignedBy = Literal["user", "system", "llm", "migration"]
 TaxonomyClassificationMode = Literal["semantic_only", "llm_judge"]
@@ -184,6 +191,12 @@ class TaxonomyTemplateSummaryResponse(BaseModel):
     is_active: bool
 
 
+class TaxonomyInterestOptionResponse(BaseModel):
+    slug: str
+    name: str
+    description: str
+
+
 class TaxonomyTemplateTreeItem(BaseModel):
     id: str
     slug: str
@@ -205,6 +218,16 @@ class TaxonomyTemplateDetailResponse(TaxonomyTemplateSummaryResponse):
 
 class TaxonomyInitializeRequest(BaseModel):
     template_slug: str = Field(min_length=1, max_length=255)
+
+
+class TaxonomyInterestInitializeRequest(BaseModel):
+    interest_slugs: list[str] = Field(default_factory=list, max_length=12)
+    custom_description: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("interest_slugs")
+    @classmethod
+    def normalize_interest_slugs(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(item.strip() for item in value if item.strip()))
 
 
 class TaxonomyInitializeResponse(BaseModel):

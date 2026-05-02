@@ -32,6 +32,21 @@ class VectorizationRepository:
         reason: str | None,
     ) -> VectorizationJob:
         _ = reason
+        existing = await self.session.scalar(
+            select(VectorizationJob).where(
+                VectorizationJob.owner_user_id == owner_user_id,
+                VectorizationJob.source == source,
+                VectorizationJob.source_type == source_type,
+                VectorizationJob.source_id == source_id,
+                VectorizationJob.status.in_(("pending", "processing")),
+            )
+        )
+        if existing is not None:
+            if existing.priority < priority:
+                existing.priority = priority
+                await self.session.commit()
+                await self.session.refresh(existing)
+            return existing
         job = VectorizationJob(
             owner_user_id=owner_user_id,
             job_type="index_source",

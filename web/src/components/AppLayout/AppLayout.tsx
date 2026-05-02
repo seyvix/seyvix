@@ -1,5 +1,6 @@
 import { Outlet } from 'react-router-dom'
 import AsideHeader from '../AsideHeader/AsideHeader'
+import { TaxonomyOnboarding } from '../TaxonomyOnboarding/TaxonomyOnboarding'
 import styles from './AppLayout.module.css'
 
 export default function AppLayout() {
@@ -9,6 +10,7 @@ export default function AppLayout() {
       <main className={styles.main}>
         <Outlet />
       </main>
+      <TaxonomyOnboarding />
     </div>
   )
 }
