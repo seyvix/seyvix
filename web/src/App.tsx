@@ -94,7 +94,9 @@ function AppInner() {
     return () => clearTimeout(timer)
   }, [])
 
-  const showContent = isReady && minElapsed
+  const isCallbackRoute = window.location.pathname.startsWith('/auth/callback')
+  const showContent = isCallbackRoute ? isReady : (isReady && minElapsed)
+
 
   return (
     <AnimatePresence mode="wait">
