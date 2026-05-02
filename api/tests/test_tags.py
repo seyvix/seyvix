@@ -291,6 +291,69 @@ def test_llm_tagger_prompt_requests_grounded_multi_level_tags() -> None:
     assert "Good tags: vLLM" not in prompt
 
 
+def test_llm_tagger_filters_pdf_container_and_filename_tags() -> None:
+    async def scenario() -> None:
+        tagger = LLMContentTagger(
+            settings=Settings(tags_llm_prompt_version="test-tags-v2"),
+            llm_generator=FakeStructuredGenerator(
+                {
+                    "tags": [
+                        {"name": "complex", "confidence": 0.95, "reasoning": "Internal kind."},
+                        {"name": "Page_1", "confidence": 0.94, "reasoning": "Filename."},
+                        {"name": "PDF", "confidence": 0.93, "reasoning": "File format."},
+                        {
+                            "name": "Web Design",
+                            "confidence": 0.92,
+                            "reasoning": "Course name in the certificate.",
+                        },
+                        {
+                            "name": "Unity 3D",
+                            "confidence": 0.90,
+                            "reasoning": "Listed as a course module.",
+                        },
+                        {
+                            "name": "Сертификат",
+                            "confidence": 0.89,
+                            "reasoning": "Document type in the text.",
+                        },
+                    ]
+                }
+            ),
+        )
+
+        suggestions = await tagger.suggest(
+            title="Page_1.pdf",
+            url=None,
+            existing_tags=[],
+            excerpt=(
+                "# Page_1.pdf\n\n"
+                "Юный IT- специалист\n"
+                "Шиков Артем Алексеевич\n"
+                "Успешно завершил(а) курс Web Design\n"
+                "Модули: Unity 3D, Blender, Unreal Engine\n"
+                "СЕРТИФИКАТ\n"
+                "Tinkercad - 3D моделирование\n"
+                "Gimp - Графическая обработка изображения\n"
+                "SketchUp - 3D проектирование"
+            ),
+            metadata={
+                "kind": "complex",
+                "media_type": "document",
+                "source_filename": "Page_1.pdf",
+                "mime_type": "application/pdf",
+            },
+            max_tags=8,
+        )
+
+        assert [suggestion.name for suggestion in suggestions] == [
+            "Web Design",
+            "Unity 3D",
+            "Сертификат",
+        ]
+
+    asyncio.run(scenario())
+
+
 def test_service_existing_tag_candidates_prefer_relevant_and_active_tags() -> None:
     content_object = ContentObject(
         owner_user_id="user-1",
@@ -349,6 +412,71 @@ def test_service_existing_tag_candidates_prefer_relevant_and_active_tags() -> No
     )
 
     assert [tag.name for tag in candidates] == ["Read Later", "PostgreSQL"]
+
+
+def test_service_existing_tag_candidates_ignore_pdf_metadata_tags() -> None:
+    content_object = ContentObject(
+        owner_user_id="user-1",
+        slug="page-1",
+        title="Page_1.pdf",
+        kind="complex",
+        media_type="document",
+        source_filename="Page_1.pdf",
+        mime_type="application/pdf",
+        storage_path="content-assets/object-1",
+    )
+    content_object.assets.append(
+        ContentAsset(
+            role="text",
+            media_type="text",
+            filename="Page_1.md",
+            mime_type="text/markdown",
+            size_bytes=256,
+            storage_path="content-assets/object-1/text.md",
+            text_content=(
+                "# Page_1.pdf\n\n"
+                "Успешно завершил(а) курс Web Design.\n"
+                "СЕРТИФИКАТ.\n"
+                "Unity 3D, Blender, Unreal Engine."
+            ),
+        )
+    )
+    pdf = Tag(
+        owner_user_id="user-1",
+        name="PDF",
+        slug="pdf",
+        description=None,
+        tag_kind="format",
+        created_by_type="llm",
+        source="llm_auto_created",
+    )
+    filename = Tag(
+        owner_user_id="user-1",
+        name="Page_1",
+        slug="page-1",
+        description=None,
+        tag_kind=None,
+        created_by_type="llm",
+        source="llm_auto_created",
+    )
+    certificate = Tag(
+        owner_user_id="user-1",
+        name="Сертификат",
+        slug="sertifikat",
+        description=None,
+        tag_kind="document_type",
+        created_by_type="user",
+        source="manual",
+    )
+
+    candidates = TagsService._existing_tag_candidates(
+        content_object=content_object,
+        active_tags=[],
+        tags=[pdf, filename, certificate],
+        max_tags=8,
+    )
+
+    assert [tag.name for tag in candidates] == ["Сертификат"]
 
 
 def test_service_llm_suggestions_store_metadata_thresholds_and_history(tmp_path: Path) -> None:
