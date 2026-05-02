@@ -105,7 +105,20 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     command: python -m app.workers.main vectorization-worker
+
+  taxonomy-worker:
+    <<: *api-env
+    build: *api-build
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: python -m app.workers.main taxonomy-worker
 
   tags-worker:
     <<: *api-env
@@ -113,6 +126,8 @@ services:
     restart: unless-stopped
     depends_on:
       postgres:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
     command: python -m app.workers.main tags-worker
 

@@ -61,6 +61,15 @@ services:
       sh -c "uv sync --frozen &&
              python -m app.workers.main vectorization-worker"
 
+  taxonomy-worker:
+    build:
+      target: development
+    volumes:
+      - ./api:/app
+    command: >
+      sh -c "uv sync --frozen &&
+             python -m app.workers.main taxonomy-worker"
+
   tags-worker:
     build:
       target: development
