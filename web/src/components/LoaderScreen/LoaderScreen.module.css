@@ -1,0 +1,50 @@
+.screen {
+  position: fixed;
+  inset: 0;
+  background: var(--color-bg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+
+.grid {
+  position: absolute;
+  inset: 0;
+  background-image: repeating-linear-gradient(
+    100deg,
+    #64748b 0%,
+    #64748b 1px,
+    transparent 1px,
+    transparent 4%
+  );
+  mask-image: radial-gradient(ellipse at center, transparent 30%, black);
+  opacity: 0.12;
+  pointer-events: none;
+}
+
+.rings {
+  position: relative;
+  width: 240px;
+  height: 240px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ring {
+  position: absolute;
+  border-radius: 50%;
+  border: 1.5px solid;
+  background: transparent;
+}
+
+.subtitle {
+  margin-top: 40px;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  letter-spacing: 0.06em;
+  text-transform: lowercase;
+  margin: 40px 0 0;
+}
