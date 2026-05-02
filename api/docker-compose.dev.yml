@@ -1,0 +1,45 @@
+services:
+  api:
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      STORAGE_BACKEND: s3
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_PUBLIC_ENDPOINT_URL: http://localhost:9000
+    volumes:
+      - .:/app
+    command: >
+      sh -c "uv sync --frozen &&
+             alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+  outbox-publisher:
+    volumes:
+      - .:/app
+    command: >
+      sh -c "uv sync --frozen &&
+             python -m app.workers.main outbox-publisher"
+
+  snapshot-worker:
+    volumes:
+      - .:/app
+    command: >
+      sh -c "uv sync --frozen &&
+             python -m app.workers.main snapshot-worker"
+
+  vectorization-worker:
+    volumes:
+      - .:/app
+    command: >
+      sh -c "uv sync --frozen &&
+             python -m app.workers.main vectorization-worker"
+
+  tags-worker:
+    volumes:
+      - .:/app
+    command: >
+      sh -c "uv sync --frozen &&
+             python -m app.workers.main tags-worker"
