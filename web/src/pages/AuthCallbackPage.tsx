@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { AnimatePresence } from 'framer-motion'
 import { apiTelegramCode, apiTelegramResult } from '../api/auth'
@@ -13,10 +13,13 @@ export default function AuthCallbackPage() {
   const [searchParams] = useSearchParams()
   const [visible, setVisible] = useState(true)
 
+  const mountedRef = useRef(true)
+  useEffect(() => () => { mountedRef.current = false }, [])
+
   async function handleExit(to: string) {
     setVisible(false)
     await new Promise(r => setTimeout(r, EXIT_DELAY_MS))
-    navigate(to, { replace: true })
+    if (mountedRef.current) navigate(to, { replace: true })
   }
 
   useEffect(() => {
@@ -60,7 +63,7 @@ export default function AuthCallbackPage() {
 
   return (
     <AnimatePresence>
-      {visible && <LoaderScreen subtitle="авторизация…" />}
+      {visible && <LoaderScreen key="callback-loader" subtitle="авторизация…" />}
     </AnimatePresence>
   )
 }
