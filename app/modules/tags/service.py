@@ -314,6 +314,21 @@ class TagsService:
             statuses=statuses,
         )
 
+    async def list_jobs_for_content(
+        self,
+        *,
+        owner_user_id: str,
+        content_object_id: str,
+    ) -> list[TaggingJob]:
+        await self._get_content_object(
+            owner_user_id=owner_user_id,
+            content_object_id=content_object_id,
+        )
+        return await self.repository.list_jobs_for_content(
+            owner_user_id=owner_user_id,
+            content_object_id=content_object_id,
+        )
+
     async def list_active_tags_for_contents(
         self,
         *,

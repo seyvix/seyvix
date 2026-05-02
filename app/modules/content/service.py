@@ -1268,7 +1268,11 @@ class ContentService:
                 )
         all_objects = [loaded, *items] if loaded.kind == "collection" else [loaded]
         for obj in all_objects:
-            self._enqueue_content_changed_event(obj, event_name="content.object.created")
+            envelope = self._enqueue_content_changed_event(
+                obj,
+                event_name="content.object.created",
+            )
+            await self._enqueue_automatic_processing(obj, envelope=envelope)
         await self.session.commit()
         return await self._to_card(loaded)
 
@@ -1295,7 +1299,7 @@ class ContentService:
         content_object: ContentObject,
         *,
         event_name: str,
-    ) -> None:
+    ) -> EventEnvelope:
         envelope = EventEnvelope.new(
             event_name=event_name,  # type: ignore[arg-type]
             entity_id=content_object.id,
@@ -1313,6 +1317,42 @@ class ContentService:
             ),
         )
         self.outbox.add(envelope, routing_key=event_name)
+        return envelope
+
+    async def _enqueue_automatic_processing(
+        self,
+        content_object: ContentObject,
+        *,
+        envelope: EventEnvelope,
+    ) -> None:
+        if envelope.event_name not in {"content.object.created", "content.object.updated"}:
+            return
+        await self.snapshots.enqueue_for_content_object(
+            content_object,
+            correlation_id=envelope.correlation_id,
+            source_event_id=envelope.event_id,
+        )
+        await self.tag_service.repository.enqueue_job(
+            owner_user_id=content_object.owner_user_id,
+            content_object_id=content_object.id,
+            job_type="suggest_content_tags",
+            priority=100,
+        )
+        try:
+            await self.taxonomy.enqueue_classification_job(
+                owner_user_id=content_object.owner_user_id,
+                content_object_id=content_object.id,
+                priority=100,
+                source_event_id=envelope.event_id,
+                correlation_id=envelope.correlation_id,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "content.automatic_taxonomy_enqueue_failed",
+                content_object_id=content_object.id,
+                event_id=envelope.event_id,
+                exc_info=True,
+            )
 
     @staticmethod
     def _stored_object_from_file(stored_file: StoredFile) -> StoredObject:

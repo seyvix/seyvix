@@ -82,3 +82,19 @@ class ContentTagDryRunResponse(BaseModel):
 class TaggingJobResponse(BaseModel):
     job_id: str
     status: str
+
+
+class TaggingJobDetailResponse(BaseModel):
+    id: str
+    content_object_id: str
+    job_type: str
+    status: str
+    attempts: int
+    max_attempts: int
+    last_error: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TaggingJobListResponse(BaseModel):
+    items: list[TaggingJobDetailResponse]

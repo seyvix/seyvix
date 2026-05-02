@@ -16,8 +16,9 @@ from app.core.config import Settings, get_settings
 from app.core.database import Base, build_session_factory
 from app.main import app
 from app.modules.auth.models import User
+from app.modules.content.models import ContentObject
 from app.modules.content.service import ContentService
-from app.modules.tags.models import ContentTagAssignment, Tag
+from app.modules.tags.models import ContentTagAssignment, Tag, TaggingJob
 from app.modules.tags.service import TagsService
 from app.modules.tags.worker import TagsWorker
 
@@ -189,6 +190,38 @@ def test_tag_crud_manual_assignment_and_content_response_integration(
         json={"tag_id": tag["id"]},
     )
     assert archived_assign_response.status_code == 409
+
+
+def test_content_tag_jobs_endpoint_lists_jobs_for_current_user(tags_client: TestClient) -> None:
+    headers = _auth_headers(tags_client)
+    note = _create_note(tags_client, headers)
+
+    async def seed_job() -> None:
+        async with app.state.session_factory() as session:
+            content_object = await session.get(ContentObject, note["id"])
+            assert content_object is not None
+            session.add(
+                TaggingJob(
+                    owner_user_id=content_object.owner_user_id,
+                    content_object_id=content_object.id,
+                    job_type="suggest_content_tags",
+                    status="processing",
+                    attempts=1,
+                    last_error=None,
+                ),
+            )
+            await session.commit()
+
+    tags_client.portal.call(seed_job)
+
+    response = tags_client.get(f"/api/v1/content/{note['id']}/tags/jobs", headers=headers)
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["items"][0]["content_object_id"] == note["id"]
+    assert payload["items"][0]["job_type"] == "suggest_content_tags"
+    assert payload["items"][0]["status"] == "processing"
+    assert payload["items"][0]["attempts"] == 1
 
 
 def test_tags_enforce_owner_isolation(tags_client: TestClient) -> None:

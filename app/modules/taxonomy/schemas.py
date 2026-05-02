@@ -158,6 +158,24 @@ class TaxonomyAssignmentResponse(BaseModel):
     updated_at: datetime
 
 
+class TaxonomyClassificationJobResponse(BaseModel):
+    id: str
+    content_object_id: str
+    job_type: str
+    status: str
+    attempts: int
+    max_attempts: int
+    result_status: str | None
+    assignment_id: str | None
+    last_error: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TaxonomyClassificationJobListResponse(BaseModel):
+    items: list[TaxonomyClassificationJobResponse]
+
+
 class TaxonomyTemplateSummaryResponse(BaseModel):
     id: str
     slug: str

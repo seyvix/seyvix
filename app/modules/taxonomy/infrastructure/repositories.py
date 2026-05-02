@@ -249,6 +249,14 @@ class TaxonomyRepository:
         source_event_id: str | None,
         correlation_id: str | None,
     ) -> TaxonomyClassificationJob:
+        if source_event_id is not None:
+            existing = await self.session.scalar(
+                select(TaxonomyClassificationJob).where(
+                    TaxonomyClassificationJob.source_event_id == source_event_id
+                )
+            )
+            if existing is not None:
+                return cast(TaxonomyClassificationJob, existing)
         job = TaxonomyClassificationJob(
             owner_user_id=owner_user_id,
             content_object_id=content_object_id,
@@ -261,6 +269,22 @@ class TaxonomyRepository:
         self.session.add(job)
         await self.session.flush()
         return job
+
+    async def list_classification_jobs_for_content(
+        self,
+        *,
+        owner_user_id: str,
+        content_object_id: str,
+    ) -> list[TaxonomyClassificationJob]:
+        query = (
+            select(TaxonomyClassificationJob)
+            .where(
+                TaxonomyClassificationJob.owner_user_id == owner_user_id,
+                TaxonomyClassificationJob.content_object_id == content_object_id,
+            )
+            .order_by(TaxonomyClassificationJob.created_at.desc())
+        )
+        return list(await self.session.scalars(query))
 
     async def claim_pending_classification_jobs(
         self,

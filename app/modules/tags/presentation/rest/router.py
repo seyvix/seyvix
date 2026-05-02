@@ -19,6 +19,8 @@ from app.modules.tags.schemas import (
     ManualAssignTagRequest,
     SuggestContentTagsRequest,
     TagCreateRequest,
+    TaggingJobDetailResponse,
+    TaggingJobListResponse,
     TaggingJobResponse,
     TagResponse,
     TagUpdateRequest,
@@ -72,6 +74,20 @@ def _assignment_response(assignment: ContentTagAssignment) -> ContentTagAssignme
         reasoning=assignment.reasoning,
         created_at=assignment.created_at,
         updated_at=assignment.updated_at,
+    )
+
+
+def _job_response(job) -> TaggingJobDetailResponse:
+    return TaggingJobDetailResponse(
+        id=job.id,
+        content_object_id=job.content_object_id,
+        job_type=job.job_type,
+        status=job.status,
+        attempts=job.attempts,
+        max_attempts=job.max_attempts,
+        last_error=job.last_error,
+        created_at=job.created_at,
+        updated_at=job.updated_at,
     )
 
 
@@ -250,6 +266,26 @@ async def list_content_tags(
             statuses={"accepted"},
         )
         return [_assignment_response(assignment) for assignment in assignments]
+    except TagNotFoundError as exc:
+        raise _raise_not_found(exc) from exc
+
+
+@router.get(
+    "/content/{content_object_id}/tags/jobs",
+    response_model=TaggingJobListResponse,
+    summary="List content tag suggestion jobs",
+)
+async def list_content_tag_jobs(
+    content_object_id: str,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[TagsService, Depends(get_tags_service)],
+) -> TaggingJobListResponse:
+    try:
+        jobs = await service.list_jobs_for_content(
+            owner_user_id=context.user.id,
+            content_object_id=content_object_id,
+        )
+        return TaggingJobListResponse(items=[_job_response(job) for job in jobs])
     except TagNotFoundError as exc:
         raise _raise_not_found(exc) from exc
 

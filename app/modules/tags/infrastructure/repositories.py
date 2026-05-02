@@ -125,6 +125,19 @@ class TagsRepository:
         job_type: str,
         priority: int,
     ) -> TaggingJob:
+        existing_query = select(TaggingJob).where(
+            TaggingJob.owner_user_id == owner_user_id,
+            TaggingJob.content_object_id == content_object_id,
+            TaggingJob.job_type == job_type,
+            TaggingJob.status.in_(("pending", "processing")),
+        )
+        existing = cast(TaggingJob | None, await self.session.scalar(existing_query))
+        if existing is not None:
+            if priority > existing.priority:
+                existing.priority = priority
+                await self.session.flush()
+            return existing
+
         job = TaggingJob(
             owner_user_id=owner_user_id,
             content_object_id=content_object_id,
@@ -135,6 +148,22 @@ class TagsRepository:
         self.session.add(job)
         await self.session.flush()
         return job
+
+    async def list_jobs_for_content(
+        self,
+        *,
+        owner_user_id: str,
+        content_object_id: str,
+    ) -> list[TaggingJob]:
+        query = (
+            select(TaggingJob)
+            .where(
+                TaggingJob.owner_user_id == owner_user_id,
+                TaggingJob.content_object_id == content_object_id,
+            )
+            .order_by(TaggingJob.created_at.desc())
+        )
+        return list(await self.session.scalars(query))
 
     async def claim_pending_jobs(
         self,

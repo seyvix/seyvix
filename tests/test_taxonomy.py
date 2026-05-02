@@ -10,10 +10,12 @@ from sqlalchemy import select
 
 from app.core.config import Settings, get_settings
 from app.core.database import build_session_factory
+from app.main import app
 from app.modules.content.models import ContentObject
 from app.modules.content.service import ContentService
 from app.modules.llm.contracts import LLMGenerationError
 from app.modules.search.schemas import SemanticSearchResult
+from app.modules.taxonomy.models import TaxonomyClassificationJob
 from app.modules.taxonomy.service import TaxonomyLLMClassificationError, TaxonomyService
 from app.modules.vectorization.contracts import build_taxonomy_category_profile_vector_subject
 from app.modules.vectorization.worker import VectorizationWorker
@@ -93,6 +95,45 @@ def _template_paths(items: list[dict[str, object]]) -> set[str]:
         paths.add(str(item["path"]))
         paths.update(_template_paths(item["children"]))  # type: ignore[arg-type]
     return paths
+
+
+def test_taxonomy_classification_jobs_endpoint_lists_jobs_for_current_user(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client)
+    note = _create_note(content_client, headers, "Classifiable note")
+
+    async def seed_job() -> None:
+        async with app.state.session_factory() as session:
+            content_object = await session.get(ContentObject, note["id"])
+            assert content_object is not None
+            session.add(
+                TaxonomyClassificationJob(
+                    owner_user_id=content_object.owner_user_id,
+                    content_object_id=content_object.id,
+                    job_type="classify_content",
+                    status="processing",
+                    attempts=2,
+                    result_status="proposed",
+                    last_error=None,
+                ),
+            )
+            await session.commit()
+
+    content_client.portal.call(seed_job)
+
+    response = content_client.get(
+        f"/api/v1/taxonomy/content/{note['id']}/classification-jobs",
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["items"][0]["content_object_id"] == note["id"]
+    assert payload["items"][0]["job_type"] == "classify_content"
+    assert payload["items"][0]["status"] == "processing"
+    assert payload["items"][0]["attempts"] == 2
+    assert payload["items"][0]["result_status"] == "proposed"
 
 
 def test_category_tree_validation_and_archive_behavior(content_client: TestClient) -> None:

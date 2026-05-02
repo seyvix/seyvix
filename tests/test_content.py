@@ -18,7 +18,13 @@ from app.main import app
 from app.modules.auth.models import User
 from app.modules.content.models import ContentObject, ContentTag
 from app.modules.content.service import ContentService
-from app.modules.taxonomy.models import TaxonomyCategory, TaxonomyContentAssignment
+from app.modules.snapshots.models import SnapshotJob
+from app.modules.tags.models import TaggingJob
+from app.modules.taxonomy.models import (
+    TaxonomyCategory,
+    TaxonomyClassificationJob,
+    TaxonomyContentAssignment,
+)
 from app.platform.events.models import EventOutbox
 
 TELEGRAM_BOT_TOKEN = "123456:test-bot-token"
@@ -165,17 +171,42 @@ def test_create_plain_url_note_creates_link_object_and_content_event(
     assert payload["assets"][0]["mime_type"] == "text/uri-list"
     assert payload["assets"][0]["text_content"] == "https://example.com/research?item=1"
 
-    async def load_outbox_events() -> list[EventOutbox]:
+    async def load_processing_rows() -> (
+        tuple[
+            list[EventOutbox], list[SnapshotJob], list[TaggingJob], list[TaxonomyClassificationJob]
+        ]
+    ):
         async with content_client.app.state.session_factory() as session:
-            result = await session.scalars(
+            events_result = await session.scalars(
                 select(EventOutbox).where(EventOutbox.entity_id == payload["id"])
             )
-            return list(result)
+            snapshots_result = await session.scalars(
+                select(SnapshotJob).where(SnapshotJob.content_object_id == payload["id"])
+            )
+            tags_result = await session.scalars(
+                select(TaggingJob).where(TaggingJob.content_object_id == payload["id"])
+            )
+            taxonomy_result = await session.scalars(
+                select(TaxonomyClassificationJob).where(
+                    TaxonomyClassificationJob.content_object_id == payload["id"]
+                )
+            )
+            return (
+                list(events_result),
+                list(snapshots_result),
+                list(tags_result),
+                list(taxonomy_result),
+            )
 
-    events = content_client.portal.call(load_outbox_events)
+    events, snapshot_jobs, tag_jobs, taxonomy_jobs = content_client.portal.call(
+        load_processing_rows
+    )
     assert [event.event_name for event in events] == ["content.object.created"]
     assert events[0].payload["metadata"]["media_type"] == "link"
     assert events[0].payload["asset_ids"] == [payload["assets"][0]["id"]]
+    assert {job.job_type for job in snapshot_jobs} >= {"thumbnail", "markdown", "pdf", "screenshot"}
+    assert [job.job_type for job in tag_jobs] == ["suggest_content_tags"]
+    assert [job.job_type for job in taxonomy_jobs] == ["classify_content"]
 
 
 def test_concurrent_notes_reuse_folder_and_tags_and_allocate_unique_slugs(

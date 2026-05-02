@@ -18,6 +18,8 @@ from app.modules.taxonomy.schemas import (
     TaxonomyCategoryResponse,
     TaxonomyCategoryTreeItem,
     TaxonomyCategoryUpdateRequest,
+    TaxonomyClassificationJobListResponse,
+    TaxonomyClassificationJobResponse,
     TaxonomyClassificationRequest,
     TaxonomyClassificationResponse,
     TaxonomyInitializeRequest,
@@ -61,6 +63,22 @@ def _validation_error(message: str) -> AppError:
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         code="validation_error",
         message=message,
+    )
+
+
+def _classification_job_response(job) -> TaxonomyClassificationJobResponse:
+    return TaxonomyClassificationJobResponse(
+        id=job.id,
+        content_object_id=job.content_object_id,
+        job_type=job.job_type,
+        status=job.status,
+        attempts=job.attempts,
+        max_attempts=job.max_attempts,
+        result_status=job.result_status,
+        assignment_id=job.assignment_id,
+        last_error=job.last_error,
+        created_at=job.created_at,
+        updated_at=job.updated_at,
     )
 
 
@@ -357,6 +375,29 @@ async def list_assignments(
     except TaxonomyNotFoundError as exc:
         raise _not_found("Content object not found.") from exc
     return [service.assignment_response(assignment) for assignment in assignments]
+
+
+@router.get(
+    "/content/{content_object_id}/classification-jobs",
+    response_model=TaxonomyClassificationJobListResponse,
+    summary="List content taxonomy classification jobs",
+    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+)
+async def list_classification_jobs(
+    content_object_id: str,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[TaxonomyService, Depends(get_taxonomy_service)],
+) -> TaxonomyClassificationJobListResponse:
+    try:
+        jobs = await service.list_classification_jobs(
+            owner_user_id=context.user.id,
+            content_object_id=content_object_id,
+        )
+    except TaxonomyNotFoundError as exc:
+        raise _not_found("Content object not found.") from exc
+    return TaxonomyClassificationJobListResponse(
+        items=[_classification_job_response(job) for job in jobs],
+    )
 
 
 @router.get(

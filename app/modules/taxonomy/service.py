@@ -557,6 +557,18 @@ class TaxonomyService:
             content_object_id=content_object_id,
         )
 
+    async def list_classification_jobs(
+        self,
+        *,
+        owner_user_id: str,
+        content_object_id: str,
+    ) -> list[TaxonomyClassificationJob]:
+        await self._ensure_content_exists(owner_user_id, content_object_id)
+        return await self.repository.list_classification_jobs_for_content(
+            owner_user_id=owner_user_id,
+            content_object_id=content_object_id,
+        )
+
     async def accept_assignment(
         self,
         *,
@@ -968,6 +980,7 @@ class TaxonomyService:
             model_config={
                 "model": self.settings.taxonomy_llm_classification_model,
                 "temperature": 0,
+                "max_tokens": 768,
             },
         )
         decision = TaxonomyLLMDecisionResponse.model_validate(result)
