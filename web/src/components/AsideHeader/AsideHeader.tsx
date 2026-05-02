@@ -74,7 +74,18 @@ export default function AsideHeader() {
   return (
     <aside className={sidebarClass}>
       <div className={styles.top}>
-        <div className={styles.avatar}>{initials}</div>
+        <div className={styles.avatar}>
+          <span className={styles.avatarInitials}>{initials}</span>
+          {user?.telegram_photo_url && (
+            <img
+              className={styles.avatarImage}
+              src={user.telegram_photo_url}
+              alt=""
+              referrerPolicy="no-referrer"
+              onError={event => { event.currentTarget.hidden = true }}
+            />
+          )}
+        </div>
         <div className={styles.userInfo}>
           <span className={styles.logoText}>{user?.display_name ?? 'Пользователь'}</span>
           {user?.telegram_username && (
