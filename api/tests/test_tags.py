@@ -16,8 +16,9 @@ from app.core.config import Settings, get_settings
 from app.core.database import Base, build_session_factory
 from app.main import app
 from app.modules.auth.models import User
-from app.modules.content.models import ContentObject
+from app.modules.content.models import ContentAsset, ContentObject
 from app.modules.content.service import ContentService
+from app.modules.tags.infrastructure.llm_tagger import LLMContentTagger
 from app.modules.tags.models import ContentTagAssignment, Tag, TaggingJob
 from app.modules.tags.service import TagsService
 from app.modules.tags.worker import TagsWorker
@@ -263,6 +264,93 @@ def test_llm_dry_run_and_disabled_enqueue_behavior(tags_client: TestClient) -> N
     assert disabled_response.json()["error"]["code"] == "tags_llm_disabled"
 
 
+def test_llm_tagger_prompt_requests_grounded_multi_level_tags() -> None:
+    tagger = LLMContentTagger(
+        settings=Settings(tags_llm_prompt_version="test-tags-v2"),
+        llm_generator=FakeStructuredGenerator(),
+    )
+
+    prompt = tagger._build_prompt(
+        title="pgvector indexing benchmark",
+        url=None,
+        existing_tags=["PostgreSQL", "vector search"],
+        excerpt="PostgreSQL indexing notes. Use pgvector for nearest-neighbor search.",
+        metadata={"media_type": "text", "source_filename": "pgvector.md"},
+        max_tags=6,
+    )
+
+    assert "Title: pgvector indexing benchmark" in prompt
+    assert "Metadata:" in prompt
+    assert "source_filename" in prompt
+    assert "Existing candidate tags: PostgreSQL, vector search" in prompt
+    assert "different levels of abstraction" in prompt
+    assert "broad categories" in prompt
+    assert "specific topics" in prompt
+    assert "sources" in prompt
+    assert "Only suggest tags supported by the provided title, metadata, and text" in prompt
+    assert "Good tags: vLLM" not in prompt
+
+
+def test_service_existing_tag_candidates_prefer_relevant_and_active_tags() -> None:
+    content_object = ContentObject(
+        owner_user_id="user-1",
+        slug="pgvector-indexing-benchmark",
+        title="pgvector indexing benchmark",
+        kind="simple",
+        media_type="text",
+        source_filename="pgvector.md",
+        mime_type="text/markdown",
+        storage_path="content-assets/object-1",
+    )
+    content_object.assets.append(
+        ContentAsset(
+            role="original",
+            media_type="text",
+            filename="pgvector.md",
+            mime_type="text/markdown",
+            size_bytes=128,
+            storage_path="content-assets/object-1/source.md",
+            text_content="PostgreSQL HNSW indexing and vector search notes.",
+        )
+    )
+    postgresql = Tag(
+        owner_user_id="user-1",
+        name="PostgreSQL",
+        slug="postgresql",
+        description=None,
+        tag_kind="technology",
+        created_by_type="user",
+        source="manual",
+    )
+    vacation = Tag(
+        owner_user_id="user-1",
+        name="Vacation Planning",
+        slug="vacation-planning",
+        description=None,
+        tag_kind="topic",
+        created_by_type="user",
+        source="manual",
+    )
+    active = Tag(
+        owner_user_id="user-1",
+        name="Read Later",
+        slug="read-later",
+        description=None,
+        tag_kind="status",
+        created_by_type="user",
+        source="manual",
+    )
+
+    candidates = TagsService._existing_tag_candidates(
+        content_object=content_object,
+        active_tags=[active],
+        tags=[vacation, postgresql, active],
+        max_tags=8,
+    )
+
+    assert [tag.name for tag in candidates] == ["Read Later", "PostgreSQL"]
+
+
 def test_service_llm_suggestions_store_metadata_thresholds_and_history(tmp_path: Path) -> None:
     async def scenario() -> None:
         session_factory = await _prepare_database(_test_database_url())
@@ -363,6 +451,78 @@ def test_service_llm_suggestions_store_metadata_thresholds_and_history(tmp_path:
             )
             history = list(await session.scalars(select(ContentTagAssignment)))
             assert {assignment.status for assignment in history} == {"accepted", "removed"}
+
+    asyncio.run(scenario())
+
+
+def test_service_llm_prompt_uses_content_context_and_existing_tag_candidates(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        session_factory = await _prepare_database(_test_database_url())
+        async with session_factory() as session:
+            user = User(telegram_id="100650", display_name="User")
+            session.add(user)
+            await session.commit()
+            await session.refresh(user)
+
+            content_service = ContentService(session, tmp_path / "content-storage")
+            note = await content_service.create_note(
+                owner_user_id=user.id,
+                media_type="text",
+                text=(
+                    "PostgreSQL indexing notes. Use pgvector for nearest-neighbor search. "
+                    "Tune HNSW and IVFFlat indexes for recall and latency. "
+                    + ("database retrieval " * 260)
+                    + "TAIL_MARKER_SHOULD_BE_TRUNCATED"
+                ),
+                title="pgvector indexing benchmark",
+                folder_path=None,
+                tag_names=[],
+                file_upload_ids=[],
+            )
+
+            service = TagsService(
+                session,
+                settings=Settings(tags_llm_enabled=True, tags_llm_model="fake-tags"),
+                llm_generator=FakeStructuredGenerator(),
+            )
+            await service.create_tag(
+                owner_user_id=user.id,
+                name="PostgreSQL",
+                description=None,
+                tag_kind="technology",
+                created_by_user_id=user.id,
+                commit=False,
+            )
+            await service.create_tag(
+                owner_user_id=user.id,
+                name="Vacation Planning",
+                description=None,
+                tag_kind="topic",
+                created_by_user_id=user.id,
+                commit=False,
+            )
+            await session.commit()
+
+            await service.suggest_tags_for_content(
+                owner_user_id=user.id,
+                content_object_id=note.id,
+                max_tags=6,
+                persist=False,
+            )
+
+            prompt = service.llm_generator.calls[0]["prompt"]
+            assert "Title: pgvector indexing benchmark" in prompt
+            assert "media_type" in prompt
+            assert "Existing candidate tags: PostgreSQL" in prompt
+            assert "Vacation Planning" not in prompt
+            assert "PostgreSQL indexing notes" in prompt
+            assert "TAIL_MARKER_SHOULD_BE_TRUNCATED" not in prompt
+            assert "different levels of abstraction" in prompt
+            assert "broad categories" in prompt
+            assert "specific topics" in prompt
+            assert "sources" in prompt
 
     asyncio.run(scenario())
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -36,6 +37,7 @@ class TagLLMDisabledError(Exception):
 class TaggingInput:
     content_object: ContentObject
     active_tags: list[Tag]
+    existing_tag_candidates: list[Tag]
     excerpt: str | None
 
 
@@ -383,7 +385,7 @@ class TagsService:
         suggestions = await tagger.suggest(
             title=tagging_input.content_object.title,
             url=self._content_url(tagging_input.content_object),
-            existing_tags=[tag.slug for tag in tagging_input.active_tags],
+            existing_tags=[tag.name for tag in tagging_input.existing_tag_candidates],
             excerpt=tagging_input.excerpt,
             metadata={
                 "kind": tagging_input.content_object.kind,
@@ -542,9 +544,20 @@ class TagsService:
             content_object_id=content_object_id,
             statuses={"accepted"},
         )
+        all_tags = await self.repository.list_tags(
+            owner_user_id=owner_user_id,
+            include_archived=False,
+        )
+        active_tags = [assignment.tag for assignment in active]
         return TaggingInput(
             content_object=content_object,
-            active_tags=[assignment.tag for assignment in active],
+            active_tags=active_tags,
+            existing_tag_candidates=self._existing_tag_candidates(
+                content_object=content_object,
+                active_tags=active_tags,
+                tags=all_tags,
+                max_tags=24,
+            ),
             excerpt=self._text_excerpt(content_object, max_chars=4000),
         )
 
@@ -589,3 +602,54 @@ class TagsService:
         if content_object.media_type == "link":
             return content_object.source_filename
         return None
+
+    @classmethod
+    def _existing_tag_candidates(
+        cls,
+        *,
+        content_object: ContentObject,
+        active_tags: list[Tag],
+        tags: list[Tag],
+        max_tags: int,
+    ) -> list[Tag]:
+        active_by_slug = {tag.slug: tag for tag in active_tags}
+        text = cls._candidate_matching_text(content_object)
+        scored: list[tuple[int, str, Tag]] = []
+        for tag in tags:
+            if tag.slug in active_by_slug:
+                scored.append((10_000, tag.name.casefold(), tag))
+                continue
+            score = cls._tag_match_score(tag=tag, text=text)
+            if score > 0:
+                scored.append((score, tag.name.casefold(), tag))
+
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        return [tag for _, _, tag in scored[:max_tags]]
+
+    @classmethod
+    def _candidate_matching_text(cls, content_object: ContentObject) -> str:
+        parts = [
+            content_object.title,
+            content_object.kind,
+            content_object.media_type,
+            content_object.source_filename,
+            content_object.mime_type,
+            cls._text_excerpt(content_object, max_chars=4000),
+        ]
+        return " ".join(part for part in parts if part).casefold()
+
+    @staticmethod
+    def _tag_match_score(*, tag: Tag, text: str) -> int:
+        candidates = [tag.name, tag.slug, tag.description or "", tag.tag_kind or ""]
+        score = 0
+        for candidate in candidates:
+            normalized = candidate.strip().casefold()
+            if not normalized:
+                continue
+            if normalized in text:
+                score += 20
+            tokens = {
+                token for token in re.split(r"[^0-9a-zA-Zа-яА-ЯёЁ]+", normalized) if len(token) >= 3
+            }
+            score += sum(1 for token in tokens if token in text)
+        return score

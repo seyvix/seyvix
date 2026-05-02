@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
@@ -12,6 +13,9 @@ from app.modules.tags.contracts import ContentTagSuggestion
 
 class LLMTaggingError(Exception):
     pass
+
+
+_MAX_EXCERPT_CHARS = 4000
 
 
 class _RawSuggestion(BaseModel):
@@ -93,21 +97,25 @@ class LLMContentTagger:
         metadata: dict[str, object],
         max_tags: int,
     ) -> str:
+        metadata_json = json.dumps(metadata, ensure_ascii=False, sort_keys=True)
+        trimmed_excerpt = (excerpt or "")[:_MAX_EXCERPT_CHARS]
+        existing_tag_text = ", ".join(existing_tags)
         return (
             "Suggest concise, useful tags for one content object.\n"
-            "Prefer concrete labels: entities, technologies, topics, statuses, and filtering "
-            "signals. Do not suggest taxonomy paths as tags. Avoid near-duplicates and generic "
-            "labels like interesting, misc, general, or random unless they are genuinely useful. "
-            "Return structured JSON only.\n\n"
+            "Only suggest tags supported by the provided title, metadata, and text. Cover "
+            "different levels of abstraction when the content supports them: broad categories, "
+            "specific topics, named entities, technologies, statuses, sources, authors, or "
+            "formats. Prefer existing candidate tags when they fit exactly or nearly exactly, "
+            "but create new tag names when none of the candidates match the content. Avoid "
+            "near-duplicates, taxonomy paths, and generic labels like interesting, misc, "
+            "general, or random. Return structured JSON only.\n\n"
             f"Maximum tags: {max_tags}\n"
             f"Prompt version: {self.settings.tags_llm_prompt_version}\n"
             f"Title: {title}\n"
             f"URL: {url or ''}\n"
-            f"Existing tags: {', '.join(existing_tags)}\n"
-            f"Metadata: {metadata}\n"
-            f"Excerpt:\n{excerpt or ''}\n\n"
-            "Good tags: vLLM, KV-cache, latency, benchmark, PostgreSQL, RAG, read-later.\n"
-            "Bad tags: interesting, misc, general, AI / LLM / Inference, random."
+            f"Existing candidate tags: {existing_tag_text}\n"
+            f"Metadata: {metadata_json}\n"
+            f"Text excerpt:\n{trimmed_excerpt}"
         )
 
     @staticmethod
