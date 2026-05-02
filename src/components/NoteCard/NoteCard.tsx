@@ -10,12 +10,14 @@ import { containsFiles, getFiles } from '@atlaskit/pragmatic-drag-and-drop/exter
 import AuthImage from '../AuthImage/AuthImage'
 import type { Note, NoteObject, Tag } from '../../types'
 import { getTagColor } from '../../utils/tagColor'
+import { MERGE_NOTES_ENABLED } from '../../api/notes'
 import { useMergeNotes } from '../../hooks/useMergeNotes'
 import { useUploadFiles } from '../../hooks/useUploadFiles'
 import { useAddFilesToNote } from '../../hooks/useAddFilesToNote'
 import { useCreateNote } from '../../hooks/useCreateNote'
 import { useUpdateNote } from '../../hooks/useUpdateNote'
 import { useDragContext } from '../../contexts/DragContext'
+import { getObjectDisplayText, getObjectPreviewSource } from '../../utils/notePreview'
 import styles from './NoteCard.module.css'
 
 const FILE_HOVER_THRESHOLD_MS = 750
@@ -53,16 +55,16 @@ function SimpleCard({ note, onTagClick }: { note: Note; onTagClick?: (name: stri
   if (imageObj && !textObj) {
     return (
       <Link draggable={false} to={`/notes/${note.slug}`} className={`${styles.card} ${styles.cardSimpleImage}`}>
-        <AuthImage src={imageObj.content} alt={note.title} />
+        <AuthImage src={getObjectPreviewSource(imageObj)} alt={note.title} />
       </Link>
     )
   }
 
   return (
     <Link draggable={false} to={`/notes/${note.slug}`} className={`${styles.card} ${styles.cardSimple}`}>
-      {imageObj && <AuthImage className={styles.cover} src={imageObj.content} alt="" />}
+      {imageObj && <AuthImage className={styles.cover} src={getObjectPreviewSource(imageObj)} alt="" />}
       <div className={styles.title}>{note.title}</div>
-      {textObj && <div className={styles.excerpt}>{textObj.content}</div>}
+      {textObj && <div className={styles.excerpt}>{getObjectDisplayText(textObj)}</div>}
       <TagList tags={note.tags} onTagClick={onTagClick} />
     </Link>
   )
@@ -104,7 +106,7 @@ function LayerContent({ obj, fallback }: { obj: NoteObject | undefined; fallback
     return <div className={styles.collectionLayerBg} style={{ background: fallback }} />
   }
   if (obj.type === 'image') {
-    return <AuthImage src={obj.content} alt="" className={styles.collectionLayerImg} />
+    return <AuthImage src={getObjectPreviewSource(obj)} alt="" className={styles.collectionLayerImg} />
   }
   if (obj.type === 'document') {
     const thumb = obj.thumbnailUrl ?? obj.cover
@@ -123,7 +125,7 @@ function LayerContent({ obj, fallback }: { obj: NoteObject | undefined; fallback
     let favicon: string | null = null
     try {
       const domain = new URL(obj.content).hostname
-      favicon = `https://www.google.com/s2/favicons?domain=${domain}&sz=64`
+      favicon = obj.thumbnailUrl || `https://www.google.com/s2/favicons?domain=${domain}&sz=64`
     } catch { /* ignore */ }
     return (
       <div className={`${styles.collectionLayerBg} ${styles.collectionLayerLink}`} style={{ background: fallback }}>
@@ -173,7 +175,7 @@ function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClic
   if (visualObjs.length === 1) {
     const obj = visualObjs[0]
     if (obj.type === 'image') {
-      visual = <AuthImage src={obj.content} alt="" className={styles.collectionSingle} />
+      visual = <AuthImage src={getObjectPreviewSource(obj)} alt="" className={styles.collectionSingle} />
     } else {
       visual = (
         <div className={styles.collectionSingleNonImage}>
@@ -186,7 +188,7 @@ function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClic
       <div className={styles.collectionPair}>
         {visualObjs.map(obj => (
           obj.type === 'image'
-            ? <AuthImage key={obj.id} src={obj.content} alt="" className={styles.collectionPairImg} />
+            ? <AuthImage key={obj.id} src={getObjectPreviewSource(obj)} alt="" className={styles.collectionPairImg} />
             : <div key={obj.id} className={styles.collectionPairSlot}>
                 <LayerContent obj={obj} fallback={fallback} />
               </div>
@@ -253,8 +255,9 @@ function LinkChip({ obj }: { obj: NoteObject }) {
 }
 
 function DocChip({ obj }: { obj: NoteObject }) {
-  const ext         = obj.content.includes('.') ? obj.content.split('.').pop()!.toUpperCase().slice(0, 4) : 'FILE'
-  const name        = obj.content.replace(/\.[^.]+$/, '')
+  const label       = obj.filename ?? obj.content
+  const ext         = label.includes('.') ? label.split('.').pop()!.toUpperCase().slice(0, 4) : 'FILE'
+  const name        = label.replace(/\.[^.]+$/, '')
   const thumb       = obj.thumbnailUrl ?? obj.cover
   const isPending   = obj.thumbnailUrl === null  // backend is generating
 
@@ -286,13 +289,13 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
       {/* Cover */}
       <div className={styles.compositeCover}>
         {imageObj
-          ? <AuthImage src={imageObj.content} alt="" className={styles.compositeCoverImg} />
+          ? <AuthImage src={getObjectPreviewSource(imageObj)} alt="" className={styles.compositeCoverImg} />
           : docThumb
             ? <AuthImage src={docThumb} alt="" className={styles.compositeCoverImg} />
             : firstDoc?.thumbnailUrl === null
               ? <div className={styles.thumbPending} />
               : <div className={styles.compositeCoverEmpty}>
-                  {textObj && <span className={styles.compositeCoverText}>{textObj.content}</span>}
+                  {textObj && <span className={styles.compositeCoverText}>{getObjectDisplayText(textObj, 240)}</span>}
                 </div>
         }
       </div>
@@ -316,7 +319,7 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
 
         {titleNode}
         {textObj && !/^https?:\/\//.test(textObj.content) && (
-          <div className={styles.excerpt}>{textObj.content}</div>
+          <div className={styles.excerpt}>{getObjectDisplayText(textObj)}</div>
         )}
         <TagList tags={note.tags} onTagClick={onTagClick} />
       </div>
@@ -397,11 +400,12 @@ export function NoteCard({ note, isNew, onTagClick }: { note: Note; isNew?: bool
     const cleanupDrop = dropTargetForElements({
       element: el,
       canDrop: ({ source }) =>
-        source.data.type === 'note' && source.data.noteId !== note.id,
+        MERGE_NOTES_ENABLED && source.data.type === 'note' && source.data.noteId !== note.id,
       onDragEnter: () => setIsOver(true),
       onDragLeave: () => setIsOver(false),
       onDrop: ({ source }) => {
         setIsOver(false)
+        if (!MERGE_NOTES_ENABLED) return
         const sourceType  = source.data.noteType  as string
         const sourceTitle = source.data.noteTitle as string
         mergeRef.current(

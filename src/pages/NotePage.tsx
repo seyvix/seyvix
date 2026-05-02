@@ -1,13 +1,53 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, ExternalLink, FileText, Download, X, ChevronRight } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  ArrowLeft,
+  ExternalLink,
+  FileText,
+  Download,
+  X,
+  ChevronRight,
+  Check,
+  FolderTree,
+  Maximize2,
+  Plus,
+  RefreshCw,
+  Search,
+  Tag as TagIcon,
+} from 'lucide-react'
 import { useNote } from '../hooks/useNote'
 import { useUpdateNote } from '../hooks/useUpdateNote'
 import { useRemoveCollectionItems } from '../hooks/useRemoveCollectionItems'
 import { getTagColor } from '../utils/tagColor'
 import AuthImage from '../components/AuthImage/AuthImage'
 import { apiFetch } from '../lib/apiClient'
+import {
+  acceptTagSuggestion,
+  acceptTaxonomyAssignment,
+  assignCategoryToContent,
+  assignExistingTagToContent,
+  createTaxonomyCategory,
+  createOrFindTag,
+  fetchContentTagSuggestions,
+  fetchContentTagJobs,
+  fetchContentTags,
+  fetchSnapshotArtifacts,
+  fetchSnapshotJobs,
+  fetchTaxonomyAssignments,
+  fetchTaxonomyClassificationJobs,
+  rejectTagSuggestion,
+  rejectTaxonomyAssignment,
+  searchTaxonomyCategories,
+  type ContentTagAssignment,
+  type ContentTagJob,
+  type SnapshotArtifact,
+  type SnapshotJob,
+  type TaxonomyAssignment,
+  type TaxonomyClassificationJob,
+} from '../api/enrichment'
 import type { Note, NoteObject, Tag } from '../types'
+import type { SnapshotView } from '../types'
 import styles from './NotePage.module.css'
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
@@ -38,6 +78,442 @@ function TagList({ tags }: { tags: Tag[] }) {
         )
       })}
     </>
+  )
+}
+
+function formatBytes(bytes?: number): string {
+  if (!bytes) return '0 KB'
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function artifactLabel(artifact: SnapshotArtifact): string {
+  if (artifact.artifact_type === 'webpage_html') return 'HTML'
+  if (artifact.artifact_type === 'thumbnail') return 'Миниатюра'
+  if (artifact.artifact_type === 'markdown') return 'Markdown'
+  if (artifact.artifact_type === 'pdf') return 'PDF'
+  return artifact.artifact_type
+}
+
+function jobStatusLabel(job: SnapshotJob): string {
+  if (job.status === 'completed' || job.status === 'done') return 'Готово'
+  if (job.status === 'failed') return 'Ошибка'
+  if (job.status === 'processing') return 'Обработка'
+  return 'В очереди'
+}
+
+function enrichmentJobStatusLabel(job: ContentTagJob | TaxonomyClassificationJob): string {
+  if (job.status === 'completed' || job.status === 'done') return 'Готово'
+  if (job.status === 'failed') return 'Ошибка'
+  if (job.status === 'processing') return 'Обработка'
+  return 'В очереди'
+}
+
+function isActiveJob(job: { status: string }) {
+  return job.status !== 'completed' && job.status !== 'done' && job.status !== 'failed'
+}
+
+function SnapshotViewerModal({
+  view,
+  onClose,
+}: {
+  view: SnapshotView
+  onClose: () => void
+}) {
+  const [blobUrl, setBlobUrl] = useState<string | null>(null)
+  const [text, setText] = useState<string | null>(null)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+
+  useEffect(() => {
+    let objectUrl: string | null = null
+    let cancelled = false
+    setBlobUrl(null)
+    setText(null)
+    async function loadView() {
+      try {
+        const res = await apiFetch(view.url)
+        if (!res.ok) throw new Error('fetch failed')
+        if (view.kind === 'markdown') {
+          const data = await res.text()
+          if (cancelled) return
+          setText(data)
+          return
+        }
+        const data = await res.blob()
+        if (cancelled) return
+        objectUrl = URL.createObjectURL(data)
+        setBlobUrl(objectUrl)
+      } catch {
+        if (!cancelled) setBlobUrl(view.url)
+      }
+    }
+    void loadView()
+    return () => {
+      cancelled = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [view])
+
+  return (
+    <div className={`${styles.snapshotModal}${isFullscreen ? ` ${styles.snapshotModalFullscreen}` : ''}`}>
+      <div className={styles.snapshotModalHeader}>
+        <span>{view.label}</span>
+        <a href={view.url} download>
+          <Download size={14} /> Скачать
+        </a>
+        <button onClick={() => setIsFullscreen(value => !value)} title="Полный экран">
+          <Maximize2 size={14} />
+        </button>
+        <button onClick={onClose} title="Закрыть">
+          <X size={14} />
+        </button>
+      </div>
+      <div className={styles.snapshotModalBody}>
+        {view.kind === 'markdown' ? (
+          <pre className={styles.markdownPreview}>{text ?? 'Загрузка...'}</pre>
+        ) : view.kind === 'thumbnail' ? (
+          blobUrl ? <AuthImage src={view.url} alt="" className={styles.snapshotImagePreview} /> : <span className={styles.emptyText}>Загрузка...</span>
+        ) : (
+          blobUrl ? <iframe src={blobUrl} title={view.label} className={styles.snapshotFrame} /> : <span className={styles.emptyText}>Загрузка...</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function SnapshotLinks({ obj }: { obj: NoteObject }) {
+  const [activeView, setActiveView] = useState<SnapshotView | null>(null)
+  const views = obj.snapshotViews ?? []
+  if (views.length === 0) return null
+  return (
+    <>
+      <div className={styles.snapshotLinks}>
+        {views.map(view => (
+          <button key={`${obj.id}-${view.kind}`} onClick={() => setActiveView(view)}>
+            {view.label}
+          </button>
+        ))}
+      </div>
+      {activeView && (
+        <SnapshotViewerModal
+          view={activeView}
+          onClose={() => setActiveView(null)}
+        />
+      )}
+    </>
+  )
+}
+
+function EnrichmentPanel({ note }: { note: Note }) {
+  const queryClient = useQueryClient()
+  const [tagName, setTagName] = useState('')
+  const [categoryQuery, setCategoryQuery] = useState('')
+  const [categorySearch, setCategorySearch] = useState('')
+
+  const contentTags = useQuery({
+    queryKey: ['content-tags', note.id],
+    queryFn: () => fetchContentTags(note.id),
+  })
+  const tagSuggestions = useQuery({
+    queryKey: ['content-tag-suggestions', note.id],
+    queryFn: () => fetchContentTagSuggestions(note.id),
+  })
+  const tagJobs = useQuery({
+    queryKey: ['content-tag-jobs', note.id],
+    queryFn: () => fetchContentTagJobs(note.id),
+    refetchInterval: (query) => {
+      const jobs = query.state.data ?? []
+      return jobs.some(isActiveJob) ? 4000 : false
+    },
+  })
+  const taxonomyAssignments = useQuery({
+    queryKey: ['taxonomy-assignments', note.id],
+    queryFn: () => fetchTaxonomyAssignments(note.id),
+  })
+  const taxonomyJobs = useQuery({
+    queryKey: ['taxonomy-classification-jobs', note.id],
+    queryFn: () => fetchTaxonomyClassificationJobs(note.id),
+    refetchInterval: (query) => {
+      const jobs = query.state.data ?? []
+      return jobs.some(isActiveJob) ? 4000 : false
+    },
+  })
+  const snapshotArtifacts = useQuery({
+    queryKey: ['snapshot-artifacts', note.id],
+    queryFn: () => fetchSnapshotArtifacts(note.id),
+    refetchInterval: (query) => {
+      const jobs = queryClient.getQueryData<SnapshotJob[]>(['snapshot-jobs', note.id]) ?? []
+      return jobs.some(isActiveJob) ? 4000 : false
+    },
+  })
+  const snapshotJobs = useQuery({
+    queryKey: ['snapshot-jobs', note.id],
+    queryFn: () => fetchSnapshotJobs(note.id),
+    refetchInterval: (query) => {
+      const jobs = query.state.data ?? []
+      return jobs.some(isActiveJob) ? 4000 : false
+    },
+  })
+  const categories = useQuery({
+    queryKey: ['taxonomy-category-search', categorySearch],
+    queryFn: () => searchTaxonomyCategories(categorySearch),
+    enabled: categorySearch.trim().length > 0,
+  })
+
+  function refreshEnrichment() {
+    queryClient.invalidateQueries({ queryKey: ['content-tags', note.id] })
+    queryClient.invalidateQueries({ queryKey: ['content-tag-suggestions', note.id] })
+    queryClient.invalidateQueries({ queryKey: ['content-tag-jobs', note.id] })
+    queryClient.invalidateQueries({ queryKey: ['taxonomy-assignments', note.id] })
+    queryClient.invalidateQueries({ queryKey: ['taxonomy-classification-jobs', note.id] })
+    queryClient.invalidateQueries({ queryKey: ['snapshot-artifacts', note.id] })
+    queryClient.invalidateQueries({ queryKey: ['snapshot-jobs', note.id] })
+    queryClient.invalidateQueries({ queryKey: ['note', note.slug] })
+    queryClient.invalidateQueries({ queryKey: ['notes'] })
+  }
+
+  const addTag = useMutation({
+    mutationFn: async (name: string) => {
+      const tag = await createOrFindTag(name)
+      return assignExistingTagToContent(note.id, tag.id)
+    },
+    onSuccess: () => {
+      setTagName('')
+      refreshEnrichment()
+    },
+  })
+
+  const acceptSuggestion = useMutation({
+    mutationFn: (assignmentId: string) => acceptTagSuggestion(note.id, assignmentId),
+    onSettled: refreshEnrichment,
+  })
+  const rejectSuggestion = useMutation({
+    mutationFn: (assignmentId: string) => rejectTagSuggestion(note.id, assignmentId),
+    onSettled: refreshEnrichment,
+  })
+
+  const assignCategory = useMutation({
+    mutationFn: (categoryId: string) => assignCategoryToContent(note.id, categoryId),
+    onSuccess: () => {
+      setCategoryQuery('')
+      setCategorySearch('')
+      refreshEnrichment()
+    },
+  })
+
+  const createAndAssignCategory = useMutation({
+    mutationFn: async (name: string) => {
+      const category = await createTaxonomyCategory(name)
+      return assignCategoryToContent(note.id, category.id)
+    },
+    onSuccess: () => {
+      setCategoryQuery('')
+      setCategorySearch('')
+      refreshEnrichment()
+    },
+  })
+
+  const acceptCategory = useMutation({
+    mutationFn: (assignmentId: string) => acceptTaxonomyAssignment(note.id, assignmentId),
+    onSettled: refreshEnrichment,
+  })
+  const rejectCategory = useMutation({
+    mutationFn: (assignmentId: string) => rejectTaxonomyAssignment(note.id, assignmentId),
+    onSettled: refreshEnrichment,
+  })
+
+  const acceptedTags = contentTags.data?.filter(item => item.status === 'accepted') ?? []
+  const pendingTags = tagSuggestions.data ?? []
+  const tagJobItems = tagJobs.data ?? []
+  const assignments = taxonomyAssignments.data ?? []
+  const taxonomyJobItems = taxonomyJobs.data ?? []
+  const currentAssignment = assignments.find(item => item.is_current) ?? null
+  const proposedAssignments = assignments.filter(item => item.status === 'proposed')
+  const category = note.taxonomyCategory ?? (currentAssignment
+    ? {
+        id: currentAssignment.category_id,
+        name: currentAssignment.category_name_snapshot,
+        slug: currentAssignment.category_path_snapshot.split('/').pop() ?? currentAssignment.category_id,
+        path: currentAssignment.category_path_snapshot,
+      }
+    : null)
+  const artifacts = snapshotArtifacts.data ?? []
+  const jobs = snapshotJobs.data ?? []
+  const activeJobs = jobs.filter(isActiveJob)
+  const error = addTag.error ?? assignCategory.error ?? createAndAssignCategory.error
+
+  function submitTag() {
+    const trimmed = tagName.trim()
+    if (trimmed) addTag.mutate(trimmed)
+  }
+
+  function searchCategory() {
+    const trimmed = categoryQuery.trim()
+    if (trimmed) setCategorySearch(trimmed)
+  }
+
+  return (
+    <section className={styles.enrichmentPanel}>
+      <div className={styles.enrichmentColumn}>
+        <div className={styles.enrichmentHeader}>
+          <TagIcon size={14} />
+          <span>Теги</span>
+        </div>
+        <div className={styles.chipRow}>
+          {(acceptedTags.length ? acceptedTags.map(item => item.tag) : note.tags).map(tag => {
+            const { bg, text } = getTagColor(tag.name)
+            return (
+              <span key={tag.id} className={styles.tag} style={{ background: bg, color: text }}>
+                {tag.name}
+              </span>
+            )
+          })}
+          {acceptedTags.length === 0 && note.tags.length === 0 && <span className={styles.emptyText}>Нет тегов</span>}
+        </div>
+        {pendingTags.length > 0 && (
+          <div className={styles.suggestionList}>
+            {pendingTags.map(item => (
+              <div key={item.id} className={styles.suggestionItem}>
+                <span>{item.tag.name}</span>
+                {item.confidence !== null && <b>{Math.round(item.confidence * 100)}%</b>}
+                <button onClick={() => acceptSuggestion.mutate(item.id)} title="Принять"><Check size={13} /></button>
+                <button onClick={() => rejectSuggestion.mutate(item.id)} title="Отклонить"><X size={13} /></button>
+              </div>
+            ))}
+          </div>
+        )}
+        {tagJobItems.length > 0 && (
+          <div className={styles.jobList}>
+            {tagJobItems.slice(0, 3).map(job => (
+              <div key={job.id} className={styles.jobItem}>
+                <span>{job.job_type}</span>
+                <b>{enrichmentJobStatusLabel(job)}</b>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className={styles.inlineForm}>
+          <input
+            value={tagName}
+            onChange={e => setTagName(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') submitTag() }}
+            placeholder="Новый тег"
+          />
+          <button onClick={submitTag} disabled={addTag.isPending || !tagName.trim()} title="Добавить тег">
+            <Plus size={14} />
+          </button>
+        </div>
+      </div>
+
+      <div className={styles.enrichmentColumn}>
+        <div className={styles.enrichmentHeader}>
+          <FolderTree size={14} />
+          <span>Категория</span>
+        </div>
+        {category ? (
+          <div className={styles.categoryPill}>
+            <strong>{category.name}</strong>
+            <span>{category.path}</span>
+          </div>
+        ) : <span className={styles.emptyText}>Нет категории</span>}
+        {proposedAssignments.length > 0 && (
+          <div className={styles.suggestionList}>
+            {proposedAssignments.map(item => (
+              <div key={item.id} className={styles.suggestionItem}>
+                <span>{item.category_name_snapshot}</span>
+                {item.confidence !== null && <b>{Math.round(item.confidence * 100)}%</b>}
+                <button onClick={() => acceptCategory.mutate(item.id)} title="Принять"><Check size={13} /></button>
+                <button onClick={() => rejectCategory.mutate(item.id)} title="Отклонить"><X size={13} /></button>
+              </div>
+            ))}
+          </div>
+        )}
+        {taxonomyJobItems.length > 0 && (
+          <div className={styles.jobList}>
+            {taxonomyJobItems.slice(0, 3).map(job => (
+              <div key={job.id} className={styles.jobItem}>
+                <span>{job.job_type}</span>
+                <b>{job.result_status ?? enrichmentJobStatusLabel(job)}</b>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className={styles.inlineForm}>
+          <input
+            value={categoryQuery}
+            onChange={e => setCategoryQuery(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') searchCategory() }}
+            placeholder="Поиск категории"
+          />
+          <button onClick={searchCategory} disabled={!categoryQuery.trim()} title="Найти категорию">
+            <Search size={14} />
+          </button>
+        </div>
+        {categories.data && (
+          <div className={styles.categoryResults}>
+            {categories.data.map(item => (
+              <button key={item.id} onClick={() => assignCategory.mutate(item.id)}>
+                <span>{item.name}</span>
+                <small>{item.path}</small>
+              </button>
+            ))}
+            {categories.data.length === 0 && (
+              <button onClick={() => createAndAssignCategory.mutate(categorySearch)}>
+                <span>Создать категорию</span>
+                <small>{categorySearch}</small>
+              </button>
+            )}
+          </div>
+        )}
+        {!categories.data && categoryQuery.trim() && (
+          <button
+            className={styles.createCategoryBtn}
+            onClick={() => createAndAssignCategory.mutate(categoryQuery)}
+            disabled={createAndAssignCategory.isPending}
+          >
+            <Plus size={13} />
+            Создать и назначить
+          </button>
+        )}
+      </div>
+
+      <div className={styles.enrichmentColumn}>
+        <div className={styles.enrichmentHeader}>
+          <FileText size={14} />
+          <span>Снапшоты</span>
+          <button className={styles.iconTextBtn} onClick={refreshEnrichment}>
+            <RefreshCw size={13} />
+            Обновить
+          </button>
+        </div>
+        {artifacts.length > 0 ? (
+          <div className={styles.artifactList}>
+            {artifacts.map(artifact => (
+              <a key={artifact.id} href={artifact.url} target="_blank" rel="noopener noreferrer">
+                <span>{artifactLabel(artifact)}</span>
+                <small>{formatBytes(artifact.size_bytes)}</small>
+              </a>
+            ))}
+          </div>
+        ) : (
+          <span className={styles.emptyText}>
+            {activeJobs.length > 0 ? 'Обработка' : 'Нет артефактов'}
+          </span>
+        )}
+        {jobs.length > 0 && (
+          <div className={styles.jobList}>
+            {jobs.slice(0, 4).map(job => (
+              <div key={job.id} className={styles.jobItem}>
+                <span>{job.job_type}</span>
+                <b>{jobStatusLabel(job)}</b>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {error instanceof Error && <div className={styles.enrichmentError}>{error.message}</div>}
+    </section>
   )
 }
 
@@ -77,7 +553,12 @@ function TextObj({
       </div>
     )
   }
-  return <p className={styles.objText}>{obj.content}</p>
+  return (
+    <>
+      <p className={styles.objText}>{obj.content}</p>
+      <SnapshotLinks obj={obj} />
+    </>
+  )
 }
 
 // ─── Link ──────────────────────────────────────────────────────────────────────
@@ -112,6 +593,26 @@ function LinkObj({ obj, isEditing, onDelete }: { obj: NoteObject; isEditing: boo
           sandbox="allow-same-origin"
           title={domain}
         />
+      </div>
+      {isEditing && <button className={styles.objDeleteBtn} onClick={onDelete}><X size={12} /></button>}
+    </div>
+  )
+}
+
+function MediaObj({ obj, isEditing, onDelete }: { obj: NoteObject; isEditing: boolean; onDelete: () => void }) {
+  return (
+    <div className={styles.objWrapper}>
+      <div className={styles.mediaBox}>
+        {obj.type === 'audio' ? (
+          <audio controls src={obj.content} />
+        ) : (
+          <video controls src={obj.content} />
+        )}
+        <div className={styles.mediaMeta}>
+          <span>{obj.filename ?? (obj.type === 'audio' ? 'Аудио' : 'Видео')}</span>
+          {obj.sizeBytes !== undefined && <small>{formatBytes(obj.sizeBytes)}</small>}
+        </div>
+        <SnapshotLinks obj={obj} />
       </div>
       {isEditing && <button className={styles.objDeleteBtn} onClick={onDelete}><X size={12} /></button>}
     </div>
@@ -166,6 +667,7 @@ function DocViewer({ obj, isEditing, onDelete }: { obj: NoteObject; isEditing: b
         <span className={styles.docTabFilename}>{name}</span>
         <span className={styles.docTabExt}>{ext}</span>
       </div>
+      <SnapshotLinks obj={obj} />
 
       {/* View tab */}
       {tab === 'view' && (
@@ -289,8 +791,16 @@ function CollectionStream({
         if (obj.type === 'text') return (
           <div key={obj.id} className={styles.objWrapper}>
             <p className={styles.objText}>{obj.content}</p>
+            <SnapshotLinks obj={obj} />
             {hint}
             {removeBtn}
+          </div>
+        )
+
+        if (obj.type === 'audio' || obj.type === 'video') return (
+          <div key={obj.id} className={styles.objWrapper}>
+            <MediaObj obj={obj} isEditing={isEditing} onDelete={() => onRemove(obj.id, obj.slug)} />
+            {hint}
           </div>
         )
 
@@ -403,6 +913,8 @@ export default function NotePage() {
           </div>
         </div>
 
+        <EnrichmentPanel note={note} />
+
         {/* Collection → article stream */}
         {note.type === 'collection' && (
           <CollectionStream
@@ -442,6 +954,12 @@ export default function NotePage() {
                   key={obj.id} obj={obj} isEditing={isEditing}
                   editValue={editTexts[obj.id] ?? obj.content}
                   onChangeEdit={v => setEditTexts(p => ({ ...p, [obj.id]: v }))}
+                  onDelete={() => setDeletedObjs(p => new Set([...p, obj.id]))}
+                />
+              )
+              if (obj.type === 'audio' || obj.type === 'video') return (
+                <MediaObj
+                  key={obj.id} obj={obj} isEditing={isEditing}
                   onDelete={() => setDeletedObjs(p => new Set([...p, obj.id]))}
                 />
               )
