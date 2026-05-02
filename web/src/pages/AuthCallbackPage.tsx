@@ -1,66 +1,66 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
+import { AnimatePresence } from 'framer-motion'
 import { apiTelegramCode, apiTelegramResult } from '../api/auth'
 import { useAuth } from '../contexts/AuthContext'
+import LoaderScreen from '../components/LoaderScreen/LoaderScreen'
+
+const EXIT_DELAY_MS = 300
 
 export default function AuthCallbackPage() {
   const navigate = useNavigate()
   const { loginWithTokens } = useAuth()
   const [searchParams] = useSearchParams()
+  const [visible, setVisible] = useState(true)
+
+  async function handleExit(to: string) {
+    setVisible(false)
+    await new Promise(r => setTimeout(r, EXIT_DELAY_MS))
+    navigate(to, { replace: true })
+  }
 
   useEffect(() => {
     const error = searchParams.get('error')
     if (error) {
-      navigate(`/auth?error=${encodeURIComponent(error)}`, { replace: true })
+      handleExit(`/auth?error=${encodeURIComponent(error)}`)
       return
     }
 
-    // oauth.telegram.org sends tgAuthResult in URL fragment (#tgAuthResult=...)
     const hashParams = new URLSearchParams(window.location.hash.slice(1))
     const tgAuthResult = hashParams.get('tgAuthResult')
     if (tgAuthResult) {
       apiTelegramResult(tgAuthResult)
         .then(({ user, access_token }) => {
           loginWithTokens(user, access_token)
-          navigate('/notes', { replace: true })
+          handleExit('/notes')
         })
         .catch((err) => {
           console.error('[AuthCallbackPage] tgAuthResult exchange failed:', err)
-          navigate('/auth?error=telegram_code_failed', { replace: true })
+          handleExit('/auth?error=telegram_code_failed')
         })
       return
     }
 
-    // Dev login: code is in query param
     const code = searchParams.get('code')
     if (!code) {
-      navigate('/auth', { replace: true })
+      handleExit('/auth')
       return
     }
 
     apiTelegramCode(code)
       .then(({ user, access_token }) => {
         loginWithTokens(user, access_token)
-        navigate('/notes', { replace: true })
+        handleExit('/notes')
       })
       .catch((err) => {
         console.error('[AuthCallbackPage] telegram code exchange failed:', err)
-        navigate('/auth?error=telegram_code_failed', { replace: true })
+        handleExit('/auth?error=telegram_code_failed')
       })
-  }, [navigate, loginWithTokens, searchParams])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        height: '100vh',
-      }}
-    >
-      <p style={{ color: 'var(--color-text-secondary, #888)', fontFamily: 'inherit' }}>
-        Авторизация…
-      </p>
-    </div>
+    <AnimatePresence>
+      {visible && <LoaderScreen subtitle="авторизация…" />}
+    </AnimatePresence>
   )
 }
