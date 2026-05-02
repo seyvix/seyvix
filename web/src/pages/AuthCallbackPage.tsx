@@ -7,6 +7,18 @@ import LoaderScreen from '../components/LoaderScreen/LoaderScreen'
 
 const EXIT_DELAY_MS = 300
 
+function notifyOpener(user: unknown, accessToken: string) {
+  if (window.opener && !window.opener.closed) {
+    window.opener.postMessage(
+      { type: 'TELEGRAM_AUTH_SUCCESS', user, accessToken },
+      window.location.origin,
+    )
+    window.close()
+    return true
+  }
+  return false
+}
+
 export default function AuthCallbackPage() {
   const navigate = useNavigate()
   const { loginWithTokens } = useAuth()
@@ -14,6 +26,7 @@ export default function AuthCallbackPage() {
   const [visible, setVisible] = useState(true)
 
   const mountedRef = useRef(true)
+  const ranRef = useRef(false)
   useEffect(() => () => { mountedRef.current = false }, [])
 
   async function handleExit(to: string) {
@@ -23,6 +36,10 @@ export default function AuthCallbackPage() {
   }
 
   useEffect(() => {
+    // Strict Mode guard — prevent double-run consuming the one-time code twice
+    if (ranRef.current) return
+    ranRef.current = true
+
     const error = searchParams.get('error')
     if (error) {
       handleExit(`/auth?error=${encodeURIComponent(error)}`)
@@ -34,6 +51,7 @@ export default function AuthCallbackPage() {
     if (tgAuthResult) {
       apiTelegramResult(tgAuthResult)
         .then(({ user, access_token }) => {
+          if (notifyOpener(user, access_token)) return
           loginWithTokens(user, access_token)
           handleExit('/notes')
         })
@@ -52,6 +70,7 @@ export default function AuthCallbackPage() {
 
     apiTelegramCode(code)
       .then(({ user, access_token }) => {
+        if (notifyOpener(user, access_token)) return
         loginWithTokens(user, access_token)
         handleExit('/notes')
       })

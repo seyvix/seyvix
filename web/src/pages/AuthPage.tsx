@@ -1,8 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { motion, useMotionValue, useTransform, useSpring } from 'framer-motion'
 import CircularText from '../components/CircularText/CircularText'
 import styles from './AuthPage.module.css'
+import { useAuth } from '../contexts/AuthContext'
+import type { UserResponse } from '../api/auth'
 
 function TelegramLogo() {
   return (
@@ -65,6 +67,16 @@ const ERROR_MESSAGES: Record<string, string> = {
 export default function AuthPage() {
   const [loading, setLoading] = useState(false)
   const [searchParams] = useSearchParams()
+  const { loginWithTokens } = useAuth()
+  const listenerRef = useRef<((e: MessageEvent) => void) | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (listenerRef.current) {
+        window.removeEventListener('message', listenerRef.current)
+      }
+    }
+  }, [])
 
   const errorCode = searchParams.get('error')
   const errorMessage = errorCode
@@ -73,7 +85,25 @@ export default function AuthPage() {
 
   function handleClick() {
     setLoading(true)
-    window.location.href = '/api/v1/auth/telegram-login'
+
+    const popup = window.open('/api/v1/auth/telegram-login', '_blank', 'width=600,height=700')
+    if (!popup) {
+      // fallback if popup blocked
+      window.location.href = '/api/v1/auth/telegram-login'
+      return
+    }
+
+    function onMessage(e: MessageEvent) {
+      if (e.origin !== window.location.origin) return
+      if (e.data?.type !== 'TELEGRAM_AUTH_SUCCESS') return
+      window.removeEventListener('message', onMessage)
+      listenerRef.current = null
+      loginWithTokens(e.data.user as UserResponse, e.data.accessToken as string)
+      // RequireGuest will redirect to /notes automatically
+    }
+
+    listenerRef.current = onMessage
+    window.addEventListener('message', onMessage)
   }
 
   return (
