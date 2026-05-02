@@ -1,0 +1,89 @@
+services:
+  proxy:
+    environment:
+      WEB_UPSTREAM: web:5173
+      API_UPSTREAM: api:8000
+
+  web:
+    build:
+      target: development
+    ports:
+      - "${WEB_PORT:-5173}:5173"
+    volumes:
+      - ./web:/app
+      - web_node_modules:/app/node_modules
+    command: npm run dev -- --host 0.0.0.0
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5173 >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      target: development
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - ./api:/app
+    command: >
+      sh -c "uv sync --frozen &&
+             alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+  outbox-publisher:
+    build:
+      target: development
+    volumes:
+      - ./api:/app
+    command: >
+      sh -c "uv sync --frozen &&
+             python -m app.workers.main outbox-publisher"
+
+  snapshot-worker:
+    build:
+      target: development
+    volumes:
+      - ./api:/app
+    command: >
+      sh -c "uv sync --frozen &&
+             python -m app.workers.main snapshot-worker"
+
+  vectorization-worker:
+    build:
+      target: development
+    volumes:
+      - ./api:/app
+    command: >
+      sh -c "uv sync --frozen &&
+             python -m app.workers.main vectorization-worker"
+
+  tags-worker:
+    build:
+      target: development
+    volumes:
+      - ./api:/app
+    command: >
+      sh -c "uv sync --frozen &&
+             python -m app.workers.main tags-worker"
+
+  postgres:
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+
+  redis:
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+
+  rabbitmq:
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+
+  minio:
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+
+volumes:
+  web_node_modules:

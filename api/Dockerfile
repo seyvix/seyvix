@@ -1,4 +1,4 @@
-FROM python:3.13-slim
+FROM python:3.13-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -20,11 +20,26 @@ RUN apt-get update \
         libreoffice \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml uv.lock ./
+FROM base AS production-deps
+
+COPY api/pyproject.toml api/uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
-COPY . .
+FROM production-deps AS production
+
+COPY api/ ./
 
 EXPOSE 8000
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+FROM base AS development
+
+COPY api/pyproject.toml api/uv.lock ./
+RUN uv sync --frozen --no-install-project
+
+COPY api/ ./
+
+EXPOSE 8000
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
