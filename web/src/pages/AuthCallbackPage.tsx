@@ -8,13 +8,17 @@ import LoaderScreen from '../components/LoaderScreen/LoaderScreen'
 const EXIT_DELAY_MS = 300
 
 function notifyOpener(user: unknown, accessToken: string) {
-  if (window.opener && !window.opener.closed) {
-    window.opener.postMessage(
-      { type: 'TELEGRAM_AUTH_SUCCESS', user, accessToken },
-      window.location.origin,
-    )
-    window.close()
-    return true
+  try {
+    if (window.opener && !window.opener.closed) {
+      window.opener.postMessage(
+        { type: 'TELEGRAM_AUTH_SUCCESS', user, accessToken },
+        window.location.origin,
+      )
+      setTimeout(() => window.close(), EXIT_DELAY_MS + 50)
+      return true
+    }
+  } catch {
+    // opener from different origin — can't postMessage
   }
   return false
 }
@@ -24,19 +28,15 @@ export default function AuthCallbackPage() {
   const { loginWithTokens } = useAuth()
   const [searchParams] = useSearchParams()
   const [visible, setVisible] = useState(true)
-
-  const mountedRef = useRef(true)
   const ranRef = useRef(false)
-  useEffect(() => () => { mountedRef.current = false }, [])
 
   async function handleExit(to: string) {
     setVisible(false)
     await new Promise(r => setTimeout(r, EXIT_DELAY_MS))
-    if (mountedRef.current) navigate(to, { replace: true })
+    navigate(to, { replace: true })
   }
 
   useEffect(() => {
-    // Strict Mode guard — prevent double-run consuming the one-time code twice
     if (ranRef.current) return
     ranRef.current = true
 
