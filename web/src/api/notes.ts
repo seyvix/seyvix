@@ -21,6 +21,8 @@ interface BackendAsset {
   markdown_url?: string | null
   pdf_url?: string | null
   html_url?: string | null
+  image_width?: number | null
+  image_height?: number | null
 }
 
 interface BackendNote {
@@ -77,6 +79,8 @@ function mapAsset(asset: BackendAsset, downloadUrl: string, createdAt: string): 
     content,
     thumbnailUrl: asset.thumbnail_url ?? null,
     thumbnailText: asset.thumbnail_text ?? null,
+    imageWidth: asset.image_width ?? null,
+    imageHeight: asset.image_height ?? null,
     snapshotViews: snapshotViewsForAsset(asset),
     filename: asset.filename,
     mimeType: asset.mime_type,

@@ -58,6 +58,8 @@ class NoteAssetResponse(BaseModel):
     markdown_url: str | None = None
     pdf_url: str | None = None
     html_url: str | None = None
+    image_width: int | None = None
+    image_height: int | None = None
 
 
 class NoteCardResponse(BaseModel):

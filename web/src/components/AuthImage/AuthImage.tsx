@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { apiFetch } from '../../lib/apiClient'
+import styles from './AuthImage.module.css'
 
 interface AuthImageProps extends React.ImgHTMLAttributes<HTMLImageElement> {
   src: string
@@ -7,7 +8,7 @@ interface AuthImageProps extends React.ImgHTMLAttributes<HTMLImageElement> {
 
 const cache = new Map<string, string>()
 
-export default function AuthImage({ src, style, ...rest }: AuthImageProps) {
+export default function AuthImage({ src, className, style, ...rest }: AuthImageProps) {
   const [blobUrl, setBlobUrl] = useState<string | null>(() => cache.get(src) ?? null)
 
   useEffect(() => {
@@ -17,7 +18,6 @@ export default function AuthImage({ src, style, ...rest }: AuthImageProps) {
       return
     }
 
-    // Keep old blobUrl visible while loading the new src — avoids flicker on src change
     let cancelled = false
     apiFetch(src)
       .then(res => {
@@ -31,21 +31,16 @@ export default function AuthImage({ src, style, ...rest }: AuthImageProps) {
         setBlobUrl(url)
       })
       .catch(() => {
-        if (!cancelled) setBlobUrl(src) // fallback: try without auth
+        if (!cancelled) setBlobUrl(src)
       })
 
-    return () => {
-      cancelled = true
-    }
+    return () => { cancelled = true }
   }, [src])
 
-  // Always render the element to avoid layout shifts; hide until ready
+  if (!blobUrl) {
+    return <div className={`${styles.placeholder} ${className ?? ''}`} style={style} />
+  }
+
   // eslint-disable-next-line jsx-a11y/alt-text
-  return (
-    <img
-      {...rest}
-      src={blobUrl ?? ''}
-      style={blobUrl ? style : { ...style, visibility: 'hidden' }}
-    />
-  )
+  return <img {...rest} src={blobUrl} className={className} style={style} />
 }

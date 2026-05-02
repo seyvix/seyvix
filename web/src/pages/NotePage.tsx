@@ -1,16 +1,18 @@
 import { useState, useEffect } from 'react'
+import PDFViewer from '../components/PDFViewer/PDFViewer'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft,
   ExternalLink,
   FileText,
+  FileDown,
+  Globe,
   Download,
   X,
   ChevronRight,
   Check,
   FolderTree,
-  Maximize2,
   Plus,
   RefreshCw,
   Search,
@@ -47,7 +49,6 @@ import {
   type TaxonomyClassificationJob,
 } from '../api/enrichment'
 import type { Note, NoteObject, Tag } from '../types'
-import type { SnapshotView } from '../types'
 import styles from './NotePage.module.css'
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
@@ -61,6 +62,34 @@ function getExt(filename?: string): string {
 function getBaseName(filename?: string): string {
   if (!filename) return 'Документ'
   return filename.replace(/\.[^.]+$/, '')
+}
+
+async function authDownload(url: string, filename?: string) {
+  try {
+    const res = await apiFetch(url)
+    if (!res.ok) return
+    const blob = await res.blob()
+    const objectUrl = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = objectUrl
+    a.download = filename ?? url.split('/').pop() ?? 'download'
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(objectUrl)
+  } catch { /* ignore */ }
+}
+
+// ─── Doc blob cache (preload before DocViewer mounts) ──────────────────────────
+
+const docBlobCache = new Map<string, string>()
+
+function prefetchDocBlob(url: string) {
+  if (docBlobCache.has(url)) return
+  apiFetch(url)
+    .then(r => r.blob())
+    .then(blob => { docBlobCache.set(url, URL.createObjectURL(blob)) })
+    .catch(() => {})
 }
 
 // ─── Tags ──────────────────────────────────────────────────────────────────────
@@ -113,94 +142,29 @@ function isActiveJob(job: { status: string }) {
   return job.status !== 'completed' && job.status !== 'done' && job.status !== 'failed'
 }
 
-function SnapshotViewerModal({
-  view,
-  onClose,
-}: {
-  view: SnapshotView
-  onClose: () => void
-}) {
-  const [blobUrl, setBlobUrl] = useState<string | null>(null)
-  const [text, setText] = useState<string | null>(null)
-  const [isFullscreen, setIsFullscreen] = useState(false)
 
-  useEffect(() => {
-    let objectUrl: string | null = null
-    let cancelled = false
-    setBlobUrl(null)
-    setText(null)
-    async function loadView() {
-      try {
-        const res = await apiFetch(view.url)
-        if (!res.ok) throw new Error('fetch failed')
-        if (view.kind === 'markdown') {
-          const data = await res.text()
-          if (cancelled) return
-          setText(data)
-          return
-        }
-        const data = await res.blob()
-        if (cancelled) return
-        objectUrl = URL.createObjectURL(data)
-        setBlobUrl(objectUrl)
-      } catch {
-        if (!cancelled) setBlobUrl(view.url)
-      }
-    }
-    void loadView()
-    return () => {
-      cancelled = true
-      if (objectUrl) URL.revokeObjectURL(objectUrl)
-    }
-  }, [view])
-
-  return (
-    <div className={`${styles.snapshotModal}${isFullscreen ? ` ${styles.snapshotModalFullscreen}` : ''}`}>
-      <div className={styles.snapshotModalHeader}>
-        <span>{view.label}</span>
-        <a href={view.url} download>
-          <Download size={14} /> Скачать
-        </a>
-        <button onClick={() => setIsFullscreen(value => !value)} title="Полный экран">
-          <Maximize2 size={14} />
-        </button>
-        <button onClick={onClose} title="Закрыть">
-          <X size={14} />
-        </button>
-      </div>
-      <div className={styles.snapshotModalBody}>
-        {view.kind === 'markdown' ? (
-          <pre className={styles.markdownPreview}>{text ?? 'Загрузка...'}</pre>
-        ) : view.kind === 'thumbnail' ? (
-          blobUrl ? <AuthImage src={view.url} alt="" className={styles.snapshotImagePreview} /> : <span className={styles.emptyText}>Загрузка...</span>
-        ) : (
-          blobUrl ? <iframe src={blobUrl} title={view.label} className={styles.snapshotFrame} /> : <span className={styles.emptyText}>Загрузка...</span>
-        )}
-      </div>
-    </div>
-  )
+const SNAPSHOT_ICON: Record<string, React.ReactNode> = {
+  markdown: <FileText size={12} />,
+  pdf:      <FileDown  size={12} />,
+  html:     <Globe     size={12} />,
 }
 
 function SnapshotLinks({ obj }: { obj: NoteObject }) {
-  const [activeView, setActiveView] = useState<SnapshotView | null>(null)
-  const views = obj.snapshotViews ?? []
+  const views = (obj.snapshotViews ?? []).filter(v => v.kind !== 'thumbnail')
   if (views.length === 0) return null
   return (
-    <>
-      <div className={styles.snapshotLinks}>
-        {views.map(view => (
-          <button key={`${obj.id}-${view.kind}`} onClick={() => setActiveView(view)}>
-            {view.label}
-          </button>
-        ))}
-      </div>
-      {activeView && (
-        <SnapshotViewerModal
-          view={activeView}
-          onClose={() => setActiveView(null)}
-        />
-      )}
-    </>
+    <div className={styles.snapshotLinks}>
+      {views.map(view => (
+        <button
+          key={`${obj.id}-${view.kind}`}
+          className={styles.snapshotDownloadLink}
+          onClick={() => authDownload(view.url, `${view.kind}.${view.kind === 'html' ? 'html' : view.kind}`)}
+        >
+          {SNAPSHOT_ICON[view.kind] ?? <Download size={12} />}
+          {view.label}
+        </button>
+      ))}
+    </div>
   )
 }
 
@@ -486,30 +450,32 @@ function EnrichmentPanel({ note }: { note: Note }) {
             Обновить
           </button>
         </div>
-        {artifacts.length > 0 ? (
+        {artifacts.filter(a => a.artifact_type !== 'thumbnail').length > 0 ? (
           <div className={styles.artifactList}>
-            {artifacts.map(artifact => (
-              <a key={artifact.id} href={artifact.url} target="_blank" rel="noopener noreferrer">
-                <span>{artifactLabel(artifact)}</span>
-                <small>{formatBytes(artifact.size_bytes)}</small>
-              </a>
-            ))}
+            {artifacts
+              .filter(a => a.artifact_type !== 'thumbnail')
+              .map(artifact => (
+                <button
+                  key={artifact.id}
+                  className={styles.artifactItem}
+                  onClick={() => authDownload(artifact.url, artifact.filename)}
+                >
+                  {artifact.artifact_type === 'webpage_html' ? <Globe size={14} />
+                    : artifact.artifact_type === 'pdf'       ? <FileDown size={14} />
+                    : <FileText size={14} />
+                  }
+                  <span>{artifactLabel(artifact)}</span>
+                  <small>{formatBytes(artifact.size_bytes)}</small>
+                </button>
+              ))
+            }
           </div>
         ) : (
           <span className={styles.emptyText}>
             {activeJobs.length > 0 ? 'Обработка' : 'Нет артефактов'}
           </span>
         )}
-        {jobs.length > 0 && (
-          <div className={styles.jobList}>
-            {jobs.slice(0, 4).map(job => (
-              <div key={job.id} className={styles.jobItem}>
-                <span>{job.job_type}</span>
-                <b>{jobStatusLabel(job)}</b>
-              </div>
-            ))}
-          </div>
-        )}
+        
       </div>
 
       {error instanceof Error && <div className={styles.enrichmentError}>{error.message}</div>}
@@ -622,108 +588,42 @@ function MediaObj({ obj, isEditing, onDelete }: { obj: NoteObject; isEditing: bo
 // ─── Document viewer ───────────────────────────────────────────────────────────
 
 function DocViewer({ obj, isEditing, onDelete }: { obj: NoteObject; isEditing: boolean; onDelete: () => void }) {
-  const [blobUrl, setBlobUrl] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [tab,     setTab]     = useState<'view' | 'info'>('view')
+  const pdfUrl = obj.snapshotViews?.find(v => v.kind === 'pdf')?.url ?? null
+
+  const [blobUrl, setBlobUrl] = useState<string | null>(() => pdfUrl ? (docBlobCache.get(pdfUrl) ?? null) : null)
+  const [loading, setLoading] = useState(() => pdfUrl ? !docBlobCache.has(pdfUrl) : false)
 
   useEffect(() => {
+    if (!pdfUrl) return
+    if (docBlobCache.has(pdfUrl)) {
+      setBlobUrl(docBlobCache.get(pdfUrl)!)
+      setLoading(false)
+      return
+    }
     let objectUrl: string | null = null
+    let cancelled = false
     setLoading(true)
     setBlobUrl(null)
-    apiFetch(obj.content)
+    apiFetch(pdfUrl)
       .then(r => r.blob())
       .then(blob => {
+        if (cancelled) return
         objectUrl = URL.createObjectURL(blob)
+        docBlobCache.set(pdfUrl, objectUrl)
         setBlobUrl(objectUrl)
         setLoading(false)
       })
-      .catch(() => setLoading(false))
-    return () => { if (objectUrl) URL.revokeObjectURL(objectUrl) }
-  }, [obj.content])
-
-  const isPDF  = obj.filename?.toLowerCase().endsWith('.pdf') ?? false
-  const ext    = getExt(obj.filename)
-  const name   = getBaseName(obj.filename)
-  const thumb  = obj.thumbnailUrl ?? obj.cover
+      .catch(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [pdfUrl])
 
   return (
     <div className={`${styles.objWrapper} ${styles.docViewer}`}>
-
-      {/* Tab bar */}
-      <div className={styles.docTabs}>
-        <button
-          className={`${styles.docTab}${tab === 'view' ? ` ${styles.docTabActive}` : ''}`}
-          onClick={() => setTab('view')}
-        >
-          Просмотр
-        </button>
-        <button
-          className={`${styles.docTab}${tab === 'info' ? ` ${styles.docTabActive}` : ''}`}
-          onClick={() => setTab('info')}
-        >
-          Информация
-        </button>
-        <div className={styles.docTabSpacer} />
-        <span className={styles.docTabFilename}>{name}</span>
-        <span className={styles.docTabExt}>{ext}</span>
-      </div>
-      <SnapshotLinks obj={obj} />
-
-      {/* View tab */}
-      {tab === 'view' && (
-        <div className={styles.docViewPane}>
-          {loading ? (
-            <div className={styles.docViewLoading}>
-              <div className={styles.docViewShimmer} />
-            </div>
-          ) : blobUrl && isPDF ? (
-            <iframe src={blobUrl} className={styles.docIframe} title={obj.filename} />
-          ) : (
-            <div className={styles.docViewFallback}>
-              {thumb
-                ? <AuthImage src={thumb} alt="" className={styles.docThumb} />
-                : <div className={styles.docFallbackIcon}><FileText size={40} /></div>
-              }
-              <p className={styles.docFallbackMsg}>
-                Предпросмотр недоступен для .{ext.toLowerCase()}
-              </p>
-              {blobUrl && (
-                <a href={blobUrl} download={obj.filename} className={styles.docDownloadBtn}>
-                  <Download size={14} /> Скачать файл
-                </a>
-              )}
-            </div>
-          )}
-        </div>
+      {loading || !blobUrl ? (
+        <div className={styles.docLoader}><div className={styles.docLoaderSpinner} /></div>
+      ) : (
+        <PDFViewer src={blobUrl} />
       )}
-
-      {/* Info tab */}
-      {tab === 'info' && (
-        <div className={styles.docInfoPane}>
-          <div className={styles.docInfoPreview}>
-            {thumb
-              ? <AuthImage src={thumb} alt="" className={styles.docInfoThumb} />
-              : <div className={styles.docInfoIconWrap}><FileText size={32} /></div>
-            }
-          </div>
-          <div className={styles.docInfoRows}>
-            <div className={styles.docInfoRow}>
-              <span className={styles.docInfoLabel}>Имя файла</span>
-              <span className={styles.docInfoValue}>{obj.filename ?? '—'}</span>
-            </div>
-            <div className={styles.docInfoRow}>
-              <span className={styles.docInfoLabel}>Формат</span>
-              <span className={`${styles.docInfoValue} ${styles.docInfoExt}`}>{ext}</span>
-            </div>
-          </div>
-          {blobUrl && (
-            <a href={blobUrl} download={obj.filename} className={styles.docDownloadBtn}>
-              <Download size={14} /> Скачать файл
-            </a>
-          )}
-        </div>
-      )}
-
       {isEditing && <button className={styles.objDeleteBtn} onClick={onDelete}><X size={12} /></button>}
     </div>
   )
@@ -818,6 +718,14 @@ export default function NotePage() {
   const { data: note, isLoading } = useNote(noteSlug!)
   const { mutate: updateNote } = useUpdateNote()
   const { mutate: removeItems } = useRemoveCollectionItems()
+
+  // Prefetch doc blobs so preview is ready when DocViewer mounts
+  useEffect(() => {
+    note?.objects.filter(o => o.type === 'document').forEach(o => {
+      const pdfUrl = o.snapshotViews?.find(v => v.kind === 'pdf')?.url
+      if (pdfUrl) prefetchDocBlob(pdfUrl)
+    })
+  }, [note])
 
   const [isEditing,      setIsEditing]      = useState(false)
   const [editTitle,      setEditTitle]      = useState('')

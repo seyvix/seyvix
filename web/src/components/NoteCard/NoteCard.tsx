@@ -53,9 +53,18 @@ function SimpleCard({ note, onTagClick }: { note: Note; onTagClick?: (name: stri
 
   // Только картинка — без заголовка, изображение в край
   if (imageObj && !textObj) {
+    const imageStyle = imageObj.imageWidth && imageObj.imageHeight
+      ? { aspectRatio: `${imageObj.imageWidth} / ${imageObj.imageHeight}` }
+      : undefined
+
     return (
       <Link draggable={false} to={`/notes/${note.slug}`} className={`${styles.card} ${styles.cardSimpleImage}`}>
-        <AuthImage src={getObjectPreviewSource(imageObj)} alt={note.title} />
+        <AuthImage
+          className={styles.simpleImageMedia}
+          src={getObjectPreviewSource(imageObj)}
+          alt={note.title}
+          style={imageStyle}
+        />
       </Link>
     )
   }
@@ -110,10 +119,11 @@ function LayerContent({ obj, fallback }: { obj: NoteObject | undefined; fallback
   }
   if (obj.type === 'document') {
     const thumb = obj.thumbnailUrl ?? obj.cover
-    if (thumb) return <AuthImage src={thumb} alt="" className={styles.collectionLayerImg} />
+    const thumbStyle = obj.imageWidth && obj.imageHeight ? { aspectRatio: `${obj.imageWidth}/${obj.imageHeight}` } : undefined
+    if (thumb) return <AuthImage src={thumb} alt="" className={styles.collectionLayerImg} style={thumbStyle} />
     // thumbnailUrl === null means backend is generating it → shimmer
     if (obj.thumbnailUrl === null) {
-      return <div className={styles.thumbPending} />
+      return <div className={styles.thumbPending} style={thumbStyle} />
     }
     return (
       <div className={`${styles.collectionLayerBg} ${styles.collectionLayerDoc}`} style={{ background: fallback }}>
@@ -255,17 +265,16 @@ function LinkChip({ obj }: { obj: NoteObject }) {
 }
 
 function DocChip({ obj }: { obj: NoteObject }) {
-  const label       = obj.filename ?? obj.content
-  const ext         = label.includes('.') ? label.split('.').pop()!.toUpperCase().slice(0, 4) : 'FILE'
-  const name        = label.replace(/\.[^.]+$/, '')
-  const thumb       = obj.thumbnailUrl ?? obj.cover
-  const isPending   = obj.thumbnailUrl === null  // backend is generating
+  const label = obj.filename ?? obj.content
+  const ext   = label.includes('.') ? label.split('.').pop()!.toUpperCase().slice(0, 4) : 'FILE'
+  const name  = label.replace(/\.[^.]+$/, '')
+  const thumb = obj.thumbnailUrl ?? obj.cover
 
   return (
     <div className={styles.docChip}>
       {thumb
         ? <AuthImage src={thumb} alt="" className={styles.docChipCover} />
-        : <div className={`${styles.docChipIconWrap}${isPending ? ` ${styles.thumbPendingIcon}` : ''}`}>
+        : <div className={styles.docChipIconWrap}>
             <FileText size={13} />
           </div>
       }

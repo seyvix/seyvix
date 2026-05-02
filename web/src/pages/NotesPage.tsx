@@ -24,12 +24,13 @@ export default function NotesPage() {
   })
   const { localNotes } = useLocalNotes()
 
-  // Local notes always first (stable positions). Server notes fill in the rest.
-  // Dedup by id: once a local note's id matches a server note, skip the server copy.
-  const localIds = useMemo(() => new Set(localNotes.map(n => n.id)), [localNotes])
+  // Only truly pending (local/loading) notes occupy a slot and block the server copy.
+  // Once a note is confirmed (isLocal=false, isLoading=false) the server version takes over.
+  const pendingNotes  = useMemo(() => localNotes.filter(n => n.isLocal || n.isLoading), [localNotes])
+  const pendingIds    = useMemo(() => new Set(pendingNotes.map(n => n.id)), [pendingNotes])
   const notes = useMemo(
-    () => [...localNotes, ...serverNotes.filter(n => !localIds.has(n.id))],
-    [localNotes, serverNotes, localIds],
+    () => [...pendingNotes, ...serverNotes.filter(n => !pendingIds.has(n.id))],
+    [pendingNotes, serverNotes, pendingIds],
   )
 
   useThumbnailPoller(notes)

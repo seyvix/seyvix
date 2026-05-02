@@ -33,6 +33,8 @@ class GeneratedArtifact:
     filename: str
     mime_type: str
     path: Path
+    width: int | None = None
+    height: int | None = None
 
     @property
     def size_bytes(self) -> int:
@@ -271,7 +273,7 @@ class SnapshotArtifactGenerator:
             pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
             path = output_dir / filename
             pix.save(str(path))
-            return GeneratedArtifact(filename=filename, mime_type="image/jpeg", path=path)
+            return GeneratedArtifact(filename=filename, mime_type="image/jpeg", path=path, width=pix.width, height=pix.height)
         finally:
             doc.close()
 
@@ -302,7 +304,7 @@ class SnapshotArtifactGenerator:
             pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
             path = output_dir / filename
             pix.save(str(path))
-            return GeneratedArtifact(filename=filename, mime_type="image/jpeg", path=path)
+            return GeneratedArtifact(filename=filename, mime_type="image/jpeg", path=path, width=pix.width, height=pix.height)
         finally:
             doc.close()
 
