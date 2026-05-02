@@ -83,7 +83,10 @@ class HttpStructuredLLMGenerator:
             "messages": [
                 {
                     "role": "system",
-                    "content": ("Return only valid JSON. The JSON must match the supplied schema."),
+                    "content": (
+                        "Return only valid JSON. The JSON must match the supplied schema. "
+                        "Do not include hidden reasoning, prose, markdown, or code fences. /no_think"
+                    ),
                 },
                 {
                     "role": "user",
@@ -96,7 +99,10 @@ class HttpStructuredLLMGenerator:
             ],
             "temperature": float(model_config.get("temperature", 0)),
             "response_format": {"type": "json_object"},
+            "stream": False,
         }
+        if model_config.get("max_tokens") is not None:
+            payload["max_tokens"] = int(model_config["max_tokens"])
         try:
             async with httpx.AsyncClient(
                 timeout=self.timeout_seconds,
@@ -123,11 +129,58 @@ class OllamaStructuredLLMGenerator(HttpStructuredLLMGenerator):
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         super().__init__(
-            base_url=base_url or "http://127.0.0.1:11434/v1",
+            base_url=(base_url or "http://127.0.0.1:11434").removesuffix("/v1"),
             api_key=None,
             timeout_seconds=timeout_seconds,
             transport=transport,
         )
+
+    async def generate_structured(
+        self,
+        *,
+        prompt: str,
+        schema: dict[str, Any],
+        model_config: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": str(model_config["model"]),
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Return only valid JSON. The JSON must match the supplied schema. "
+                        "Do not include hidden reasoning, prose, markdown, or code fences."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"{prompt}\n\n"
+                        "JSON schema:\n"
+                        f"{json.dumps(schema, ensure_ascii=False, sort_keys=True)}"
+                    ),
+                },
+            ],
+            "format": "json",
+            "stream": False,
+            "think": False,
+            "options": {"temperature": float(model_config.get("temperature", 0))},
+        }
+        if model_config.get("max_tokens") is not None:
+            payload["options"]["num_predict"] = int(model_config["max_tokens"])
+        try:
+            async with httpx.AsyncClient(
+                timeout=self.timeout_seconds,
+                transport=self.transport,
+            ) as client:
+                response = await client.post(f"{self.base_url}/api/chat", json=payload)
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise LLMGenerationError("Structured LLM generation request failed.") from exc
+        message = response.json().get("message")
+        if not isinstance(message, dict) or not isinstance(message.get("content"), str):
+            raise LLMGenerationError("Structured LLM response message content is invalid.")
+        return _parse_json_object(message["content"])
 
 
 def build_structured_llm_generator(

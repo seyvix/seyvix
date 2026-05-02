@@ -12,34 +12,31 @@ from app.modules.llm.contracts import (
 
 
 @pytest.mark.asyncio
-async def test_ollama_structured_generator_uses_openai_compatible_chat_endpoint() -> None:
+async def test_ollama_structured_generator_uses_native_json_chat_endpoint() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/v1/chat/completions"
+        assert request.url.path == "/api/chat"
         assert "authorization" not in request.headers
         payload = json.loads(request.content)
         assert payload["model"] == "qwen3:4b-thinking"
-        assert payload["temperature"] == 0
-        assert payload["response_format"] == {"type": "json_object"}
+        assert payload["format"] == "json"
+        assert payload["think"] is False
+        assert payload["options"]["temperature"] == 0
         assert "selected_category_id" in payload["messages"][1]["content"]
         return httpx.Response(
             200,
             json={
-                "choices": [
-                    {
-                        "message": {
-                            "content": json.dumps(
-                                {
-                                    "selected_category_id": "category-id",
-                                    "confidence": 0.86,
-                                    "should_assign": True,
-                                    "status": "accepted",
-                                    "reasoning": "Best semantic candidate.",
-                                    "alternatives": [],
-                                }
-                            )
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "selected_category_id": "category-id",
+                            "confidence": 0.86,
+                            "should_assign": True,
+                            "status": "accepted",
+                            "reasoning": "Best semantic candidate.",
+                            "alternatives": [],
                         }
-                    }
-                ]
+                    )
+                }
             },
         )
 

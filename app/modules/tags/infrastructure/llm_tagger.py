@@ -56,7 +56,11 @@ class LLMContentTagger:
             raw = await self.llm_generator.generate_structured(
                 prompt=prompt,
                 schema=self._schema(max_tags=max_tags),
-                model_config={"model": self.settings.tags_llm_model, "temperature": 0},
+                model_config={
+                    "model": self.settings.tags_llm_model,
+                    "temperature": 0,
+                    "max_tokens": 512,
+                },
             )
             parsed = _RawTaggingResponse.model_validate(raw)
         except (LLMGenerationError, ValidationError) as exc:
