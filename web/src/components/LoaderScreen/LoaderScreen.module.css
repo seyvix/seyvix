@@ -41,10 +41,9 @@
 }
 
 .subtitle {
-  margin-top: 40px;
+  margin: 40px 0 0;
   font-size: var(--font-size-xs);
   color: var(--color-text-secondary);
   letter-spacing: 0.06em;
   text-transform: lowercase;
-  margin: 40px 0 0;
 }
