@@ -5,7 +5,7 @@
  * - При провале refresh вызывает onUnauthenticated()
  */
 
-import { apiRefresh } from '../api/auth'
+import { apiRefresh } from '../api/auth.ts'
 
 type GetToken = () => string | null
 type SetToken = (token: string) => void

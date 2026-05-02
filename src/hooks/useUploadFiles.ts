@@ -40,6 +40,7 @@ export function useUploadFiles() {
         title: text?.split('\n')[0].slice(0, 60) || files[0]?.name || '',
         cover: fileObjects.find(o => o.type === 'image')?.content ?? null,
         tags: [],
+        taxonomyCategory: null,
         folderId: null,
         objects,
         createdAt: now,
@@ -73,6 +74,7 @@ export function useUploadFiles() {
     },
 
     onError: (_err, _vars, ctx) => {
+      if (!ctx) return
       updateLocalNote(ctx.stableKey, { isLoading: false, isLocal: true })
     },
   })

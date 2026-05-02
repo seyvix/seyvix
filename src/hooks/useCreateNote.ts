@@ -24,6 +24,7 @@ export function useCreateNote() {
         title: data.title ?? '',
         cover: null,
         tags: data.tags ?? [],
+        taxonomyCategory: data.taxonomyCategory ?? null,
         folderId: null,
         objects: data.objects ?? [],
         createdAt: new Date().toISOString(),
@@ -52,6 +53,7 @@ export function useCreateNote() {
     },
 
     onError: (_err, _vars, ctx) => {
+      if (!ctx) return
       updateLocalNote(ctx.stableKey, { isLoading: false, isLocal: true })
     },
   })

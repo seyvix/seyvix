@@ -1,13 +1,27 @@
-import { apiFetch } from '../lib/apiClient'
-import type { Note, NoteObject, NoteObjectType, NoteType, NotesParams, UploadJob } from '../types'
+import { apiFetch } from '../lib/apiClient.ts'
+import type { Note, NoteObject, NoteObjectType, NoteType, NotesParams, SnapshotView, TaxonomyCategory, UploadJob } from '../types'
 
 const BASE = '/api/v1/notes'
+export const MERGE_NOTES_ENABLED = false
 
 // ── Backend schema (subset we care about) ─────────────────────────────────────
 
 interface BackendTag   { id: string; name: string; slug: string }
-interface BackendAsset { id: string; role: string; media_type: string; filename: string; mime_type: string | null; size_bytes: number; url: string | null; text_content: string | null; thumbnail_url: string | null }
-interface BackendFolder { id: string; name: string; slug: string; path: string }
+interface BackendAsset {
+  id: string
+  role: string
+  media_type: string
+  filename: string
+  mime_type: string | null
+  size_bytes: number
+  url: string | null
+  text_content: string | null
+  thumbnail_url: string | null
+  thumbnail_text?: string | null
+  markdown_url?: string | null
+  pdf_url?: string | null
+  html_url?: string | null
+}
 
 interface BackendNote {
   id: string
@@ -16,7 +30,7 @@ interface BackendNote {
   media_type: string | null
   title: string
   source_filename: string | null
-  folder: BackendFolder | null
+  taxonomy_category: TaxonomyCategory | null
   tags: BackendTag[]
   is_favorite: boolean
   sort_order: number
@@ -36,8 +50,24 @@ function kindToType(kind: string): NoteType {
   return 'simple'
 }
 
+function mediaTypeToObjectType(mediaType: string | null | undefined): NoteObjectType {
+  if (mediaType === 'text' || mediaType === 'image' || mediaType === 'link' || mediaType === 'audio' || mediaType === 'video') {
+    return mediaType
+  }
+  return 'document'
+}
+
+function snapshotViewsForAsset(asset: BackendAsset): SnapshotView[] {
+  const views: SnapshotView[] = []
+  if (asset.thumbnail_url) views.push({ kind: 'thumbnail', label: 'Миниатюра', url: asset.thumbnail_url })
+  if (asset.markdown_url) views.push({ kind: 'markdown', label: 'Markdown', url: asset.markdown_url })
+  if (asset.pdf_url) views.push({ kind: 'pdf', label: 'PDF', url: asset.pdf_url })
+  if (asset.html_url) views.push({ kind: 'html', label: 'HTML', url: asset.html_url })
+  return views
+}
+
 function mapAsset(asset: BackendAsset, downloadUrl: string, createdAt: string): NoteObject {
-  const type = (asset.media_type as NoteObjectType) ?? 'document'
+  const type = mediaTypeToObjectType(asset.media_type)
   const content = type === 'text'
     ? (asset.text_content ?? asset.url ?? downloadUrl)
     : (asset.url ?? downloadUrl)
@@ -46,31 +76,39 @@ function mapAsset(asset: BackendAsset, downloadUrl: string, createdAt: string): 
     type,
     content,
     thumbnailUrl: asset.thumbnail_url ?? null,
+    thumbnailText: asset.thumbnail_text ?? null,
+    snapshotViews: snapshotViewsForAsset(asset),
     filename: asset.filename,
+    mimeType: asset.mime_type,
+    sizeBytes: asset.size_bytes,
     createdAt,
   }
 }
 
-function mapNote(b: BackendNote): Note {
+export function mapBackendNote(b: BackendNote): Note {
   let objects: NoteObject[] = []
 
   if (b.kind === 'collection') {
     objects = b.items.map(item => {
       const firstAsset = item.assets?.[0]
       const type = firstAsset
-        ? (firstAsset.media_type as NoteObjectType)
-        : (item.media_type ?? 'document') as NoteObjectType
+        ? mediaTypeToObjectType(firstAsset.media_type)
+        : mediaTypeToObjectType(item.media_type)
       const content = firstAsset?.url ?? item.download_url
       const thumbnailUrl = type === 'document' ? (firstAsset?.thumbnail_url ?? null) : undefined
-      const cover = type === 'document' ? undefined : firstAsset?.url
+      const cover = type === 'document' ? undefined : (firstAsset?.url ?? undefined)
       return {
         id: item.id,
         type,
         content,
         cover,
         thumbnailUrl,
+        thumbnailText: firstAsset?.thumbnail_text ?? null,
+        snapshotViews: firstAsset ? snapshotViewsForAsset(firstAsset) : [],
         slug: item.slug,
         filename: firstAsset?.filename,
+        mimeType: firstAsset?.mime_type ?? null,
+        sizeBytes: firstAsset?.size_bytes,
         createdAt: item.created_at,
       }
     })
@@ -92,8 +130,9 @@ function mapNote(b: BackendNote): Note {
     type: kindToType(b.kind),
     title: b.title,
     cover: b.assets.length > 0 ? b.download_url : null,
-    tags: b.tags.map(t => ({ id: t.id, name: t.name })),
-    folderId: b.folder?.id ?? null,
+    tags: b.tags.map(t => ({ id: t.id, name: t.name, slug: t.slug })),
+    taxonomyCategory: b.taxonomy_category,
+    folderId: b.taxonomy_category?.id ?? null,
     objects,
     createdAt: b.created_at,
     updatedAt: b.updated_at,
@@ -113,13 +152,13 @@ export async function fetchNotes(params: NotesParams = {}): Promise<Note[]> {
   if (!res.ok) throw new Error('Failed to fetch notes')
   const data = await res.json()
   const items: BackendNote[] = Array.isArray(data) ? data : (data.items ?? [])
-  return items.map(mapNote)
+  return items.map(mapBackendNote)
 }
 
 export async function fetchNote(slug: string): Promise<Note> {
   const res = await apiFetch(`${BASE}/${slug}`)
   if (!res.ok) throw new Error('Failed to fetch note')
-  return mapNote(await res.json())
+  return mapBackendNote(await res.json())
 }
 
 export async function createNote(data: Partial<Note>): Promise<Note> {
@@ -137,7 +176,7 @@ export async function createNote(data: Partial<Note>): Promise<Note> {
     body: JSON.stringify(backendPayload),
   })
   if (!res.ok) throw new Error('Failed to create note')
-  return mapNote(await res.json())
+  return mapBackendNote(await res.json())
 }
 
 export async function addFilesToNote(noteId: string, files: File[]): Promise<Note> {
@@ -147,7 +186,7 @@ export async function addFilesToNote(noteId: string, files: File[]): Promise<Not
   const res = await apiFetch(`${BASE}/file/upload`, { method: 'POST', body: formData })
   if (!res.ok) throw new Error('Failed to add files to note')
   const result = await res.json()
-  return mapNote(result.object ?? result)
+  return mapBackendNote(result.object ?? result)
 }
 
 export async function startUploadJob(
@@ -172,7 +211,7 @@ export async function startUploadJob(
       body: JSON.stringify({ title, text, media_type: 'text', tag_names: [], file_upload_ids: fileIds }),
     })
     if (!createRes.ok) throw new Error('Failed to create note')
-    const note = mapNote(await createRes.json())
+    const note = mapBackendNote(await createRes.json())
     return { jobId: note.id, noteId: note.id, noteSlug: note.slug }
   }
 
@@ -198,13 +237,16 @@ export async function fetchUploadJob(jobId: string): Promise<UploadJob> {
 }
 
 export async function mergeNotes(sourceSlug: string, targetSlug: string, title?: string): Promise<Note> {
+  if (!MERGE_NOTES_ENABLED) {
+    throw new Error('Merging notes is temporarily disabled')
+  }
   const res = await apiFetch(`${BASE}/merge`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ source_slugs: [sourceSlug], target_slug: targetSlug, title: title ?? null }),
   })
   if (!res.ok) throw new Error('Failed to merge notes')
-  return mapNote(await res.json())
+  return mapBackendNote(await res.json())
 }
 
 export async function removeCollectionItems(collectionSlug: string, itemSlugs: string[]): Promise<void> {
@@ -232,5 +274,5 @@ export async function updateNote(slug: string, data: Partial<Note>): Promise<Not
     body: JSON.stringify(data),
   })
   if (!res.ok) throw new Error('Failed to update note')
-  return mapNote(await res.json())
+  return mapBackendNote(await res.json())
 }
