@@ -10,6 +10,7 @@ from app.api.errors import AppError
 from app.api.schemas import ErrorResponse
 from app.modules.auth.presentation.rest.router import get_auth_context
 from app.modules.auth.service import AuthContext
+from app.modules.taxonomy.models import TaxonomyClassificationJob
 from app.modules.taxonomy.schemas import (
     TaxonomyAssignmentCreateRequest,
     TaxonomyAssignmentResponse,
@@ -24,6 +25,8 @@ from app.modules.taxonomy.schemas import (
     TaxonomyClassificationResponse,
     TaxonomyInitializeRequest,
     TaxonomyInitializeResponse,
+    TaxonomyInterestInitializeRequest,
+    TaxonomyInterestOptionResponse,
     TaxonomyProfilePutRequest,
     TaxonomyProfileResponse,
     TaxonomyTemplateDetailResponse,
@@ -66,7 +69,9 @@ def _validation_error(message: str) -> AppError:
     )
 
 
-def _classification_job_response(job) -> TaxonomyClassificationJobResponse:
+def _classification_job_response(
+    job: TaxonomyClassificationJob,
+) -> TaxonomyClassificationJobResponse:
     return TaxonomyClassificationJobResponse(
         id=job.id,
         content_object_id=job.content_object_id,
@@ -506,6 +511,62 @@ async def reject_assignment(
     except TaxonomyNotFoundError as exc:
         raise _not_found("Assignment not found.") from exc
     return service.assignment_response(assignment)
+
+
+@router.get(
+    "/interest-options",
+    response_model=list[TaxonomyInterestOptionResponse],
+    summary="List taxonomy onboarding interest options",
+    responses={401: {"model": ErrorResponse}},
+)
+async def list_interest_options(
+    _: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[TaxonomyService, Depends(get_taxonomy_service)],
+) -> list[TaxonomyInterestOptionResponse]:
+    return [
+        TaxonomyInterestOptionResponse(
+            slug=option.slug,
+            name=option.name,
+            description=option.description,
+        )
+        for option in service.list_interest_options()
+    ]
+
+
+@router.post(
+    "/initialize/interests",
+    response_model=TaxonomyInitializeResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Initialize current user's taxonomy from selected interests",
+    responses={
+        401: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+    },
+)
+async def initialize_taxonomy_from_interests(
+    payload: TaxonomyInterestInitializeRequest,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[TaxonomyService, Depends(get_taxonomy_service)],
+) -> TaxonomyInitializeResponse:
+    try:
+        result = await service.initialize_from_interests(
+            owner_user_id=context.user.id,
+            interest_slugs=payload.interest_slugs,
+            custom_description=payload.custom_description,
+        )
+    except TaxonomyConflictError as exc:
+        raise _conflict("Taxonomy already exists for this user.") from exc
+    except TaxonomyValidationError as exc:
+        raise _validation_error(
+            "Select at least one known interest or describe your interests."
+        ) from exc
+    return TaxonomyInitializeResponse(
+        owner_user_id=result.owner_user_id,
+        template_slug=result.template_slug,
+        created_categories_count=result.created_categories_count,
+        created_profiles_count=result.created_profiles_count,
+    )
 
 
 @router.get(

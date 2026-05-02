@@ -470,7 +470,9 @@ def test_content_object_vectorization_provider_indexes_and_replaces_changed_cont
         session_factory = _worker_session_factory()
         async with session_factory() as session:
             await VectorizationWorker(session).run_once(limit=10)
-            job = await session.scalar(select(VectorizationJob))
+            job = await session.scalar(
+                select(VectorizationJob).where(VectorizationJob.last_error.is_not(None))
+            )
             assert job is not None
             return str(job.last_error)
 
@@ -774,7 +776,9 @@ def test_reindex_replaces_old_chunks_and_owner_isolation_is_enforced(
         session_factory = _worker_session_factory()
         async with session_factory() as session:
             await VectorizationWorker(session).run_once(limit=10)
-            job = await session.scalar(select(VectorizationJob))
+            job = await session.scalar(
+                select(VectorizationJob).where(VectorizationJob.last_error.is_not(None))
+            )
             assert job is not None
             return str(job.last_error)
 

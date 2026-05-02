@@ -80,6 +80,26 @@ class TaxonomyRepository:
         )
         return list(await self.session.scalars(query))
 
+    async def list_categories_with_profiles(
+        self,
+        *,
+        owner_user_id: str,
+        include_archived: bool,
+    ) -> list[TaxonomyCategory]:
+        query = (
+            select(TaxonomyCategory)
+            .options(selectinload(TaxonomyCategory.profile))
+            .where(TaxonomyCategory.owner_user_id == owner_user_id)
+        )
+        if not include_archived:
+            query = query.where(TaxonomyCategory.is_archived.is_(False))
+        query = query.order_by(
+            TaxonomyCategory.depth.desc(),
+            TaxonomyCategory.sort_order.asc(),
+            TaxonomyCategory.name.asc(),
+        )
+        return list(await self.session.scalars(query))
+
     async def search_categories(
         self,
         *,
@@ -256,7 +276,7 @@ class TaxonomyRepository:
                 )
             )
             if existing is not None:
-                return cast(TaxonomyClassificationJob, existing)
+                return existing
         job = TaxonomyClassificationJob(
             owner_user_id=owner_user_id,
             content_object_id=content_object_id,
