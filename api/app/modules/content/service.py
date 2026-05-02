@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import importlib
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -1031,6 +1033,9 @@ class ContentService:
             content_type=uploaded.content_type,
         )
         text_content = self._decode_text(uploaded.data) if media_type == "text" else None
+        image_width, image_height = (
+            self._image_dimensions(uploaded) if media_type == "image" else (None, None)
+        )
         content_object = ContentObject(
             id=content_object_id,
             owner_user_id=owner_user_id,
@@ -1065,6 +1070,8 @@ class ContentService:
                 storage_ref=stored_file.storage_ref,
                 checksum=stored_file.checksum,
                 text_content=text_content,
+                image_width=image_width,
+                image_height=image_height,
             ),
         )
         self.content.add(content_object)
@@ -1089,6 +1096,39 @@ class ContentService:
             commit=False,
         )
         return content_object
+
+    @staticmethod
+    def _image_dimensions(uploaded: UploadedContent) -> tuple[int | None, int | None]:
+        try:
+            fitz: Any = importlib.import_module("fitz")
+            doc: Any = fitz.open(stream=uploaded.data, filetype=ContentService._image_filetype(uploaded))
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "content.image_dimensions_unavailable",
+                filename=uploaded.filename,
+                content_type=uploaded.content_type,
+                exc_info=True,
+            )
+            return None, None
+
+        try:
+            if doc.page_count == 0:
+                return None, None
+            page: Any = doc[0]
+            width = int(page.rect.width)
+            height = int(page.rect.height)
+            if width <= 0 or height <= 0:
+                return None, None
+            return width, height
+        finally:
+            doc.close()
+
+    @staticmethod
+    def _image_filetype(uploaded: UploadedContent) -> str:
+        if uploaded.content_type and uploaded.content_type.startswith("image/"):
+            return uploaded.content_type.removeprefix("image/")
+        suffix = Path(uploaded.filename).suffix.lower().removeprefix(".")
+        return "jpeg" if suffix == "jpg" else suffix
 
     async def _create_collection(
         self,
@@ -1498,6 +1538,8 @@ class ContentService:
                         else asset_url if self._is_pdf_asset(asset) else None
                     ),
                     html_url=html.url if html is not None else None,
+                    image_width=asset.image_width,
+                    image_height=asset.image_height,
                 )
             )
         return NoteCardResponse(

@@ -192,27 +192,49 @@
   background: rgba(255, 255, 255, 0.02);
 }
 
-.snapshotLinks button,
-.artifactList a {
+.snapshotDownloadLink,
+.artifactItem {
   all: unset;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   color: var(--color-text-primary);
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
-  padding: 6px 9px;
+  padding: 6px 10px;
   text-decoration: none;
   font-size: var(--font-size-xs);
   cursor: pointer;
   transition: background var(--duration-fast), border-color var(--duration-fast);
 }
 
-.snapshotLinks button:hover,
-.artifactList a:hover {
+.snapshotDownloadLink:hover,
+.artifactItem:hover {
   background: var(--color-surface-hover);
   border-color: #555;
+}
+
+/* Artifact items in enrichment panel — slightly larger, block layout */
+.artifactItem {
+  display: flex;
+  padding: 8px 12px;
+  gap: 8px;
+  border-color: var(--color-border);
+}
+
+.artifactItem svg {
+  flex-shrink: 0;
+  color: var(--color-accent);
+}
+
+.artifactItem span {
+  font-weight: 500;
+  flex: 1;
+}
+
+.artifactItem small {
+  color: var(--color-text-secondary);
 }
 
 .snapshotModal {
@@ -696,224 +718,32 @@
 
 /* ── Document viewer ── */
 .docViewer {
-  border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   overflow: hidden;
-  background: var(--color-surface);
-  width: 60%;
-  align-self: flex-start;
-}
-
-/* Tab bar */
-.docTabs {
-  display: flex;
-  align-items: center;
-  padding: 0 4px;
-  border-bottom: 1px solid var(--color-border);
-  background: var(--color-surface);
-}
-
-.docTab {
-  all: unset;
-  font-size: var(--font-size-sm);
-  font-family: var(--font-family);
-  color: var(--color-text-secondary);
-  cursor: pointer;
-  padding: 11px 14px;
-  position: relative;
-  transition: color var(--duration-fast);
-}
-.docTab:hover { color: var(--color-text-primary); }
-
-.docTabActive {
-  color: var(--color-text-primary);
-  font-weight: var(--font-weight-semibold);
-}
-.docTabActive::after {
-  content: '';
-  position: absolute;
-  bottom: 0;
-  left: 14px;
-  right: 14px;
-  height: 2px;
-  background: var(--color-accent);
-  border-radius: 2px 2px 0 0;
-}
-
-.docTabSpacer { flex: 1; }
-
-.docTabFilename {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-secondary);
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  padding-right: 6px;
-}
-
-.docTabExt {
-  font-size: 9px;
-  font-weight: var(--font-weight-semibold);
-  background: rgba(180, 110, 40, 0.18);
-  color: #c47830;
-  padding: 2px 6px;
-  border-radius: 4px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  margin-right: 10px;
-  flex-shrink: 0;
-}
-
-/* View pane */
-.docViewPane {
+  width: 100%;
   background: #080808;
 }
 
-@keyframes shimmerDoc {
-  0%   { background-position: -200% 0; }
-  100% { background-position:  200% 0; }
-}
-
-.docViewLoading {
-  height: 500px;
+.docLoader {
+  height: 80vh;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
-.docViewShimmer {
-  width: 55%;
-  height: 75%;
-  border-radius: var(--radius-md);
-  background: linear-gradient(90deg, #141414 25%, #1e1e1e 50%, #141414 75%);
-  background-size: 200% 100%;
-  animation: shimmerDoc 1.4s ease-in-out infinite;
+@keyframes docSpin {
+  to { transform: rotate(360deg); }
 }
 
-.docIframe {
-  width: 100%;
-  height: 72vh;
-  border: none;
-  display: block;
+.docLoaderSpinner {
+  width: 32px;
+  height: 32px;
+  border: 2px solid rgba(255, 255, 255, 0.08);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  animation: docSpin 0.8s linear infinite;
 }
 
-.docViewFallback {
-  height: 340px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 16px;
-}
-
-.docThumb {
-  max-width: 200px;
-  max-height: 200px;
-  border-radius: var(--radius-sm);
-  object-fit: contain;
-  display: block;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-}
-
-.docFallbackIcon {
-  color: var(--color-text-secondary);
-  opacity: 0.35;
-}
-
-.docFallbackMsg {
-  font-size: var(--font-size-sm);
-  color: var(--color-text-secondary);
-  margin: 0;
-}
-
-/* Info pane */
-.docInfoPane {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 24px;
-  padding: 28px 32px;
-}
-
-.docInfoPreview {
-  display: flex;
-}
-
-.docInfoThumb {
-  width: 80px;
-  height: 80px;
-  border-radius: var(--radius-md);
-  object-fit: cover;
-  display: block;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-}
-
-.docInfoIconWrap {
-  width: 80px;
-  height: 80px;
-  border-radius: var(--radius-md);
-  background: rgba(180, 110, 40, 0.12);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #c47830;
-}
-
-.docInfoRows {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  width: 100%;
-}
-
-.docInfoRow {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-}
-
-.docInfoLabel {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-secondary);
-  min-width: 100px;
-  flex-shrink: 0;
-  letter-spacing: 0.03em;
-}
-
-.docInfoValue {
-  font-size: var(--font-size-sm);
-  color: var(--color-text-primary);
-  word-break: break-all;
-}
-
-.docInfoExt {
-  font-size: 9px !important;
-  font-weight: var(--font-weight-semibold);
-  background: rgba(180, 110, 40, 0.18);
-  color: #c47830 !important;
-  padding: 2px 6px;
-  border-radius: 4px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  word-break: normal;
-}
-
-.docDownloadBtn {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-semibold);
-  font-family: var(--font-family);
-  color: #fff;
-  background: var(--color-accent);
-  padding: 9px 20px;
-  border-radius: var(--radius-sm);
-  text-decoration: none;
-  transition: opacity var(--duration-fast);
-}
-.docDownloadBtn:hover { opacity: 0.85; }
 
 /* ── Not found / empty ── */
 .notFound {
@@ -935,7 +765,6 @@
   }
 
   .objImage,
-  .docViewer,
   .mediaBox {
     width: 100%;
   }

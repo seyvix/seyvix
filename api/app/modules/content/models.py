@@ -152,6 +152,8 @@ class ContentAsset(Base):
     storage_ref: Mapped[str | None] = mapped_column(String(2300), nullable=True)
     checksum: Mapped[str | None] = mapped_column(String(128), nullable=True)
     text_content: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    image_width: Mapped[int | None] = mapped_column(Integer(), nullable=True)
+    image_height: Mapped[int | None] = mapped_column(Integer(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     content_object: Mapped[ContentObject] = relationship(back_populates="assets")

@@ -38,6 +38,8 @@ export interface NoteObject {
   cover?: string
   thumbnailUrl?: string | null
   thumbnailText?: string | null
+  imageWidth?: number | null
+  imageHeight?: number | null
   snapshotViews?: SnapshotView[]
   filename?: string      // оригинальное имя файла (для документов)
   mimeType?: string | null

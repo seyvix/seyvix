@@ -65,7 +65,7 @@
   padding: 0;
 }
 
-.cardSimpleImage img {
+.simpleImageMedia {
   width: 100%;
   display: block;
   border-radius: var(--radius-md);
@@ -809,34 +809,24 @@
   to { transform: rotate(360deg); }
 }
 
-/* === Thumbnail pending shimmer === */
-@keyframes thumbShimmer {
-  0%   { background-position: -200% 0; }
-  100% { background-position:  200% 0; }
-}
-
-/* Applied when thumbnailUrl === null — fills parent (LayerContent or compositeCover) */
+/* Applied when thumbnailUrl === null — fills parent with a centered spinner */
 .thumbPending {
-  background: linear-gradient(90deg, #1e1e1e 25%, #2a2a2a 50%, #1e1e1e 75%);
-  background-size: 200% 100%;
-  animation: thumbShimmer 1.6s ease-in-out infinite;
   width: 100%;
   height: 100%;
   flex: 1;
+  background: var(--color-surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-/* Small badge on DocChip icon when thumbnail is loading */
-.docChipIconWrap.thumbPendingIcon {
-  position: relative;
-  overflow: visible;
-}
-
-.docChipIconWrap.thumbPendingIcon::after {
+.thumbPending::after {
   content: '';
-  position: absolute;
-  inset: -2px;
-  border-radius: 5px;
-  background: linear-gradient(90deg, transparent 0%, rgba(99,102,241,0.35) 50%, transparent 100%);
-  background-size: 200% 100%;
-  animation: thumbShimmer 1.4s ease-in-out infinite;
+  width: 20px;
+  height: 20px;
+  border: 2px solid rgba(255, 255, 255, 0.08);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
 }
+
