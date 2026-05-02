@@ -1,6 +1,7 @@
 import { createBrowserRouter, RouterProvider, Navigate, Outlet } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AnimatePresence, motion } from 'framer-motion'
+import { useEffect, useState } from 'react'
 import AppLayout from './components/AppLayout/AppLayout'
 import { UploadProvider } from './contexts/UploadContext'
 import { LocalNotesProvider } from './contexts/LocalNotesContext'
@@ -82,13 +83,23 @@ const router = createBrowserRouter([
   },
 ])
 
+const MIN_LOADER_MS = 2500
+
 function AppInner() {
   const { isReady } = useAuth()
+  const [minElapsed, setMinElapsed] = useState(false)
+
+  useEffect(() => {
+    const timer = setTimeout(() => setMinElapsed(true), MIN_LOADER_MS)
+    return () => clearTimeout(timer)
+  }, [])
+
+  const showContent = isReady && minElapsed
 
   return (
     <AnimatePresence mode="wait">
-      {!isReady ? (
-        <LoaderScreen key="bootstrap" />
+      {!showContent ? (
+        <LoaderScreen key="loader" />
       ) : (
         <motion.div
           key="app"
