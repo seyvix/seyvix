@@ -23,6 +23,7 @@ import { useUpdateNote } from '../hooks/useUpdateNote'
 import { useRemoveCollectionItems } from '../hooks/useRemoveCollectionItems'
 import { getTagColor } from '../utils/tagColor'
 import AuthImage from '../components/AuthImage/AuthImage'
+import HtmlSnapshotViewer from '../components/HtmlSnapshotViewer/HtmlSnapshotViewer'
 import { apiFetch } from '../lib/apiClient'
 import {
   acceptTagSuggestion,
@@ -543,6 +544,8 @@ function LinkObj({ obj, isEditing, onDelete }: { obj: NoteObject; isEditing: boo
     favicon = `https://www.google.com/s2/favicons?domain=${u.hostname}&sz=32`
   } catch { /* ignore */ }
 
+  const htmlSnapshot = obj.snapshotViews?.find(v => v.kind === 'webpage_html')
+
   return (
     <div className={styles.objWrapper}>
       <div className={styles.objLinkFrame}>
@@ -553,13 +556,18 @@ function LinkObj({ obj, isEditing, onDelete }: { obj: NoteObject; isEditing: boo
             <ExternalLink size={13} />
           </a>
         </div>
-        <iframe
-          className={styles.objLinkIframe}
-          srcDoc={makeLinkSrcdoc(obj.content, domain)}
-          sandbox="allow-same-origin"
-          title={domain}
-        />
+        {htmlSnapshot ? (
+          <HtmlSnapshotViewer src={htmlSnapshot.url} className={styles.objLinkIframe} />
+        ) : (
+          <iframe
+            className={styles.objLinkIframe}
+            srcDoc={makeLinkSrcdoc(obj.content, domain)}
+            sandbox="allow-same-origin"
+            title={domain}
+          />
+        )}
       </div>
+      <SnapshotLinks obj={obj} />
       {isEditing && <button className={styles.objDeleteBtn} onClick={onDelete}><X size={12} /></button>}
     </div>
   )
