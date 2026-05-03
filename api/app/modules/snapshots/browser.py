@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 BROWSER_VIEWPORT_WIDTH = 1280
@@ -21,9 +22,15 @@ class BrowserSnapshot:
 def render_url(url: str) -> BrowserSnapshot:
     """Render *url* in a headless Chromium browser.
 
-    Returns rendered HTML and a JPEG screenshot.
+    Runs in a dedicated thread so Playwright sync API can create its own
+    event loop even when called from inside an asyncio context.
     Raises BrowserRenderError on any failure.
     """
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(_render_in_thread, url).result()
+
+
+def _render_in_thread(url: str) -> BrowserSnapshot:
     try:
         playwright_mod = importlib.import_module("playwright.sync_api")
     except ImportError as exc:
