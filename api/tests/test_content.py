@@ -8,10 +8,6 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
-
 from app.core.config import get_settings
 from app.core.database import Base, build_session_factory
 from app.main import app
@@ -26,6 +22,9 @@ from app.modules.taxonomy.models import (
     TaxonomyContentAssignment,
 )
 from app.platform.events.models import EventOutbox
+from fastapi.testclient import TestClient
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 TELEGRAM_BOT_TOKEN = "123456:test-bot-token"
 

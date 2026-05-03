@@ -475,7 +475,7 @@ function EnrichmentPanel({ note }: { note: Note }) {
             {activeJobs.length > 0 ? 'Обработка' : 'Нет артефактов'}
           </span>
         )}
-        
+
       </div>
 
       {error instanceof Error && <div className={styles.enrichmentError}>{error.message}</div>}

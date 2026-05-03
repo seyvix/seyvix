@@ -4,9 +4,6 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
-from sqlalchemy import delete, select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.vectorization.infrastructure.chunking import TextChunk
 from app.modules.vectorization.models import (
     VectorizationChunk,
@@ -15,6 +12,8 @@ from app.modules.vectorization.models import (
     VectorizationJob,
     VectorizationSource,
 )
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class VectorizationRepository:

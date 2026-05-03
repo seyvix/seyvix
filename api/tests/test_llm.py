@@ -2,7 +2,6 @@ import json
 
 import httpx
 import pytest
-
 from app.modules.llm.contracts import (
     HttpStructuredLLMGenerator,
     LLMGenerationError,

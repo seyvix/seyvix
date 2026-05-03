@@ -5,8 +5,6 @@ import json
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.core.config import Settings, get_settings
 from app.modules.vectorization.contracts import VectorizationDocumentInput
 from app.modules.vectorization.infrastructure.chunking import (
@@ -24,6 +22,7 @@ from app.modules.vectorization.infrastructure.embedding_providers import (
 )
 from app.modules.vectorization.infrastructure.repositories import VectorizationRepository
 from app.modules.vectorization.models import VectorizationJob
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class VectorizationProviderNotFoundError(Exception):

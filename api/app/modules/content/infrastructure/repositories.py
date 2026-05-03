@@ -3,12 +3,6 @@ from __future__ import annotations
 from datetime import datetime
 from typing import cast
 
-from sqlalchemy import select, text
-from sqlalchemy.dialects.postgresql import insert as postgresql_insert
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
-from sqlalchemy.sql.base import ExecutableOption
-
 from app.modules.content.models import (
     ContentAsset,
     ContentCollectionItem,
@@ -16,6 +10,11 @@ from app.modules.content.models import (
     ContentObject,
     ContentTag,
 )
+from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+from sqlalchemy.sql.base import ExecutableOption
 
 
 def content_object_load_options() -> tuple[ExecutableOption, ...]:

@@ -3,10 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import FileResponse
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.api.dependencies import get_db_session
 from app.api.errors import AppError
 from app.api.schemas import ErrorResponse
@@ -19,6 +15,9 @@ from app.modules.snapshots.schemas import (
     UpdateSnapshotSettingsRequest,
 )
 from app.modules.snapshots.service import SnapshotArtifactNotFoundError, SnapshotService
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import FileResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/snapshots", tags=["snapshots"])
 

@@ -6,10 +6,6 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, Protocol, cast
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.contracts.events import EventEnvelope, TaxonomyClassificationCompletedPayload
 from app.core.config import Settings, get_settings
 from app.modules.llm.contracts import (
@@ -47,6 +43,9 @@ from app.modules.vectorization.contracts import (
 )
 from app.modules.vectorization.models import VectorizationJob
 from app.platform.events.outbox import EventOutboxRepository
+from pydantic import BaseModel, Field, ValidationError
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 SLUG_PATTERN = re.compile(r"^[a-z0-9_-]+$")
 LLM_JUDGE_PROMPT_VERSION = "taxonomy_classification_llm_judge_v1"

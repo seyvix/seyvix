@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.contracts.events import EventEnvelope
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
@@ -11,6 +9,7 @@ from app.modules.llm.contracts import StructuredLLMGenerator
 from app.modules.tags.infrastructure.repositories import TagsRepository
 from app.modules.tags.service import TagsService
 from app.platform.events.idempotency import EventAlreadyProcessedError, ProcessedEventStore
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = get_logger(__name__)
 

@@ -2,10 +2,6 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, status
-from fastapi.responses import Response
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.api.dependencies import get_db_session
 from app.api.errors import AppError
 from app.api.schemas import ErrorResponse
@@ -32,6 +28,9 @@ from app.modules.tags.service import (
     TagsService,
     TagValidationError,
 )
+from fastapi import APIRouter, Depends, Query, status
+from fastapi.responses import Response
+from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(tags=["tags"])
 

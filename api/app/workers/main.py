@@ -4,9 +4,6 @@ import asyncio
 import sys
 from pathlib import Path
 
-from faststream import FastStream
-from faststream.rabbit import RabbitBroker
-
 from app.contracts.events import EventEnvelope
 from app.core.config import get_settings
 from app.core.database import build_session_factory
@@ -24,6 +21,8 @@ from app.modules.vectorization.worker import VectorizationEventConsumer, Vectori
 from app.platform.events.publisher import OutboxPublisher, RabbitEventPublisher
 from app.platform.events.topology import build_rabbit_topology, declare_rabbit_topology
 from app.platform.storage.factory import build_storage_backend
+from faststream import FastStream
+from faststream.rabbit import RabbitBroker
 
 logger = get_logger(__name__)
 

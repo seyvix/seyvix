@@ -5,8 +5,19 @@ export interface UserResponse {
   telegram_id: string
   telegram_username: string | null
   telegram_photo_url: string | null
+  avatar_url?: string | null
   display_name: string
   is_active: boolean
+}
+
+export interface AuthSessionResponse {
+  id: string
+  created_at: string
+  last_used_at: string | null
+  expires_at: string
+  user_agent: string | null
+  ip_address: string | null
+  is_current: boolean
 }
 
 export interface AuthTokensResponse {

@@ -3,11 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile, status
-from fastapi.responses import FileResponse, Response
-from sqlalchemy.ext.asyncio import AsyncSession
-from starlette.background import BackgroundTask
-
 from app.api.dependencies import get_db_session
 from app.api.errors import AppError
 from app.api.schemas import ErrorResponse
@@ -36,6 +31,10 @@ from app.modules.content.service import (
     ThumbnailUnavailableError,
     UploadedContent,
 )
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile, status
+from fastapi.responses import FileResponse, Response
+from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.background import BackgroundTask
 
 router = APIRouter(tags=["content"])
 

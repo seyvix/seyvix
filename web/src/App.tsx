@@ -79,6 +79,10 @@ const router = createBrowserRouter([
             path: '/folders/:folderSlug',
             lazy: async () => ({ Component: (await import('./pages/FolderPage')).default }),
           },
+          {
+            path: '/settings',
+            lazy: async () => ({ Component: (await import('./pages/SettingsPage')).default }),
+          },
         ],
       },
     ],

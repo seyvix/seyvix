@@ -5,9 +5,6 @@ import os
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi.testclient import TestClient
-from sqlalchemy import func, select
-
 from app.core.config import Settings, get_settings
 from app.core.database import build_session_factory
 from app.main import app
@@ -20,6 +17,8 @@ from app.modules.taxonomy.service import TaxonomyLLMClassificationError, Taxonom
 from app.modules.vectorization.contracts import build_taxonomy_category_profile_vector_subject
 from app.modules.vectorization.models import VectorizationJob
 from app.modules.vectorization.worker import VectorizationWorker
+from fastapi.testclient import TestClient
+from sqlalchemy import func, select
 
 TELEGRAM_BOT_TOKEN = "123456:test-bot-token"
 

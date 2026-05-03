@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
-
 from app.contracts.events.base import _reject_large_inline_data
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class SnapshotRequestedPayload(BaseModel):

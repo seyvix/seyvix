@@ -3,8 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.core.config import get_settings
 from app.modules.auth.infrastructure.repositories import AuthSessionRepository, UserRepository
 from app.modules.auth.models import AuthSession, User
@@ -23,6 +21,7 @@ from app.modules.auth.security import (
     refresh_token_expires_at,
     verify_telegram_login_data,
 )
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class TelegramAuthNotConfiguredError(Exception):
@@ -209,6 +208,12 @@ class AuthService:
     async def authenticate_access_token(self, access_token: str) -> UserResponse:
         context = await self.get_auth_context(access_token)
         return UserResponse.model_validate(context.user, from_attributes=True)
+
+    async def get_auth_context_by_refresh_token(self, raw_refresh_token: str) -> AuthContext:
+        auth_session = await self._load_active_session(raw_refresh_token)
+        if not auth_session.user.is_active:
+            raise InvalidRefreshTokenError
+        return AuthContext(user=auth_session.user, session=auth_session)
 
     async def get_auth_context(self, access_token: str) -> AuthContext:
         try:

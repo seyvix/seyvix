@@ -3,9 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
-
 from app.shared.module_definitions import ModuleDefinition
+from pydantic import BaseModel, Field
 
 MODULE = ModuleDefinition(
     name="tags",

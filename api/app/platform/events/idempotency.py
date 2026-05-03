@@ -1,9 +1,8 @@
 from __future__ import annotations
 
+from app.platform.events.models import ProcessedEvent
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.platform.events.models import ProcessedEvent
 
 
 class EventAlreadyProcessedError(Exception):

@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.vectorization.contracts import VectorizedChunkSearchResult
 from app.modules.vectorization.models import (
     VectorizationChunk,
     VectorizationEmbedding,
     VectorizationSource,
 )
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class PgVectorizedChunkSearchReader:

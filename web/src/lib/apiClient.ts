@@ -14,6 +14,7 @@ type OnUnauthenticated = () => void
 let getToken: GetToken = () => null
 let setToken: SetToken = () => {}
 let onUnauthenticated: OnUnauthenticated = () => {}
+let refreshPromise: ReturnType<typeof apiRefresh> | null = null
 
 export function configureApiClient(cfg: {
   getToken: GetToken
@@ -31,18 +32,21 @@ export async function apiFetch(input: RequestInfo, init: RequestInit = {}): Prom
   const headers = new Headers(init.headers)
   if (token) headers.set('Authorization', `Bearer ${token}`)
 
-  const res = await fetch(input, { ...init, headers })
+  const res = await fetch(input, { ...init, headers, credentials: init.credentials ?? 'include' })
 
   if (res.status !== 401) return res
 
-  // Попытка refresh
+  // Concurrent 401 responses must share refresh because the backend rotates refresh tokens.
   try {
-    const refreshed = await apiRefresh()
+    refreshPromise ??= apiRefresh().finally(() => {
+      refreshPromise = null
+    })
+    const refreshed = await refreshPromise
     setToken(refreshed.access_token)
 
     const retryHeaders = new Headers(init.headers)
     retryHeaders.set('Authorization', `Bearer ${refreshed.access_token}`)
-    return fetch(input, { ...init, headers: retryHeaders })
+    return fetch(input, { ...init, headers: retryHeaders, credentials: init.credentials ?? 'include' })
   } catch {
     onUnauthenticated()
     return res

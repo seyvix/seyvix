@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.core.config import Settings, get_settings
 from app.modules.search.schemas import SemanticSearchResult
 from app.modules.vectorization.contracts import (
@@ -12,6 +10,7 @@ from app.modules.vectorization.infrastructure.embedding_providers import (
     EmbeddingProvider,
     build_embedding_provider,
 )
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class SearchValidationError(Exception):

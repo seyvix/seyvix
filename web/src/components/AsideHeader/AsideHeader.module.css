@@ -186,14 +186,77 @@
   overflow: hidden;
 }
 
-/* Settings panel */
-.settingsPanel {
+.moreMenu {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transform: translateY(8px) scale(0.98);
+  transform-origin: bottom center;
+  transition:
+    max-height var(--duration-normal) var(--ease-default),
+    opacity var(--duration-fast) var(--ease-default),
+    transform var(--duration-normal) var(--ease-spring);
+}
+
+.moreMenuOpen {
+  max-height: 140px;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
+}
+
+.moreCard,
+.columnsCard {
   background: var(--color-bg);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.moreCard {
+  align-items: center;
+  color: var(--color-text-primary);
+  display: flex;
+  gap: 10px;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  min-height: 38px;
+  padding: 9px 10px;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background var(--duration-fast), border-color var(--duration-fast), color var(--duration-fast);
+}
+
+.moreCard:hover {
+  background: var(--color-surface-hover);
+  border-color: #444;
+  color: var(--color-accent);
+}
+
+.moreCardIcon {
+  align-items: center;
+  color: inherit;
+  display: flex;
+  height: 18px;
+  justify-content: center;
+  width: 18px;
+}
+
+.moreCardText {
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-default);
+}
+
+.expanded .moreCardText {
+  opacity: 1;
+}
+
+.columnsCard {
   padding: 10px 12px;
-  margin: 4px 0 2px;
-  overflow: hidden;
 }
 
 .settingsRow {

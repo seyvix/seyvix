@@ -3,10 +3,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Protocol
 
+from app.shared.module_definitions import ModuleDefinition
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.shared.module_definitions import ModuleDefinition
 
 MODULE = ModuleDefinition(
     name="vectorization",

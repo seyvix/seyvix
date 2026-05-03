@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.api.schemas import ErrorDetail, ErrorResponse
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-
-from app.api.schemas import ErrorDetail, ErrorResponse
 
 
 class AppError(Exception):

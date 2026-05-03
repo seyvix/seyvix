@@ -4,12 +4,11 @@ import json
 import re
 from typing import Any
 
-from pydantic import BaseModel, Field, ValidationError
-
 from app.core.config import Settings
 from app.modules.content.storage import slugify
 from app.modules.llm.contracts import LLMGenerationError, StructuredLLMGenerator
 from app.modules.tags.contracts import ContentTagSuggestion
+from pydantic import BaseModel, Field, ValidationError
 
 
 class LLMTaggingError(Exception):

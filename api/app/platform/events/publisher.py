@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import asyncio
 
-from faststream.rabbit import RabbitBroker
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
 from app.contracts.events import EventEnvelope
 from app.core.config import Settings
 from app.core.logging import get_logger
 from app.platform.events.models import EventOutbox
 from app.platform.events.outbox import EventOutboxRepository
+from faststream.rabbit import RabbitBroker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 logger = get_logger(__name__)
 

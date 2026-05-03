@@ -1,4 +1,5 @@
-from pydantic import BaseModel, ConfigDict, Field
+from app.core.config import get_settings
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 
 class TelegramLoginRequest(BaseModel):
@@ -66,6 +67,13 @@ class UserResponse(BaseModel):
     telegram_photo_url: str | None = Field(description="Telegram profile photo URL.")
     display_name: str = Field(description="Display name visible in the site UI.")
     is_active: bool = Field(description="Whether the account is active and allowed to sign in.")
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def avatar_url(self) -> str | None:
+        if not self.telegram_photo_url:
+            return None
+        return f"{get_settings().api_prefix}/auth/me/avatar"
 
 
 class AuthTokensResponse(BaseModel):

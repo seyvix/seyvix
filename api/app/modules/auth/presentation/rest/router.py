@@ -3,11 +3,7 @@ import json
 from typing import Annotated
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from fastapi import APIRouter, Depends, Query, Request, Response, Security, status
-from fastapi.responses import RedirectResponse
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy.ext.asyncio import AsyncSession
-
+import httpx
 from app.api.dependencies import get_db_session
 from app.api.errors import AppError
 from app.api.schemas import ErrorResponse
@@ -31,6 +27,10 @@ from app.modules.auth.service import (
     TelegramAuthNotConfiguredError,
     TelegramDevLoginDisabledError,
 )
+from fastapi import APIRouter, Depends, Query, Request, Response, Security, status
+from fastapi.responses import RedirectResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 bearer_auth_scheme = HTTPBearer(scheme_name="BearerAuth", auto_error=False)
@@ -530,6 +530,67 @@ async def revoke_session(
         _clear_refresh_cookie(response)
     response.status_code = status.HTTP_204_NO_CONTENT
     return response
+
+
+@router.get(
+    "/me/avatar",
+    summary="Get current user avatar",
+    description=(
+        "Proxies the current user's Telegram avatar through the API using the refresh cookie. "
+        "This avoids browser-side failures when Telegram blocks direct image embedding."
+    ),
+    responses={
+        200: {"description": "Avatar image returned."},
+        401: {"model": ErrorResponse, "description": "Missing or invalid refresh token."},
+        404: {"model": ErrorResponse, "description": "Avatar is not available."},
+    },
+)
+async def current_user_avatar(
+    request: Request,
+    service: Annotated[AuthService, Depends(get_auth_service)],
+) -> Response:
+    settings = get_settings()
+    raw_refresh_token = request.cookies.get(settings.refresh_cookie_name)
+    if raw_refresh_token is None:
+        raise AppError(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            code="missing_refresh_token",
+            message="Missing refresh token.",
+        )
+
+    try:
+        context = await service.get_auth_context_by_refresh_token(raw_refresh_token)
+    except InvalidRefreshTokenError as exc:
+        raise AppError(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            code="invalid_refresh_token",
+            message="Invalid refresh token.",
+        ) from exc
+
+    photo_url = context.user.telegram_photo_url
+    if not photo_url or urlsplit(photo_url).scheme not in {"http", "https"}:
+        raise AppError(
+            status_code=status.HTTP_404_NOT_FOUND,
+            code="avatar_not_available",
+            message="Avatar is not available.",
+        )
+
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+            avatar_response = await client.get(photo_url)
+            avatar_response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise AppError(
+            status_code=status.HTTP_404_NOT_FOUND,
+            code="avatar_not_available",
+            message="Avatar is not available.",
+        ) from exc
+
+    return Response(
+        content=avatar_response.content,
+        media_type=avatar_response.headers.get("content-type", "image/jpeg"),
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
 
 
 @router.get(

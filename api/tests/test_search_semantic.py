@@ -5,10 +5,9 @@ import os
 from datetime import UTC, datetime
 
 import pytest
-from fastapi.testclient import TestClient
-
 from app.core.database import build_session_factory
 from app.modules.vectorization.worker import VectorizationWorker
+from fastapi.testclient import TestClient
 
 TELEGRAM_BOT_TOKEN = "123456:test-bot-token"
 
