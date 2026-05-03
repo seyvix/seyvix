@@ -202,7 +202,7 @@ async def list_notes(
     "/notes",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Bulk delete notes",
-    description="Permanently deletes the specified notes and their storage files.",
+    description="Moves notes to trash when trash is enabled, otherwise permanently deletes them.",
     responses={
         204: {"description": "Notes deleted."},
         401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
@@ -218,6 +218,32 @@ async def bulk_delete_notes(
         slugs=payload.slugs,
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/notes/trash",
+    response_model=NoteListResponse,
+    summary="List deleted notes",
+    responses={401: {"model": ErrorResponse, "description": "Missing or invalid access token."}},
+)
+async def list_trash(
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[ContentService, Depends(get_content_service)],
+) -> NoteListResponse:
+    return await service.list_trash(owner_user_id=context.user.id)
+
+
+@router.post(
+    "/notes/trash/cleanup",
+    summary="Permanently delete expired trash notes",
+    responses={401: {"model": ErrorResponse, "description": "Missing or invalid access token."}},
+)
+async def cleanup_trash(
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[ContentService, Depends(get_content_service)],
+) -> dict[str, int]:
+    deleted_count = await service.cleanup_expired_trash(owner_user_id=context.user.id)
+    return {"deleted_count": deleted_count}
 
 
 @router.patch(
@@ -294,6 +320,27 @@ async def get_note(
 ) -> NoteCardResponse:
     try:
         return await service.get_note(owner_user_id=context.user.id, slug=note_slug)
+    except NoteNotFoundError as exc:
+        raise _not_found(exc) from exc
+
+
+@router.post(
+    "/notes/{note_slug}/restore",
+    response_model=NoteCardResponse,
+    summary="Restore deleted note",
+    responses={
+        200: {"description": "Restored note returned."},
+        401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
+        404: {"model": ErrorResponse, "description": "Note not found."},
+    },
+)
+async def restore_note(
+    note_slug: str,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[ContentService, Depends(get_content_service)],
+) -> NoteCardResponse:
+    try:
+        return await service.restore_note(owner_user_id=context.user.id, slug=note_slug)
     except NoteNotFoundError as exc:
         raise _not_found(exc) from exc
 

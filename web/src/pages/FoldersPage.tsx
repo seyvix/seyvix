@@ -1,21 +1,37 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Link, NavLink, useParams } from 'react-router-dom'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link, NavLink, useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowRight,
+  Archive,
   ChevronDown,
   ChevronRight,
+  Check,
+  Edit3,
   FileText,
   Hash,
   Layers3,
   ListTree,
+  Plus,
   Search,
+  Sparkles,
   Tags,
+  X,
 } from 'lucide-react'
-import { reclassifyInbox } from '../api/folders'
+import {
+  archiveCategory,
+  createCategory,
+  deleteCategory,
+  fetchCategoryProfile,
+  fetchTaxonomySettings,
+  reclassifyInbox,
+  suggestCategoryProfile,
+  updateCategory,
+  updateCategoryProfile,
+} from '../api/folders'
 import { useFolder } from '../hooks/useFolder'
 import { useFolders } from '../hooks/useFolders'
-import type { Folder, FolderNoteSummary } from '../types'
+import type { CategoryProfile, CategoryProfileDraft, Folder, FolderNoteSummary } from '../types'
 import styles from './FoldersPage.module.css'
 
 function categoryUrl(path: string): string {
@@ -42,6 +58,35 @@ function findCategory(categories: Folder[], path: string): Folder | null {
 function ancestorPaths(path: string): string[] {
   const segments = path.split('/').filter(Boolean)
   return segments.slice(0, -1).map((_, index) => segments.slice(0, index + 1).join('/'))
+}
+
+function listToText(values: string[]): string {
+  return values.join('\n')
+}
+
+function textToList(value: string): string[] {
+  return value
+    .split(/\n|,/)
+    .map(item => item.trim())
+    .filter(Boolean)
+}
+
+function profileFormFrom(profile: CategoryProfile | CategoryProfileDraft | undefined) {
+  return {
+    summary: profile?.summary ?? '',
+    keywords: listToText(profile?.keywords ?? []),
+    positiveExamples: listToText(profile?.positiveExamples ?? []),
+    negativeExamples: listToText(profile?.negativeExamples ?? []),
+  }
+}
+
+function formToProfile(form: ReturnType<typeof profileFormFrom>) {
+  return {
+    summary: form.summary.trim() || null,
+    keywords: textToList(form.keywords),
+    positiveExamples: textToList(form.positiveExamples),
+    negativeExamples: textToList(form.negativeExamples),
+  }
 }
 
 function Breadcrumbs({ category }: { category: Folder }) {
@@ -160,31 +205,125 @@ function NoteRow({ note, selectedPath }: { note: FolderNoteSummary; selectedPath
   )
 }
 
+function ProfileList({ title, values }: { title: string; values: string[] }) {
+  return (
+    <div className={styles.profileList}>
+      <span>{title}</span>
+      {values.length ? (
+        <div className={styles.profileChips}>
+          {values.map(value => <small key={value}>{value}</small>)}
+        </div>
+      ) : (
+        <p>Нет данных.</p>
+      )}
+    </div>
+  )
+}
+
 export default function FoldersPage() {
   const { '*': selectedPath = '' } = useParams()
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set())
+  const [profileEditing, setProfileEditing] = useState(false)
+  const [profileForm, setProfileForm] = useState(() => profileFormFrom(undefined))
+  const [profileGuidance, setProfileGuidance] = useState('')
+  const [profileDraft, setProfileDraft] = useState<CategoryProfileDraft | null>(null)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [createName, setCreateName] = useState('')
+  const [createDescription, setCreateDescription] = useState('')
+  const [renameOpen, setRenameOpen] = useState(false)
+  const [renameName, setRenameName] = useState('')
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [deleteNotes, setDeleteNotes] = useState(false)
+  const [deleteConfirmName, setDeleteConfirmName] = useState('')
+  const [deleteConfirmText, setDeleteConfirmText] = useState('')
   const { data: categories = [], isPending: treePending, isError: treeError } = useFolders()
   const {
     data: detail,
     isPending: detailPending,
     isError: detailError,
   } = useFolder(selectedPath)
+  const selectedFromTree = useMemo(
+    () => selectedPath ? findCategory(categories, selectedPath) : null,
+    [categories, selectedPath],
+  )
+  const selectedCategory = detail?.category ?? selectedFromTree
+  const taxonomySettings = useQuery({
+    queryKey: ['taxonomy-settings'],
+    queryFn: fetchTaxonomySettings,
+  })
+  const categoryProfile = useQuery({
+    queryKey: ['category-profile', selectedCategory?.id],
+    queryFn: () => fetchCategoryProfile(selectedCategory?.id ?? ''),
+    enabled: Boolean(selectedCategory?.id),
+  })
   const reclassify = useMutation({
     mutationFn: reclassifyInbox,
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['category', 'inbox'] })
     },
   })
+  const saveProfile = useMutation({
+    mutationFn: (form: ReturnType<typeof profileFormFrom>) =>
+      updateCategoryProfile(selectedCategory?.id ?? '', formToProfile(form)),
+    onSuccess: async () => {
+      setProfileEditing(false)
+      setProfileDraft(null)
+      await queryClient.invalidateQueries({ queryKey: ['category-profile', selectedCategory?.id] })
+    },
+  })
+  const suggestProfile = useMutation({
+    mutationFn: () => suggestCategoryProfile(selectedCategory?.id ?? '', profileGuidance),
+    onSuccess: (draft) => setProfileDraft(draft),
+  })
+  const createCategoryMutation = useMutation({
+    mutationFn: () => createCategory({
+      name: createName,
+      parentId: selectedCategory?.id ?? null,
+      description: createDescription,
+    }),
+    onSuccess: async (category) => {
+      setCreateOpen(false)
+      setCreateName('')
+      setCreateDescription('')
+      await queryClient.invalidateQueries({ queryKey: ['folders'] })
+      navigate(categoryUrl(category.path))
+    },
+  })
+  const renameCategoryMutation = useMutation({
+    mutationFn: () => updateCategory(selectedCategory?.id ?? '', { name: renameName }),
+    onSuccess: async (category) => {
+      setRenameOpen(false)
+      await queryClient.invalidateQueries({ queryKey: ['folders'] })
+      await queryClient.invalidateQueries({ queryKey: ['category', selectedPath] })
+      navigate(categoryUrl(category.path))
+    },
+  })
+  const archiveCategoryMutation = useMutation({
+    mutationFn: () => archiveCategory(selectedCategory?.id ?? ''),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['folders'] })
+      navigate('/categories')
+    },
+  })
+  const deleteCategoryMutation = useMutation({
+    mutationFn: () => deleteCategory(selectedCategory?.id ?? '', {
+      deleteNotes,
+      confirmCategoryName: deleteConfirmName,
+      confirmDeleteNotesText: deleteConfirmText,
+    }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['folders'] })
+      navigate('/categories')
+    },
+  })
 
   const totalCategories = useMemo(() => countCategories(categories), [categories])
-  const selectedFromTree = useMemo(
-    () => selectedPath ? findCategory(categories, selectedPath) : null,
-    [categories, selectedPath],
-  )
-  const selectedCategory = detail?.category ?? selectedFromTree
   const childCategories = selectedFromTree?.children ?? selectedCategory?.children ?? categories
   const notes = detail?.notes ?? []
+  const profile = categoryProfile.data
+  const profileEditingAllowed = taxonomySettings.data?.categoryProfileEditingEnabled === true
 
   useEffect(() => {
     if (!selectedPath) return
@@ -195,6 +334,22 @@ export default function FoldersPage() {
     })
   }, [selectedPath])
 
+  useEffect(() => {
+    setProfileForm(profileFormFrom(profile))
+    setProfileEditing(false)
+    setProfileDraft(null)
+    setProfileGuidance('')
+    setRenameName(selectedCategory?.name ?? '')
+    setRenameOpen(false)
+    setDeleteOpen(false)
+    setDeleteNotes(false)
+    setDeleteConfirmName('')
+    setDeleteConfirmText('')
+    setCreateOpen(false)
+    setCreateName('')
+    setCreateDescription('')
+  }, [profile, selectedCategory?.id])
+
   function handleToggle(path: string) {
     setExpandedPaths(prev => {
       const next = new Set(prev)
@@ -202,6 +357,10 @@ export default function FoldersPage() {
       else next.add(path)
       return next
     })
+  }
+
+  function updateProfileForm(field: keyof ReturnType<typeof profileFormFrom>, value: string) {
+    setProfileForm(prev => ({ ...prev, [field]: value }))
   }
 
   return (
@@ -266,6 +425,39 @@ export default function FoldersPage() {
                 </div>
               </div>
 
+              <div className={styles.managementPanel}>
+                <div className={styles.sectionHeader}>
+                  <h3>Новая корневая категория</h3>
+                  <button className={styles.secondaryAction} onClick={() => setCreateOpen(value => !value)}>
+                    <Plus size={15} strokeWidth={1.8} />
+                    Создать
+                  </button>
+                </div>
+                {createOpen && (
+                  <div className={styles.categoryForm}>
+                    <input
+                      value={createName}
+                      onChange={event => setCreateName(event.target.value)}
+                      placeholder="Название"
+                    />
+                    <input
+                      value={createDescription}
+                      onChange={event => setCreateDescription(event.target.value)}
+                      placeholder="Описание"
+                    />
+                    <button
+                      className={styles.primaryAction}
+                      disabled={!createName.trim() || createCategoryMutation.isPending}
+                      onClick={() => createCategoryMutation.mutate()}
+                    >
+                      <Check size={15} strokeWidth={1.8} />
+                      Сохранить
+                    </button>
+                  </div>
+                )}
+                {createCategoryMutation.isError && <div className={styles.stateError}>Не удалось создать категорию.</div>}
+              </div>
+
               <div className={styles.sectionHeader}>
                 <h3>Корневые категории</h3>
                 <span>{categories.length}</span>
@@ -312,6 +504,123 @@ export default function FoldersPage() {
               {reclassify.isError && selectedCategory.path === 'inbox' && (
                 <div className={styles.stateError}>Не удалось запустить перераспределение inbox.</div>
               )}
+              {renameCategoryMutation.isError && (
+                <div className={styles.stateError}>Не удалось переименовать категорию.</div>
+              )}
+              {archiveCategoryMutation.isError && (
+                <div className={styles.stateError}>Не удалось архивировать категорию. Проверьте, нет ли вложенных категорий.</div>
+              )}
+              {deleteCategoryMutation.isError && (
+                <div className={styles.stateError}>Не удалось удалить категорию.</div>
+              )}
+
+              <div className={styles.managementPanel}>
+                <div className={styles.managementActions}>
+                  <button className={styles.secondaryAction} onClick={() => setCreateOpen(value => !value)}>
+                    <Plus size={15} strokeWidth={1.8} />
+                    Подкатегория
+                  </button>
+                  <button className={styles.secondaryAction} onClick={() => setRenameOpen(value => !value)}>
+                    <Edit3 size={15} strokeWidth={1.8} />
+                    Переименовать
+                  </button>
+                  <button
+                    className={styles.dangerAction}
+                    disabled={selectedCategory.path === 'inbox' || archiveCategoryMutation.isPending}
+                    onClick={() => archiveCategoryMutation.mutate()}
+                  >
+                    <Archive size={15} strokeWidth={1.8} />
+                    Архивировать
+                  </button>
+                  <button
+                    className={styles.dangerAction}
+                    disabled={selectedCategory.path === 'inbox' || deleteCategoryMutation.isPending}
+                    onClick={() => setDeleteOpen(value => !value)}
+                  >
+                    <X size={15} strokeWidth={1.8} />
+                    Удалить
+                  </button>
+                </div>
+
+                {createOpen && (
+                  <div className={styles.categoryForm}>
+                    <input
+                      value={createName}
+                      onChange={event => setCreateName(event.target.value)}
+                      placeholder="Название подкатегории"
+                    />
+                    <input
+                      value={createDescription}
+                      onChange={event => setCreateDescription(event.target.value)}
+                      placeholder="Описание"
+                    />
+                    <button
+                      className={styles.primaryAction}
+                      disabled={!createName.trim() || createCategoryMutation.isPending}
+                      onClick={() => createCategoryMutation.mutate()}
+                    >
+                      <Check size={15} strokeWidth={1.8} />
+                      Создать
+                    </button>
+                  </div>
+                )}
+
+                {renameOpen && (
+                  <div className={styles.categoryForm}>
+                    <input
+                      value={renameName}
+                      onChange={event => setRenameName(event.target.value)}
+                      placeholder="Новое название"
+                    />
+                    <button
+                      className={styles.primaryAction}
+                      disabled={!renameName.trim() || renameCategoryMutation.isPending}
+                      onClick={() => renameCategoryMutation.mutate()}
+                    >
+                      <Check size={15} strokeWidth={1.8} />
+                      Сохранить
+                    </button>
+                  </div>
+                )}
+
+                {deleteOpen && (
+                  <div className={styles.deletePanel}>
+                    <label className={styles.checkRow}>
+                      <input
+                        type="checkbox"
+                        checked={deleteNotes}
+                        onChange={event => setDeleteNotes(event.target.checked)}
+                      />
+                      <span>Удалить заметки вместе с категорией</span>
+                    </label>
+                    {deleteNotes && (
+                      <div className={styles.categoryForm}>
+                        <input
+                          value={deleteConfirmName}
+                          onChange={event => setDeleteConfirmName(event.target.value)}
+                          placeholder={selectedCategory.name}
+                        />
+                        <input
+                          value={deleteConfirmText}
+                          onChange={event => setDeleteConfirmText(event.target.value)}
+                          placeholder="DELETE_NOTES"
+                        />
+                      </div>
+                    )}
+                    <button
+                      className={styles.dangerAction}
+                      disabled={
+                        deleteCategoryMutation.isPending
+                        || (deleteNotes && (deleteConfirmName !== selectedCategory.name || deleteConfirmText !== 'DELETE_NOTES'))
+                      }
+                      onClick={() => deleteCategoryMutation.mutate()}
+                    >
+                      <X size={15} strokeWidth={1.8} />
+                      {deleteNotes ? 'Удалить категорию и заметки' : 'Удалить категорию'}
+                    </button>
+                  </div>
+                )}
+              </div>
 
               <div className={styles.detailGrid}>
                 <section className={styles.detailBlock}>
@@ -347,6 +656,119 @@ export default function FoldersPage() {
                   ) : (
                     <div className={styles.emptyBlock}>Теги появятся, когда в категории будут заметки.</div>
                   )}
+                </section>
+
+                <section className={styles.detailBlockWide}>
+                  <div className={styles.profilePanel}>
+                    <div className={styles.sectionHeader}>
+                      <h3>LLM-профиль категории</h3>
+                      <span>{profileEditingAllowed ? 'редактирование включено' : 'только просмотр'}</span>
+                    </div>
+
+                    {categoryProfile.isLoading && <div className={styles.emptyBlock}>Загружаю профиль категории...</div>}
+                    {categoryProfile.isError && <div className={styles.stateError}>Не удалось загрузить профиль категории.</div>}
+                    {!categoryProfile.isLoading && !categoryProfile.isError && (
+                      <div className={styles.profileBody}>
+                        {!profileEditing && (
+                          <>
+                            <p className={styles.profileSummary}>
+                              {profile?.summary || 'Описание профиля пока не заполнено.'}
+                            </p>
+                            <div className={styles.profileLists}>
+                              <ProfileList title="Ключевые слова" values={profile?.keywords ?? []} />
+                              <ProfileList title="Что подходит" values={profile?.positiveExamples ?? []} />
+                              <ProfileList title="Что не подходит" values={profile?.negativeExamples ?? []} />
+                            </div>
+                          </>
+                        )}
+
+                        {profileEditing && (
+                          <div className={styles.profileForm}>
+                            <label>
+                              <span>Summary</span>
+                              <textarea value={profileForm.summary} onChange={event => updateProfileForm('summary', event.target.value)} />
+                            </label>
+                            <label>
+                              <span>Keywords</span>
+                              <textarea value={profileForm.keywords} onChange={event => updateProfileForm('keywords', event.target.value)} />
+                            </label>
+                            <label>
+                              <span>Positive examples</span>
+                              <textarea value={profileForm.positiveExamples} onChange={event => updateProfileForm('positiveExamples', event.target.value)} />
+                            </label>
+                            <label>
+                              <span>Negative examples</span>
+                              <textarea value={profileForm.negativeExamples} onChange={event => updateProfileForm('negativeExamples', event.target.value)} />
+                            </label>
+                          </div>
+                        )}
+
+                        <div className={styles.profileActions}>
+                          {profileEditingAllowed && !profileEditing && (
+                            <button className={styles.secondaryAction} onClick={() => setProfileEditing(true)}>
+                              <Edit3 size={15} strokeWidth={1.8} />
+                              Редактировать
+                            </button>
+                          )}
+                          {profileEditing && (
+                            <>
+                              <button className={styles.primaryAction} disabled={saveProfile.isPending} onClick={() => saveProfile.mutate(profileForm)}>
+                                <Check size={15} strokeWidth={1.8} />
+                                Сохранить
+                              </button>
+                              <button className={styles.secondaryAction} onClick={() => { setProfileEditing(false); setProfileForm(profileFormFrom(profile)) }}>
+                                <X size={15} strokeWidth={1.8} />
+                                Отмена
+                              </button>
+                            </>
+                          )}
+                        </div>
+
+                        <div className={styles.profileSuggest}>
+                          <textarea
+                            value={profileGuidance}
+                            onChange={event => setProfileGuidance(event.target.value)}
+                            placeholder="Опишите, что должно попадать в эту категорию или её подкатегории."
+                          />
+                          <button
+                            className={styles.secondaryAction}
+                            disabled={!profileGuidance.trim() || suggestProfile.isPending}
+                            onClick={() => suggestProfile.mutate()}
+                          >
+                            <Sparkles size={15} strokeWidth={1.8} />
+                            {suggestProfile.isPending ? 'Готовлю...' : 'Предложить улучшение'}
+                          </button>
+                        </div>
+
+                        {suggestProfile.isError && <div className={styles.stateError}>Не удалось получить черновик профиля.</div>}
+                        {saveProfile.isError && <div className={styles.stateError}>Не удалось сохранить профиль категории.</div>}
+
+                        {profileDraft && (
+                          <div className={styles.profileDraft}>
+                            <div>
+                              <strong>{profileDraft.summary || 'Без summary'}</strong>
+                              <p>{profileDraft.reasoning}</p>
+                            </div>
+                            <div className={styles.profileLists}>
+                              <ProfileList title="Ключевые слова" values={profileDraft.keywords} />
+                              <ProfileList title="Что подходит" values={profileDraft.positiveExamples} />
+                              <ProfileList title="Что не подходит" values={profileDraft.negativeExamples} />
+                            </div>
+                            <div className={styles.profileActions}>
+                              <button className={styles.primaryAction} disabled={saveProfile.isPending} onClick={() => saveProfile.mutate(profileFormFrom(profileDraft))}>
+                                <Check size={15} strokeWidth={1.8} />
+                                Принять
+                              </button>
+                              <button className={styles.secondaryAction} onClick={() => setProfileDraft(null)}>
+                                <X size={15} strokeWidth={1.8} />
+                                Отклонить
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </section>
 
                 <section className={styles.detailBlockWide}>

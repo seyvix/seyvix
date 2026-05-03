@@ -159,6 +159,14 @@ export async function fetchNotes(params: NotesParams = {}): Promise<Note[]> {
   return items.map(mapBackendNote)
 }
 
+export async function fetchTrashNotes(): Promise<Note[]> {
+  const res = await apiFetch(`${BASE}/trash`)
+  if (!res.ok) throw new Error('Failed to fetch trash')
+  const data = await res.json()
+  const items: BackendNote[] = Array.isArray(data) ? data : (data.items ?? [])
+  return items.map(mapBackendNote)
+}
+
 export async function fetchNote(slug: string): Promise<Note> {
   const res = await apiFetch(`${BASE}/${slug}`)
   if (!res.ok) throw new Error('Failed to fetch note')
@@ -187,7 +195,7 @@ export async function addFilesToNote(noteId: string, files: File[]): Promise<Not
   const formData = new FormData()
   formData.append('object_id', noteId)
   files.forEach(f => formData.append('files', f))
-  const res = await apiFetch(`${BASE}/file/upload`, { method: 'POST', body: formData })
+  const res = await apiFetch(`${BASE}/file/upload`, { method: 'POST', body: formData, headers: { 'Content-Type': 'application/json' } })
   if (!res.ok) throw new Error('Failed to add files to note')
   const result = await res.json()
   return mapBackendNote(result.object ?? result)
@@ -203,7 +211,7 @@ export async function startUploadJob(
     // Two-step: upload files as temp → create note with text + file_ids combined
     const formData = new FormData()
     files.forEach(f => formData.append('files', f))
-    const uploadRes = await apiFetch(`${BASE}/file/upload`, { method: 'POST', body: formData })
+    const uploadRes = await apiFetch(`${BASE}/file/upload`, { method: 'POST', body: formData, headers: { 'Content-Type': 'application/json' } })
     if (!uploadRes.ok) throw new Error('Failed to upload files')
     const uploadResult = await uploadRes.json()
     const fileIds: string[] = (uploadResult.files ?? []).map((f: { id: string }) => f.id)
@@ -224,7 +232,7 @@ export async function startUploadJob(
   files.forEach(f => formData.append('files', f))
   formData.append('create_object', 'true')
 
-  const res = await apiFetch(`${BASE}/file/upload`, { method: 'POST', body: formData })
+  const res = await apiFetch(`${BASE}/file/upload`, { method: 'POST', body: formData, headers: { 'Content-Type': 'application/json' } })
   if (!res.ok) throw new Error('Failed to upload file')
   const result = await res.json()
   const obj: BackendNote = result.object ?? result
@@ -269,6 +277,19 @@ export async function deleteNotes(slugs: string[]): Promise<void> {
     body: JSON.stringify({ slugs }),
   })
   if (!res.ok) throw new Error('Failed to delete notes')
+}
+
+export async function restoreNote(slug: string): Promise<Note> {
+  const res = await apiFetch(`${BASE}/${slug}/restore`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
+  if (!res.ok) throw new Error('Failed to restore note')
+  return mapBackendNote(await res.json())
+}
+
+export async function cleanupTrash(): Promise<{ deletedCount: number }> {
+  const res = await apiFetch(`${BASE}/trash/cleanup`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
+  if (!res.ok) throw new Error('Failed to cleanup trash')
+  const data = await res.json()
+  return { deletedCount: data.deleted_count ?? 0 }
 }
 
 export async function updateNote(slug: string, data: Partial<Note>): Promise<Note> {

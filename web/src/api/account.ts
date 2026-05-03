@@ -10,11 +10,11 @@ export async function fetchAuthSessions(): Promise<AuthSessionResponse[]> {
 }
 
 export async function revokeAuthSession(sessionId: string): Promise<void> {
-  const res = await apiFetch(`${BASE}/sessions/${sessionId}`, { method: 'DELETE' })
+  const res = await apiFetch(`${BASE}/sessions/${sessionId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } })
   if (!res.ok) throw new Error('Failed to revoke session')
 }
 
 export async function logoutAllSessions(): Promise<void> {
-  const res = await apiFetch(`${BASE}/logout-all`, { method: 'POST' })
+  const res = await apiFetch(`${BASE}/logout-all`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
   if (!res.ok) throw new Error('Failed to logout all sessions')
 }

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
-import { Tags } from 'lucide-react'
+import { Tags, Trash2 } from 'lucide-react'
 import { useLocalStorage } from '../../hooks/useLocalStorage'
 import { useSettings } from '../../contexts/SettingsContext'
 import { useAuth } from '../../contexts/AuthContext'
@@ -118,6 +118,17 @@ export default function AsideHeader() {
         >
           <span className={styles.navIcon}><Tags size={18} strokeWidth={1.8} /></span>
           <span className={styles.navLabel}>Категории</span>
+          <span className={styles.navDot} />
+        </NavLink>
+
+        <NavLink
+          to="/trash"
+          className={({ isActive }) =>
+            [styles.navItem, isActive ? styles.active : ''].filter(Boolean).join(' ')
+          }
+        >
+          <span className={styles.navIcon}><Trash2 size={18} strokeWidth={1.8} /></span>
+          <span className={styles.navLabel}>Корзина</span>
           <span className={styles.navDot} />
         </NavLink>
       </nav>

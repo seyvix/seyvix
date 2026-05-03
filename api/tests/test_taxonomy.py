@@ -82,6 +82,15 @@ def _create_note(client: TestClient, headers: dict[str, str], title: str) -> dic
     return response.json()
 
 
+def _enable_profile_editing(client: TestClient, headers: dict[str, str]) -> None:
+    response = client.patch(
+        "/api/v1/taxonomy/settings",
+        headers=headers,
+        json={"category_profile_editing_enabled": True},
+    )
+    assert response.status_code == 200, response.text
+
+
 def _worker_session_factory():
     database_url = os.getenv("TEST_DATABASE_URL")
     if not database_url:
@@ -261,13 +270,7 @@ def test_profile_manual_assignment_history_and_ownership(content_client: TestCli
     other_category = _create_category(content_client, other_headers, slug="private", name="Private")
     note = _create_note(content_client, headers, "Assignment target")
 
-    settings_response = content_client.patch(
-        "/api/v1/taxonomy/settings",
-        headers=headers,
-        json={"category_profile_editing_enabled": True},
-    )
-    assert settings_response.status_code == 200, settings_response.text
-    assert settings_response.json()["category_profile_editing_enabled"] is True
+    _enable_profile_editing(content_client, headers)
 
     profile_response = content_client.put(
         f"/api/v1/taxonomy/categories/{ai['id']}/profile",
@@ -413,6 +416,95 @@ def test_category_profile_editing_setting_and_llm_draft(content_client: TestClie
     assert "AI infrastructure" in str(llm.calls[0]["prompt"])
 
 
+def test_delete_category_moves_descendant_content_to_inbox(content_client: TestClient) -> None:
+    headers = _auth_headers(content_client)
+    inbox = _create_category(content_client, headers, slug="inbox", name="Inbox")
+    parent = _create_category(content_client, headers, slug="ai", name="AI")
+    child = _create_category(
+        content_client,
+        headers,
+        slug="llm",
+        name="LLM",
+        parent_id=str(parent["id"]),
+    )
+    parent_note = _create_note(content_client, headers, "Parent material")
+    child_note = _create_note(content_client, headers, "Child material")
+
+    assert content_client.post(
+        f"/api/v1/taxonomy/content/{parent_note['id']}/assignments",
+        headers=headers,
+        json={"category_id": parent["id"]},
+    ).status_code == 201
+    assert content_client.post(
+        f"/api/v1/taxonomy/content/{child_note['id']}/assignments",
+        headers=headers,
+        json={"category_id": child["id"]},
+    ).status_code == 201
+
+    response = content_client.post(
+        f"/api/v1/taxonomy/categories/{parent['id']}/delete",
+        headers=headers,
+        json={"delete_notes": False},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["archived_categories_count"] == 2
+    assert response.json()["moved_notes_count"] == 2
+    assert response.json()["deleted_notes_count"] == 0
+
+    parent_assignment = content_client.get(
+        f"/api/v1/taxonomy/content/{parent_note['id']}/category",
+        headers=headers,
+    )
+    child_assignment = content_client.get(
+        f"/api/v1/taxonomy/content/{child_note['id']}/category",
+        headers=headers,
+    )
+    assert parent_assignment.json()["category_id"] == inbox["id"]
+    assert child_assignment.json()["category_id"] == inbox["id"]
+
+    tree_response = content_client.get("/api/v1/taxonomy/categories/tree", headers=headers)
+    paths = _template_paths(tree_response.json())
+    assert "ai" not in paths
+    assert "ai/llm" not in paths
+
+
+def test_delete_category_with_notes_requires_danger_confirmation(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client)
+    _create_category(content_client, headers, slug="inbox", name="Inbox")
+    category = _create_category(content_client, headers, slug="temporary", name="Temporary")
+    note = _create_note(content_client, headers, "Temporary material")
+    assert content_client.post(
+        f"/api/v1/taxonomy/content/{note['id']}/assignments",
+        headers=headers,
+        json={"category_id": category["id"]},
+    ).status_code == 201
+
+    blocked = content_client.post(
+        f"/api/v1/taxonomy/categories/{category['id']}/delete",
+        headers=headers,
+        json={"delete_notes": True},
+    )
+    assert blocked.status_code == 422
+
+    confirmed = content_client.post(
+        f"/api/v1/taxonomy/categories/{category['id']}/delete",
+        headers=headers,
+        json={
+            "delete_notes": True,
+            "confirm_category_name": "Temporary",
+            "confirm_delete_notes_text": "DELETE_NOTES",
+        },
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["deleted_notes_count"] == 1
+
+    note_response = content_client.get(f"/api/v1/notes/{note['slug']}", headers=headers)
+    assert note_response.status_code == 404
+
+
 def test_templates_initialize_user_taxonomy_and_module_registration(
     content_client: TestClient,
 ) -> None:
@@ -536,6 +628,7 @@ def test_content_creation_uses_taxonomy_assignment_not_legacy_category_id(
 
 def test_end_to_end_taxonomy_cutover_flow(content_client: TestClient) -> None:
     headers = _auth_headers(content_client)
+    _enable_profile_editing(content_client, headers)
 
     initialize_response = content_client.post(
         "/api/v1/taxonomy/initialize",
@@ -658,6 +751,7 @@ def test_taxonomy_search_breadcrumbs_restore_and_profile_document(
     content_client: TestClient,
 ) -> None:
     headers = _auth_headers(content_client)
+    _enable_profile_editing(content_client, headers)
     ai = _create_category(content_client, headers, slug="ai", name="AI")
     llm = _create_category(content_client, headers, parent_id=ai["id"], slug="llm", name="LLM")
     inference = _create_category(
@@ -1025,6 +1119,7 @@ def test_taxonomy_classify_endpoint_uses_semantic_assignment_flow(
     content_client: TestClient,
 ) -> None:
     headers = _auth_headers(content_client, telegram_id=301000)
+    _enable_profile_editing(content_client, headers)
     category = _create_category(content_client, headers, slug="inference", name="Inference")
     profile_response = content_client.put(
         f"/api/v1/taxonomy/categories/{category['id']}/profile",
@@ -1164,6 +1259,7 @@ def test_taxonomy_llm_judge_uses_textual_candidates_when_vector_index_is_empty(
     content_client: TestClient,
 ) -> None:
     headers = _auth_headers(content_client, telegram_id=301150)
+    _enable_profile_editing(content_client, headers)
     programming = _create_category(
         content_client,
         headers,

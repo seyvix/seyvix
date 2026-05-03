@@ -46,20 +46,36 @@ class ContentRepository:
     def add_collection_item(self, item: ContentCollectionItem) -> None:
         self.session.add(item)
 
-    async def get_by_slug(self, *, owner_user_id: str, slug: str) -> ContentObject | None:
+    async def get_by_slug(
+        self,
+        *,
+        owner_user_id: str,
+        slug: str,
+        include_deleted: bool = False,
+    ) -> ContentObject | None:
         query = (
             select(ContentObject)
             .options(*content_object_load_options())
             .where(ContentObject.owner_user_id == owner_user_id, ContentObject.slug == slug)
         )
+        if not include_deleted:
+            query = query.where(ContentObject.deleted_at.is_(None))
         return cast(ContentObject | None, await self.session.scalar(query))
 
-    async def get_by_id(self, *, owner_user_id: str, object_id: str) -> ContentObject | None:
+    async def get_by_id(
+        self,
+        *,
+        owner_user_id: str,
+        object_id: str,
+        include_deleted: bool = False,
+    ) -> ContentObject | None:
         query = (
             select(ContentObject)
             .options(*content_object_load_options())
             .where(ContentObject.owner_user_id == owner_user_id, ContentObject.id == object_id)
         )
+        if not include_deleted:
+            query = query.where(ContentObject.deleted_at.is_(None))
         return cast(ContentObject | None, await self.session.scalar(query))
 
     async def list_by_slugs(
@@ -67,12 +83,15 @@ class ContentRepository:
         *,
         owner_user_id: str,
         slugs: list[str],
+        include_deleted: bool = False,
     ) -> list[ContentObject]:
         query = (
             select(ContentObject)
             .options(*content_object_load_options())
             .where(ContentObject.owner_user_id == owner_user_id, ContentObject.slug.in_(slugs))
         )
+        if not include_deleted:
+            query = query.where(ContentObject.deleted_at.is_(None))
         return list(await self.session.scalars(query))
 
     async def slug_exists(self, *, owner_user_id: str, slug: str) -> bool:
@@ -88,11 +107,30 @@ class ContentRepository:
             {"lock_key": f"content-object-slug:{owner_user_id}:{slug_base}"},
         )
 
-    async def list_all(self, *, owner_user_id: str) -> list[ContentObject]:
+    async def list_all(
+        self,
+        *,
+        owner_user_id: str,
+        include_deleted: bool = False,
+    ) -> list[ContentObject]:
         query = (
             select(ContentObject)
             .options(*content_object_load_options())
             .where(ContentObject.owner_user_id == owner_user_id)
+        )
+        if not include_deleted:
+            query = query.where(ContentObject.deleted_at.is_(None))
+        return list(await self.session.scalars(query))
+
+    async def list_deleted(self, *, owner_user_id: str) -> list[ContentObject]:
+        query = (
+            select(ContentObject)
+            .options(*content_object_load_options())
+            .where(
+                ContentObject.owner_user_id == owner_user_id,
+                ContentObject.deleted_at.is_not(None),
+            )
+            .order_by(ContentObject.deleted_at.desc())
         )
         return list(await self.session.scalars(query))
 

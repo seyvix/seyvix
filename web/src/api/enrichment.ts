@@ -186,7 +186,7 @@ export async function assignExistingTagToContent(contentObjectId: string, tagId:
 }
 
 export async function removeTagFromContent(contentObjectId: string, tagId: string): Promise<void> {
-  const res = await apiFetch(`${API}/content/${contentObjectId}/tags/${tagId}`, { method: 'DELETE' })
+  const res = await apiFetch(`${API}/content/${contentObjectId}/tags/${tagId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } })
   if (!res.ok) throw new Error('Failed to remove tag')
 }
 
@@ -211,12 +211,12 @@ export async function fetchContentTagJobs(contentObjectId: string): Promise<Cont
 }
 
 export async function acceptTagSuggestion(contentObjectId: string, assignmentId: string): Promise<ContentTagAssignment> {
-  const res = await apiFetch(`${API}/content/${contentObjectId}/tags/suggestions/${assignmentId}/accept`, { method: 'POST' })
+  const res = await apiFetch(`${API}/content/${contentObjectId}/tags/suggestions/${assignmentId}/accept`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
   return readJson<ContentTagAssignment>(res, 'Failed to accept tag suggestion')
 }
 
 export async function rejectTagSuggestion(contentObjectId: string, assignmentId: string): Promise<ContentTagAssignment> {
-  const res = await apiFetch(`${API}/content/${contentObjectId}/tags/suggestions/${assignmentId}/reject`, { method: 'POST' })
+  const res = await apiFetch(`${API}/content/${contentObjectId}/tags/suggestions/${assignmentId}/reject`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
   return readJson<ContentTagAssignment>(res, 'Failed to reject tag suggestion')
 }
 
@@ -270,11 +270,11 @@ export async function fetchTaxonomyClassificationJobs(contentObjectId: string): 
 }
 
 export async function acceptTaxonomyAssignment(contentObjectId: string, assignmentId: string): Promise<TaxonomyAssignment> {
-  const res = await apiFetch(`${API}/taxonomy/content/${contentObjectId}/assignments/${assignmentId}/accept`, { method: 'POST' })
+  const res = await apiFetch(`${API}/taxonomy/content/${contentObjectId}/assignments/${assignmentId}/accept`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
   return readJson<TaxonomyAssignment>(res, 'Failed to accept category')
 }
 
 export async function rejectTaxonomyAssignment(contentObjectId: string, assignmentId: string): Promise<TaxonomyAssignment> {
-  const res = await apiFetch(`${API}/taxonomy/content/${contentObjectId}/assignments/${assignmentId}/reject`, { method: 'POST' })
+  const res = await apiFetch(`${API}/taxonomy/content/${contentObjectId}/assignments/${assignmentId}/reject`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
   return readJson<TaxonomyAssignment>(res, 'Failed to reject category')
 }

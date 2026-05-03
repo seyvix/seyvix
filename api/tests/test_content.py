@@ -147,6 +147,40 @@ def test_create_text_note_persists_manifest_and_downloads_archive(
     assert len(download_response.content) > 100
 
 
+def test_deleted_notes_go_to_trash_and_can_be_restored(content_client: TestClient) -> None:
+    headers = _auth_headers(content_client)
+    note = _create_text_note(
+        content_client,
+        headers,
+        title="Trash target",
+        text="Trash body",
+    )
+
+    delete_response = content_client.request(
+        "DELETE",
+        "/api/v1/notes",
+        headers=headers,
+        json={"slugs": [note["slug"]]},
+    )
+    assert delete_response.status_code == 204
+
+    assert content_client.get(f"/api/v1/notes/{note['slug']}", headers=headers).status_code == 404
+    list_response = content_client.get("/api/v1/notes", headers=headers)
+    assert note["slug"] not in {item["slug"] for item in list_response.json()["items"]}
+
+    trash_response = content_client.get("/api/v1/notes/trash", headers=headers)
+    assert trash_response.status_code == 200, trash_response.text
+    assert [item["slug"] for item in trash_response.json()["items"]] == [note["slug"]]
+
+    restore_response = content_client.post(
+        f"/api/v1/notes/{note['slug']}/restore",
+        headers=headers,
+    )
+    assert restore_response.status_code == 200, restore_response.text
+    assert restore_response.json()["slug"] == note["slug"]
+    assert content_client.get(f"/api/v1/notes/{note['slug']}", headers=headers).status_code == 200
+
+
 def test_create_plain_url_note_creates_link_object_and_content_event(
     content_client: TestClient,
 ) -> None:

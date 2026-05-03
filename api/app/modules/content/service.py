@@ -324,6 +324,50 @@ class ContentService:
     async def get_note(self, *, owner_user_id: str, slug: str) -> NoteCardResponse:
         return await self._to_card(await self._load_note(owner_user_id=owner_user_id, slug=slug))
 
+    async def list_trash(self, *, owner_user_id: str) -> NoteListResponse:
+        objects = await self.content.list_deleted(owner_user_id=owner_user_id)
+        tags_by_object_id = await self.tag_service.list_active_tags_for_contents(
+            owner_user_id=owner_user_id,
+            content_object_ids=[content_object.id for content_object in objects],
+        )
+        return NoteListResponse(
+            items=[
+                await self._to_card(item, active_tags=tags_by_object_id.get(item.id, []))
+                for item in objects
+                if item.kind == "collection" or not item.collection_memberships
+            ]
+        )
+
+    async def restore_note(self, *, owner_user_id: str, slug: str) -> NoteCardResponse:
+        content_object = await self.content.get_by_slug(
+            owner_user_id=owner_user_id,
+            slug=slug,
+            include_deleted=True,
+        )
+        if content_object is None or content_object.deleted_at is None:
+            raise NoteNotFoundError
+        to_restore = await self._collect_objects_for_delete([content_object])
+        for obj in to_restore.values():
+            obj.deleted_at = None
+            obj.delete_after = None
+            self._enqueue_content_changed_event(obj, event_name="content.object.updated")
+        await self.session.commit()
+        await self.session.refresh(content_object)
+        return await self._to_card(content_object)
+
+    async def cleanup_expired_trash(self, *, owner_user_id: str) -> int:
+        now = datetime.now(UTC)
+        objects = [
+            item
+            for item in await self.content.list_deleted(owner_user_id=owner_user_id)
+            if item.delete_after is not None and item.delete_after <= now
+        ]
+        to_delete = await self._collect_objects_for_delete(objects)
+        if not to_delete:
+            return 0
+        await self._hard_delete_objects(to_delete)
+        return len(to_delete)
+
     async def get_download_path(self, *, owner_user_id: str, slug: str) -> Path:
         content_object = await self._load_note(owner_user_id=owner_user_id, slug=slug)
         return self.storage.build_archive(content_object)
@@ -566,7 +610,24 @@ class ContentService:
             owner_user_id=owner_user_id,
             slugs=slugs,
         )
-        # Collect all objects to delete, including nested collection items
+        to_delete = await self._collect_objects_for_delete(objects)
+        taxonomy_settings = await self.taxonomy.get_user_settings(owner_user_id=owner_user_id)
+        if taxonomy_settings.trash_enabled:
+            now = datetime.now(UTC)
+            delete_after = now + timedelta(days=taxonomy_settings.trash_retention_days)
+            for obj in to_delete.values():
+                obj.deleted_at = now
+                obj.delete_after = delete_after
+                self._enqueue_content_changed_event(obj, event_name="content.object.deleted")
+            await self.session.commit()
+            return
+
+        await self._hard_delete_objects(to_delete)
+
+    async def _collect_objects_for_delete(
+        self,
+        objects: list[ContentObject],
+    ) -> dict[str, ContentObject]:
         to_delete: dict[str, ContentObject] = {}
         queue = list(objects)
         while queue:
@@ -577,19 +638,17 @@ class ContentService:
             if obj.kind == "collection":
                 items = await self.content.list_collection_items(obj.id)
                 queue.extend(item.content_object for item in items)
+        return to_delete
 
-        # Remove storage directories first
+    async def _hard_delete_objects(self, to_delete: dict[str, ContentObject]) -> None:
         for obj in to_delete.values():
             self._enqueue_content_changed_event(obj, event_name="content.object.deleted")
             self.storage.remove_directory(obj)
 
-        # Bulk DELETE via raw SQL — avoids ORM cascade conflicts when both
-        # a collection and its items are deleted in the same session.
-        # DB-level ondelete="CASCADE" on ContentCollectionItem and ContentAsset
-        # handles join/asset row cleanup automatically.
-        await self.session.execute(
-            sql_delete(ContentObject).where(ContentObject.id.in_(list(to_delete.keys())))
-        )
+        if to_delete:
+            await self.session.execute(
+                sql_delete(ContentObject).where(ContentObject.id.in_(list(to_delete.keys())))
+            )
         await self.session.commit()
 
     async def list_folders(self, *, owner_user_id: str) -> FolderTreeResponse:

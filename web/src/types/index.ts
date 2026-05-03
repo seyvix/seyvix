@@ -63,6 +63,32 @@ export interface FolderDetail {
   notes: FolderNoteSummary[]
 }
 
+export interface TaxonomySettings {
+  ownerUserId: string
+  categoryProfileEditingEnabled: boolean
+  trashEnabled: boolean
+  trashRetentionDays: number
+}
+
+export interface CategoryProfile {
+  id?: string
+  categoryId: string
+  summary: string | null
+  keywords: string[]
+  positiveExamples: string[]
+  negativeExamples: string[]
+  createdAt?: string
+  updatedAt?: string
+}
+
+export interface CategoryProfileDraft {
+  summary: string | null
+  keywords: string[]
+  positiveExamples: string[]
+  negativeExamples: string[]
+  reasoning: string
+}
+
 export interface NoteObject {
   id: string
   type: NoteObjectType

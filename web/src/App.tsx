@@ -80,6 +80,10 @@ const router = createBrowserRouter([
             lazy: async () => ({ Component: (await import('./pages/FoldersPage')).default }),
           },
           {
+            path: '/trash',
+            lazy: async () => ({ Component: (await import('./pages/TrashPage')).default }),
+          },
+          {
             path: '/folders',
             element: <Navigate to="/categories" replace />,
           },
