@@ -8,6 +8,7 @@ import { draggable, dropTargetForElements } from '@atlaskit/pragmatic-drag-and-d
 import { dropTargetForExternal } from '@atlaskit/pragmatic-drag-and-drop/external/adapter'
 import { containsFiles, getFiles } from '@atlaskit/pragmatic-drag-and-drop/external/file'
 import AuthImage from '../AuthImage/AuthImage'
+import { LoaderSpinner } from '../LoaderSpinner'
 import type { Note, NoteObject, Tag } from '../../types'
 import { getTagColor } from '../../utils/tagColor'
 import { MERGE_NOTES_ENABLED } from '../../api/notes'
@@ -18,9 +19,15 @@ import { useCreateNote } from '../../hooks/useCreateNote'
 import { useUpdateNote } from '../../hooks/useUpdateNote'
 import { useDragContext } from '../../contexts/DragContext'
 import { getObjectDisplayText, getObjectPreviewSource } from '../../utils/notePreview'
+import { useFavicon } from '../../hooks/useFavicon'
 import styles from './NoteCard.module.css'
 
 const FILE_HOVER_THRESHOLD_MS = 750
+
+function notePageHref(note: Note): string {
+  if (note.isLocal || note.isLoading) return '/notes'
+  return `/notes/${note.id}`
+}
 
 // ─── Tags ─────────────────────────────────────────────────────────────────────
 
@@ -58,7 +65,7 @@ function SimpleCard({ note, onTagClick }: { note: Note; onTagClick?: (name: stri
       : undefined
 
     return (
-      <Link draggable={false} to={`/notes/${note.slug}`} className={`${styles.card} ${styles.cardSimpleImage}`}>
+      <Link draggable={false} to={notePageHref(note)} className={`${styles.card} ${styles.cardSimpleImage}`}>
         <AuthImage
           className={styles.simpleImageMedia}
           src={getObjectPreviewSource(imageObj)}
@@ -70,7 +77,7 @@ function SimpleCard({ note, onTagClick }: { note: Note; onTagClick?: (name: stri
   }
 
   return (
-    <Link draggable={false} to={`/notes/${note.slug}`} className={`${styles.card} ${styles.cardSimple}`}>
+    <Link draggable={false} to={notePageHref(note)} className={`${styles.card} ${styles.cardSimple}`}>
       {imageObj && <AuthImage className={styles.cover} src={getObjectPreviewSource(imageObj)} alt="" />}
       <div className={styles.title}>{note.title}</div>
       {textObj && <div className={styles.excerpt}>{getObjectDisplayText(textObj)}</div>}
@@ -109,6 +116,13 @@ function buildLayerPositions(layerCount: number) {
 
 const FALLBACK_COLORS = ['#1e3a2a', '#1e2a3a', '#2e1e3a', '#3a2e1e']
 
+// Фавиконка для одной ссылки (вынесена в отдельный компонент чтобы вызывать useFavicon)
+function LinkFaviconItem({ url }: { url: string }) {
+  const favicon = useFavicon(url)
+  if (favicon) return <img src={favicon} alt="" className={styles.collectionLayerFavicon} />
+  return <div className={styles.linkFaviconPlaceholder}><ExternalLink size={12} /></div>
+}
+
 // Контент одного слоя в стопке коллекции
 function LayerContent({ obj, fallback }: { obj: NoteObject | undefined; fallback: string }) {
   if (!obj) {
@@ -121,9 +135,12 @@ function LayerContent({ obj, fallback }: { obj: NoteObject | undefined; fallback
     const thumb = obj.thumbnailUrl ?? obj.cover
     const thumbStyle = obj.imageWidth && obj.imageHeight ? { aspectRatio: `${obj.imageWidth}/${obj.imageHeight}` } : undefined
     if (thumb) return <AuthImage src={thumb} alt="" className={styles.collectionLayerImg} style={thumbStyle} />
-    // thumbnailUrl === null means backend is generating it → shimmer
     if (obj.thumbnailUrl === null) {
-      return <div className={styles.thumbPending} style={thumbStyle} />
+      return (
+        <div className={styles.thumbPending} style={thumbStyle}>
+          <LoaderSpinner size="md" />
+        </div>
+      )
     }
     return (
       <div className={`${styles.collectionLayerBg} ${styles.collectionLayerDoc}`} style={{ background: fallback }}>
@@ -132,17 +149,15 @@ function LayerContent({ obj, fallback }: { obj: NoteObject | undefined; fallback
     )
   }
   if (obj.type === 'link') {
-    let favicon: string | null = null
-    try {
-      const domain = new URL(obj.content).hostname
-      favicon = obj.thumbnailUrl || `https://www.google.com/s2/favicons?domain=${domain}&sz=64`
-    } catch { /* ignore */ }
+    if (obj.thumbnailUrl) {
+      return <AuthImage src={obj.thumbnailUrl} alt="" className={styles.collectionLayerImg} />
+    }
     return (
       <div className={`${styles.collectionLayerBg} ${styles.collectionLayerLink}`} style={{ background: fallback }}>
-        {favicon
-          ? <img src={favicon} alt="" className={styles.collectionLayerFavicon} />
-          : <ExternalLink size={20} />
-        }
+        <div className={styles.linkCoverInner}>
+          <LinkFaviconItem url={obj.content} />
+          <LoaderSpinner size="md" />
+        </div>
       </div>
     )
   }
@@ -177,7 +192,7 @@ function CollectionStats({ objects }: { objects: Note['objects'] }) {
 }
 
 function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClick?: (name: string) => void; titleNode?: React.ReactNode }) {
-  const visualObjs = note.objects.filter(o => o.type === 'image' || o.type === 'document').slice(0, 5)
+  const visualObjs = note.objects.filter(o => o.type === 'image' || o.type === 'document' || o.type === 'link').slice(0, 5)
   const fallback   = FALLBACK_COLORS[note.id.charCodeAt(0) % FALLBACK_COLORS.length]
 
   let visual: React.ReactNode
@@ -186,6 +201,8 @@ function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClic
     const obj = visualObjs[0]
     if (obj.type === 'image') {
       visual = <AuthImage src={getObjectPreviewSource(obj)} alt="" className={styles.collectionSingle} />
+    } else if (obj.type === 'link' && obj.thumbnailUrl) {
+      visual = <AuthImage src={obj.thumbnailUrl} alt="" className={styles.collectionSingle} />
     } else {
       visual = (
         <div className={styles.collectionSingleNonImage}>
@@ -199,9 +216,11 @@ function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClic
         {visualObjs.map(obj => (
           obj.type === 'image'
             ? <AuthImage key={obj.id} src={getObjectPreviewSource(obj)} alt="" className={styles.collectionPairImg} />
-            : <div key={obj.id} className={styles.collectionPairSlot}>
-                <LayerContent obj={obj} fallback={fallback} />
-              </div>
+            : obj.type === 'link' && obj.thumbnailUrl
+              ? <AuthImage key={obj.id} src={obj.thumbnailUrl} alt="" className={styles.collectionPairImg} />
+              : <div key={obj.id} className={styles.collectionPairSlot}>
+                  <LayerContent obj={obj} fallback={fallback} />
+                </div>
         ))}
       </div>
     )
@@ -226,7 +245,7 @@ function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClic
   }
 
   return (
-    <Link draggable={false} to={`/notes/${note.slug}`} className={`${styles.card} ${styles.cardCollection}`}>
+    <Link draggable={false} to={notePageHref(note)} className={`${styles.card} ${styles.cardCollection}`}>
       <div className={styles.collectionVisual}>
         {visual}
       </div>
@@ -242,12 +261,10 @@ function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClic
 // ─── Composite ────────────────────────────────────────────────────────────────
 
 function LinkChip({ obj }: { obj: NoteObject }) {
-  let favicon: string | null = null
+  const favicon = useFavicon(obj.content)
   let domain = ''
   try {
-    const u = new URL(obj.content)
-    domain  = u.hostname.replace(/^www\./, '')
-    favicon = `https://www.google.com/s2/favicons?domain=${u.hostname}&sz=32`
+    domain = new URL(obj.content).hostname.replace(/^www\./, '')
   } catch { /* ignore */ }
 
   return (
@@ -285,27 +302,46 @@ function DocChip({ obj }: { obj: NoteObject }) {
 }
 
 function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick?: (name: string) => void; titleNode?: React.ReactNode }) {
-  const imageObj = note.objects.find(o => o.type === 'image')
-  const textObj  = note.objects.find(o => o.type === 'text')
-  const links    = note.objects.filter(o => o.type === 'link')
-  const docs     = note.objects.filter(o => o.type === 'document')
-  const firstDoc = docs[0]
-  const docThumb = firstDoc ? (firstDoc.thumbnailUrl ?? firstDoc.cover) : undefined
+  const imageObj  = note.objects.find(o => o.type === 'image')
+  const textObj   = note.objects.find(o => o.type === 'text')
+  const links     = note.objects.filter(o => o.type === 'link')
+  const docs      = note.objects.filter(o => o.type === 'document')
+  const firstDoc  = docs[0]
+  const docThumb  = firstDoc ? (firstDoc.thumbnailUrl ?? firstDoc.cover) : undefined
+  const firstLink = links[0]
+  const firstLinkThumb = firstLink?.thumbnailUrl ?? null
 
   return (
-    <Link draggable={false} to={`/notes/${note.slug}`} className={`${styles.card} ${styles.cardComposite}`}>
+    <Link draggable={false} to={notePageHref(note)} className={`${styles.card} ${styles.cardComposite}`}>
 
       {/* Cover */}
       <div className={styles.compositeCover}>
         {imageObj
           ? <AuthImage src={getObjectPreviewSource(imageObj)} alt="" className={styles.compositeCoverImg} />
           : docThumb
-            ? <AuthImage src={docThumb} alt="" className={styles.compositeCoverImg} />
+            ? <AuthImage src={docThumb} alt="" className={styles.compositeCoverImg} style={firstDoc?.imageWidth && firstDoc?.imageHeight ? { aspectRatio: `${firstDoc.imageWidth}/${firstDoc.imageHeight}` } : undefined} />
             : firstDoc?.thumbnailUrl === null
-              ? <div className={styles.thumbPending} />
-              : <div className={styles.compositeCoverEmpty}>
-                  {textObj && <span className={styles.compositeCoverText}>{getObjectDisplayText(textObj, 240)}</span>}
+              ? (
+                <div className={styles.thumbPending}>
+                  <LoaderSpinner size="md" />
                 </div>
+              )
+              : firstLink
+                ? firstLinkThumb
+                  ? <AuthImage src={firstLinkThumb} alt="" className={styles.compositeCoverImg} />
+                  : (
+                    <div className={styles.compositeCoverEmpty}>
+                      <div className={styles.linkCoverInner}>
+                        <div className={styles.linkFaviconRow}>
+                          {links.slice(0, 4).map(l => <LinkFaviconItem key={l.id} url={l.content} />)}
+                        </div>
+                        {firstLink.thumbnailUrl === null && <LoaderSpinner size="md" />}
+                      </div>
+                    </div>
+                  )
+                : <div className={styles.compositeCoverEmpty}>
+                    {textObj && <span className={styles.compositeCoverText}>{getObjectDisplayText(textObj, 240)}</span>}
+                  </div>
         }
       </div>
 
@@ -360,7 +396,7 @@ export function NoteCard({ note, isNew, onTagClick }: { note: Note; isNew?: bool
 
   function handleRenameSubmit() {
     const title = renameValue.trim() || note.title
-    updateNote({ slug: note.slug, data: { title } })
+    updateNote({ noteRef: note.id, data: { title } })
     setRenamePending(false)
   }
 

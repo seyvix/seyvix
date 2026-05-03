@@ -68,6 +68,23 @@ class StorageKeyBuilder:
     ) -> str:
         return f"snapshots/{content_object_id}/{snapshot_id}/{_safe_file_name(filename)}"
 
+    @staticmethod
+    def snapshot_artifact_resource(
+        *,
+        content_object_id: str,
+        snapshot_id: str,
+        filename: str,
+    ) -> str:
+        return f"snapshots/{content_object_id}/{snapshot_id}/resources/{_safe_file_name(filename)}"
+
+    @staticmethod
+    def snapshot_artifact_manifest(
+        *,
+        content_object_id: str,
+        snapshot_id: str,
+    ) -> str:
+        return f"snapshots/{content_object_id}/{snapshot_id}/manifest.json"
+
 
 class LocalVolumeStorage:
     def __init__(self, *, root: Path, bucket: str) -> None:
