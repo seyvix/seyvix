@@ -13,6 +13,7 @@ export default function NotesPage() {
 
   const search     = searchParams.get('search') ?? ''
   const activeTags = searchParams.get('tags')?.split(',').filter(Boolean) ?? []
+  const activeFolders = searchParams.get('folders')?.split(',').filter(Boolean) ?? []
 
   // Локальный state для инпута — не теряем фокус при каждом нажатии
   const [inputValue, setInputValue] = useState(search)
@@ -21,6 +22,7 @@ export default function NotesPage() {
   const { data: serverNotes = [], isPending } = useNotes({
     search:  search  || undefined,
     tags:    activeTags.length ? activeTags : undefined,
+    folders: activeFolders.length ? activeFolders : undefined,
   })
   const { localNotes } = useLocalNotes()
 

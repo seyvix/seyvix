@@ -72,11 +72,19 @@ const router = createBrowserRouter([
             lazy: async () => ({ Component: (await import('./pages/NoteEditPage')).default }),
           },
           {
-            path: '/folders',
+            path: '/categories',
             lazy: async () => ({ Component: (await import('./pages/FoldersPage')).default }),
           },
           {
-            path: '/folders/:folderSlug',
+            path: '/categories/*',
+            lazy: async () => ({ Component: (await import('./pages/FoldersPage')).default }),
+          },
+          {
+            path: '/folders',
+            element: <Navigate to="/categories" replace />,
+          },
+          {
+            path: '/folders/*',
             lazy: async () => ({ Component: (await import('./pages/FolderPage')).default }),
           },
           {

@@ -41,8 +41,23 @@ export interface Folder {
   id: string
   slug: string
   name: string
+  path: string
   parentId: string | null
   children: Folder[]
+}
+
+export interface FolderNoteSummary {
+  id: string
+  slug: string
+  title: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface FolderDetail {
+  category: Folder
+  tags: Tag[]
+  notes: FolderNoteSummary[]
 }
 
 export interface NoteObject {

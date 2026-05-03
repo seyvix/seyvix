@@ -1,10 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
 import { fetchFolder } from '../api/folders'
 
-export function useFolder(slug: string) {
+export function useFolder(path: string) {
   return useQuery({
-    queryKey: ['folder', slug],
-    queryFn: () => fetchFolder(slug),
-    enabled: !!slug,
+    queryKey: ['category', path],
+    queryFn: () => fetchFolder(path),
+    enabled: !!path,
   })
 }
