@@ -139,14 +139,15 @@ function LayerContent({ obj, fallback }: { obj: NoteObject | undefined; fallback
     )
   }
   if (obj.type === 'link') {
-    // Thumbnail ready → show like document
     if (obj.thumbnailUrl) {
       return <AuthImage src={obj.thumbnailUrl} alt="" className={styles.collectionLayerImg} />
     }
-    // Pending or no thumbnail → show favicon
     return (
       <div className={`${styles.collectionLayerBg} ${styles.collectionLayerLink}`} style={{ background: fallback }}>
-        <LinkFaviconItem url={obj.content} />
+        <div className={styles.linkCoverInner}>
+          <LinkFaviconItem url={obj.content} />
+          <div className={styles.linkPendingSpinner} />
+        </div>
       </div>
     )
   }
@@ -316,8 +317,11 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
                   ? <AuthImage src={firstLinkThumb} alt="" className={styles.compositeCoverImg} />
                   : (
                     <div className={styles.compositeCoverEmpty}>
-                      <div className={styles.linkFaviconRow}>
-                        {links.slice(0, 4).map(l => <LinkFaviconItem key={l.id} url={l.content} />)}
+                      <div className={styles.linkCoverInner}>
+                        <div className={styles.linkFaviconRow}>
+                          {links.slice(0, 4).map(l => <LinkFaviconItem key={l.id} url={l.content} />)}
+                        </div>
+                        {firstLink.thumbnailUrl === null && <div className={styles.linkPendingSpinner} />}
                       </div>
                     </div>
                   )

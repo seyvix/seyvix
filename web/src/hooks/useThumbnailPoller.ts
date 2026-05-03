@@ -11,7 +11,7 @@ export function useThumbnailPoller(notes: Note[]) {
 
   const hasPending = notes.some(n =>
     !n.isLocal &&
-    n.objects.some(o => o.type === 'document' && o.thumbnailUrl === null)
+    n.objects.some(o => (o.type === 'document' || o.type === 'link') && o.thumbnailUrl === null)
   )
 
   useEffect(() => {
