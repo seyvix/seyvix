@@ -4,9 +4,13 @@ import importlib
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
+from app.core.logging import get_logger
+
 BROWSER_VIEWPORT_WIDTH = 1280
 BROWSER_VIEWPORT_HEIGHT = 800
 BROWSER_TIMEOUT_MS = 20_000
+
+logger = get_logger(__name__)
 
 
 class BrowserRenderError(Exception):
@@ -17,6 +21,20 @@ class BrowserRenderError(Exception):
 class BrowserSnapshot:
     html: str
     screenshot_bytes: bytes
+
+
+@dataclass(slots=True, frozen=True)
+class ArchivedResource:
+    original_url: str
+    filename: str
+    content_type: str
+    data: bytes
+
+
+@dataclass(slots=True, frozen=True)
+class WebArchive:
+    html: str
+    resources: list[ArchivedResource]
 
 
 def render_url(url: str) -> BrowserSnapshot:
@@ -38,6 +56,93 @@ def render_url_pdf(url: str) -> bytes:
     """
     with ThreadPoolExecutor(max_workers=1) as pool:
         return pool.submit(_render_pdf_in_thread, url).result()
+
+
+def render_url_archive(url: str) -> WebArchive:
+    """Capture rendered HTML plus static CSS/image/font resources."""
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(_render_archive_in_thread, url).result()
+
+
+def _render_archive_in_thread(url: str) -> WebArchive:
+    try:
+        playwright_mod = importlib.import_module("playwright.sync_api")
+    except ImportError as exc:
+        raise BrowserRenderError("playwright package is not installed") from exc
+
+    from app.modules.snapshots.rewriter import RESOURCE_WHITELIST, ext_for_mime  # noqa: PLC0415
+
+    sync_playwright = playwright_mod.sync_playwright
+    resources: list[ArchivedResource] = []
+    seen_urls: set[str] = set()
+    counter = 0
+    skipped_mime_counts: dict[str, int] = {}
+
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(
+                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+            )
+            try:
+                page = browser.new_page(
+                    viewport={"width": BROWSER_VIEWPORT_WIDTH, "height": BROWSER_VIEWPORT_HEIGHT},
+                )
+
+                def handle_response(response: object) -> None:
+                    nonlocal counter
+                    try:
+                        resp_url: str = response.url  # type: ignore[attr-defined]
+                        if resp_url in seen_urls:
+                            return
+                        content_type: str = (
+                            response.headers.get("content-type", "")  # type: ignore[attr-defined]
+                            .split(";")[0]
+                            .strip()
+                            .lower()
+                        )
+                        if content_type not in RESOURCE_WHITELIST:
+                            skipped_key = content_type or "missing"
+                            skipped_mime_counts[skipped_key] = (
+                                skipped_mime_counts.get(skipped_key, 0) + 1
+                            )
+                            return
+                        data: bytes = response.body()  # type: ignore[attr-defined]
+                        if not data:
+                            return
+                        ext = ext_for_mime(content_type)
+                        filename = f"r{counter:04d}{ext}"
+                        counter += 1
+                        seen_urls.add(resp_url)
+                        resources.append(
+                            ArchivedResource(
+                                original_url=resp_url,
+                                filename=filename,
+                                content_type=content_type,
+                                data=data,
+                            )
+                        )
+                    except Exception:
+                        return
+
+                page.on("response", handle_response)
+                logger.info("snapshot.browser.archive.goto", url=url)
+                page.goto(url, timeout=BROWSER_TIMEOUT_MS, wait_until="networkidle")
+                html_content: str = page.content()
+                logger.info(
+                    "snapshot.browser.archive.complete",
+                    url=url,
+                    html_length=len(html_content),
+                    resource_count=len(resources),
+                    resource_mime_types=sorted({resource.content_type for resource in resources}),
+                    skipped_mime_counts=skipped_mime_counts,
+                )
+                return WebArchive(html=html_content, resources=list(resources))
+            finally:
+                browser.close()
+    except BrowserRenderError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise BrowserRenderError(f"Browser archive rendering failed: {exc}") from exc
 
 
 def _render_pdf_in_thread(url: str) -> bytes:

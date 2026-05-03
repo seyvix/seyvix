@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import importlib
 import ipaddress
+import json
 import re
 import shutil
 import socket
@@ -18,10 +19,13 @@ from xml.etree import ElementTree
 import httpx
 
 from app.core.config import get_settings
+from app.core.logging import get_logger
 from app.modules.content.models import ContentAsset, ContentObject
 
 THUMBNAIL_MAX_WIDTH = 512
 THUMBNAIL_MAX_HEIGHT = 512
+
+logger = get_logger(__name__)
 
 
 class UnsupportedSnapshotError(Exception):
@@ -35,6 +39,7 @@ class GeneratedArtifact:
     path: Path
     width: int | None = None
     height: int | None = None
+    resources_dir: Path | None = None
 
     @property
     def size_bytes(self) -> int:
@@ -57,6 +62,7 @@ class SnapshotArtifactGenerator:
         content_object: ContentObject,
         asset: ContentAsset | None,
         job_type: str,
+        artifact_id: str | None = None,
     ) -> GeneratedArtifact:
         if job_type == "archive_org":
             raise UnsupportedSnapshotError("Archive.org snapshots require an external URL.")
@@ -85,7 +91,10 @@ class SnapshotArtifactGenerator:
             )
         if job_type == "webpage_html":
             return self._generate_webpage_html(
-                asset=asset, source_path=source_path, output_dir=output_dir
+                asset=asset,
+                source_path=source_path,
+                output_dir=output_dir,
+                artifact_id=artifact_id,
             )
         if job_type == "pdf":
             return self._generate_pdf(asset=asset, source_path=source_path, output_dir=output_dir)
@@ -189,10 +198,18 @@ class SnapshotArtifactGenerator:
         asset: ContentAsset,
         source_path: Path,
         output_dir: Path,
+        artifact_id: str | None = None,
     ) -> GeneratedArtifact:
         suffix = source_path.suffix.lower()
         path = output_dir / "snapshot.html"
         if asset.media_type == "link":
+            if artifact_id is not None:
+                return self._generate_browser_html_archive(
+                    asset=asset,
+                    source_path=source_path,
+                    output_dir=output_dir,
+                    artifact_id=artifact_id,
+                )
             return self._generate_browser_html(
                 asset=asset, source_path=source_path, output_dir=output_dir
             )
@@ -320,6 +337,94 @@ class SnapshotArtifactGenerator:
         path = output_dir / "snapshot.html"
         path.write_text(snapshot.html, encoding="utf-8")
         return GeneratedArtifact(filename="snapshot.html", mime_type="text/html", path=path)
+
+    def _generate_browser_html_archive(
+        self,
+        *,
+        asset: ContentAsset,
+        source_path: Path,
+        output_dir: Path,
+        artifact_id: str,
+    ) -> GeneratedArtifact:
+        from app.core.config import get_settings  # noqa: PLC0415
+        from app.modules.snapshots.browser import BrowserRenderError, render_url_archive  # noqa: PLC0415
+        from app.modules.snapshots.rewriter import rewrite_css, rewrite_html  # noqa: PLC0415
+
+        url = self._link_url(asset=asset, source_path=source_path)
+        logger.info(
+            "snapshot.artifact.webpage_html_archive.render_start",
+            asset_id=asset.id,
+            artifact_id=artifact_id,
+            url=url,
+        )
+        try:
+            archive = render_url_archive(url)
+        except BrowserRenderError as exc:
+            logger.warning(
+                "snapshot.artifact.webpage_html_archive.render_failed",
+                asset_id=asset.id,
+                artifact_id=artifact_id,
+                url=url,
+                error=str(exc),
+            )
+            raise UnsupportedSnapshotError(str(exc)) from exc
+
+        api_prefix = get_settings().api_prefix
+        manifest: dict[str, str] = {
+            resource.original_url: (
+                f"{api_prefix}/snapshots/artifacts/{artifact_id}/resources/{resource.filename}"
+            )
+            for resource in archive.resources
+        }
+        logger.info(
+            "snapshot.artifact.webpage_html_archive.rendered",
+            asset_id=asset.id,
+            artifact_id=artifact_id,
+            url=url,
+            html_length=len(archive.html),
+            resource_count=len(archive.resources),
+            resource_mime_types=sorted({resource.content_type for resource in archive.resources}),
+        )
+
+        rewritten_html = rewrite_html(archive.html, url, manifest)
+        index_path = output_dir / "snapshot.html"
+        index_path.write_text(rewritten_html, encoding="utf-8")
+
+        resources_dir = output_dir / "resources"
+        resources_dir.mkdir(exist_ok=True)
+        content_type_map: dict[str, str] = {}
+
+        for resource in archive.resources:
+            resource_path = resources_dir / resource.filename
+            if resource.content_type == "text/css":
+                rewritten = rewrite_css(
+                    resource.data.decode("utf-8", errors="replace"),
+                    resource.original_url,
+                    manifest,
+                )
+                resource_path.write_bytes(rewritten.encode("utf-8"))
+            else:
+                resource_path.write_bytes(resource.data)
+            content_type_map[resource.filename] = resource.content_type
+
+        (output_dir / "manifest.json").write_text(
+            json.dumps(content_type_map),
+            encoding="utf-8",
+        )
+        logger.info(
+            "snapshot.artifact.webpage_html_archive.written",
+            asset_id=asset.id,
+            artifact_id=artifact_id,
+            html_path=str(index_path),
+            resource_count=len(content_type_map),
+            manifest_path=str(output_dir / "manifest.json"),
+        )
+        return GeneratedArtifact(
+            filename="snapshot.html",
+            mime_type="text/html",
+            path=index_path,
+            resources_dir=resources_dir,
+        )
 
     def _generate_browser_pdf(
         self,

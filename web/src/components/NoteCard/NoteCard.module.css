@@ -820,16 +820,6 @@
   justify-content: center;
 }
 
-.thumbPending::after {
-  content: '';
-  width: 20px;
-  height: 20px;
-  border: 2px solid rgba(255, 255, 255, 0.08);
-  border-top-color: var(--color-accent);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
 .linkCoverInner {
   display: flex;
   flex-direction: column;
@@ -854,15 +844,5 @@
   align-items: center;
   justify-content: center;
   color: rgba(255, 255, 255, 0.3);
-}
-
-.linkPendingSpinner {
-  width: 18px;
-  height: 18px;
-  border: 2px solid rgba(255, 255, 255, 0.08);
-  border-top-color: var(--color-accent);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-  flex-shrink: 0;
 }
 

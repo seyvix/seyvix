@@ -2,7 +2,7 @@ export type NoteType = 'simple' | 'composite' | 'collection'
 
 export type NoteObjectType = 'text' | 'image' | 'link' | 'document' | 'audio' | 'video'
 
-export type SnapshotViewKind = 'thumbnail' | 'markdown' | 'pdf' | 'html'
+export type SnapshotViewKind = 'thumbnail' | 'markdown' | 'pdf' | 'html' | 'webpage_html'
 
 export interface SnapshotView {
   kind: SnapshotViewKind
@@ -62,6 +62,12 @@ export interface NoteObject {
   createdAt: string
 }
 
+export interface NoteCollectionRef {
+  id: string
+  slug: string
+  title: string
+}
+
 export interface Note {
   id: string
   slug: string
@@ -74,6 +80,8 @@ export interface Note {
   objects: NoteObject[]
   createdAt: string
   updatedAt: string
+  isFavorite?: boolean
+  collection?: NoteCollectionRef | null
   /** Стабильный ключ для React — не меняется при tempId→serverId переходе */
   stableKey?: string
   isLocal?: boolean    // хранится локально, ещё не синхронизировано

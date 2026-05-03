@@ -8,6 +8,7 @@ import { draggable, dropTargetForElements } from '@atlaskit/pragmatic-drag-and-d
 import { dropTargetForExternal } from '@atlaskit/pragmatic-drag-and-drop/external/adapter'
 import { containsFiles, getFiles } from '@atlaskit/pragmatic-drag-and-drop/external/file'
 import AuthImage from '../AuthImage/AuthImage'
+import { LoaderSpinner } from '../LoaderSpinner'
 import type { Note, NoteObject, Tag } from '../../types'
 import { getTagColor } from '../../utils/tagColor'
 import { MERGE_NOTES_ENABLED } from '../../api/notes'
@@ -22,6 +23,11 @@ import { useFavicon } from '../../hooks/useFavicon'
 import styles from './NoteCard.module.css'
 
 const FILE_HOVER_THRESHOLD_MS = 750
+
+function notePageHref(note: Note): string {
+  if (note.isLocal || note.isLoading) return '/notes'
+  return `/notes/${note.id}`
+}
 
 // ─── Tags ─────────────────────────────────────────────────────────────────────
 
@@ -59,7 +65,7 @@ function SimpleCard({ note, onTagClick }: { note: Note; onTagClick?: (name: stri
       : undefined
 
     return (
-      <Link draggable={false} to={`/notes/${note.slug}`} className={`${styles.card} ${styles.cardSimpleImage}`}>
+      <Link draggable={false} to={notePageHref(note)} className={`${styles.card} ${styles.cardSimpleImage}`}>
         <AuthImage
           className={styles.simpleImageMedia}
           src={getObjectPreviewSource(imageObj)}
@@ -71,7 +77,7 @@ function SimpleCard({ note, onTagClick }: { note: Note; onTagClick?: (name: stri
   }
 
   return (
-    <Link draggable={false} to={`/notes/${note.slug}`} className={`${styles.card} ${styles.cardSimple}`}>
+    <Link draggable={false} to={notePageHref(note)} className={`${styles.card} ${styles.cardSimple}`}>
       {imageObj && <AuthImage className={styles.cover} src={getObjectPreviewSource(imageObj)} alt="" />}
       <div className={styles.title}>{note.title}</div>
       {textObj && <div className={styles.excerpt}>{getObjectDisplayText(textObj)}</div>}
@@ -130,7 +136,11 @@ function LayerContent({ obj, fallback }: { obj: NoteObject | undefined; fallback
     const thumbStyle = obj.imageWidth && obj.imageHeight ? { aspectRatio: `${obj.imageWidth}/${obj.imageHeight}` } : undefined
     if (thumb) return <AuthImage src={thumb} alt="" className={styles.collectionLayerImg} style={thumbStyle} />
     if (obj.thumbnailUrl === null) {
-      return <div className={styles.thumbPending} style={thumbStyle} />
+      return (
+        <div className={styles.thumbPending} style={thumbStyle}>
+          <LoaderSpinner size="md" />
+        </div>
+      )
     }
     return (
       <div className={`${styles.collectionLayerBg} ${styles.collectionLayerDoc}`} style={{ background: fallback }}>
@@ -146,7 +156,7 @@ function LayerContent({ obj, fallback }: { obj: NoteObject | undefined; fallback
       <div className={`${styles.collectionLayerBg} ${styles.collectionLayerLink}`} style={{ background: fallback }}>
         <div className={styles.linkCoverInner}>
           <LinkFaviconItem url={obj.content} />
-          <div className={styles.linkPendingSpinner} />
+          <LoaderSpinner size="md" />
         </div>
       </div>
     )
@@ -235,7 +245,7 @@ function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClic
   }
 
   return (
-    <Link draggable={false} to={`/notes/${note.slug}`} className={`${styles.card} ${styles.cardCollection}`}>
+    <Link draggable={false} to={notePageHref(note)} className={`${styles.card} ${styles.cardCollection}`}>
       <div className={styles.collectionVisual}>
         {visual}
       </div>
@@ -302,7 +312,7 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
   const firstLinkThumb = firstLink?.thumbnailUrl ?? null
 
   return (
-    <Link draggable={false} to={`/notes/${note.slug}`} className={`${styles.card} ${styles.cardComposite}`}>
+    <Link draggable={false} to={notePageHref(note)} className={`${styles.card} ${styles.cardComposite}`}>
 
       {/* Cover */}
       <div className={styles.compositeCover}>
@@ -311,7 +321,11 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
           : docThumb
             ? <AuthImage src={docThumb} alt="" className={styles.compositeCoverImg} style={firstDoc?.imageWidth && firstDoc?.imageHeight ? { aspectRatio: `${firstDoc.imageWidth}/${firstDoc.imageHeight}` } : undefined} />
             : firstDoc?.thumbnailUrl === null
-              ? <div className={styles.thumbPending} />
+              ? (
+                <div className={styles.thumbPending}>
+                  <LoaderSpinner size="md" />
+                </div>
+              )
               : firstLink
                 ? firstLinkThumb
                   ? <AuthImage src={firstLinkThumb} alt="" className={styles.compositeCoverImg} />
@@ -321,7 +335,7 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
                         <div className={styles.linkFaviconRow}>
                           {links.slice(0, 4).map(l => <LinkFaviconItem key={l.id} url={l.content} />)}
                         </div>
-                        {firstLink.thumbnailUrl === null && <div className={styles.linkPendingSpinner} />}
+                        {firstLink.thumbnailUrl === null && <LoaderSpinner size="md" />}
                       </div>
                     </div>
                   )
@@ -382,7 +396,7 @@ export function NoteCard({ note, isNew, onTagClick }: { note: Note; isNew?: bool
 
   function handleRenameSubmit() {
     const title = renameValue.trim() || note.title
-    updateNote({ slug: note.slug, data: { title } })
+    updateNote({ noteRef: note.id, data: { title } })
     setRenamePending(false)
   }
 

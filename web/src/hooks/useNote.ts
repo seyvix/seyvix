@@ -1,10 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
 import { fetchNote } from '../api/notes'
 
-export function useNote(slug: string) {
+export function useNote(noteId: string) {
   return useQuery({
-    queryKey: ['note', slug],
-    queryFn: () => fetchNote(slug),
-    enabled: !!slug,
+    queryKey: ['note', noteId],
+    queryFn: () => fetchNote(noteId),
+    enabled: !!noteId,
   })
 }
