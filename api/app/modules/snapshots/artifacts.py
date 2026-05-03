@@ -219,6 +219,10 @@ class SnapshotArtifactGenerator:
         source_path: Path,
         output_dir: Path,
     ) -> GeneratedArtifact:
+        if asset.media_type == "link":
+            return self._generate_browser_pdf(
+                asset=asset, source_path=source_path, output_dir=output_dir
+            )
         path = output_dir / "snapshot.pdf"
         if self._is_pdf(asset=asset, source_path=source_path):
             shutil.copyfile(source_path, path)
@@ -316,6 +320,25 @@ class SnapshotArtifactGenerator:
         path = output_dir / "snapshot.html"
         path.write_text(snapshot.html, encoding="utf-8")
         return GeneratedArtifact(filename="snapshot.html", mime_type="text/html", path=path)
+
+    def _generate_browser_pdf(
+        self,
+        *,
+        asset: ContentAsset,
+        source_path: Path,
+        output_dir: Path,
+    ) -> GeneratedArtifact:
+        from app.modules.snapshots.browser import BrowserRenderError, render_url_pdf  # noqa: PLC0415
+
+        url = self._link_url(asset=asset, source_path=source_path)
+        try:
+            pdf_bytes = render_url_pdf(url)
+        except BrowserRenderError as exc:
+            raise UnsupportedSnapshotError(str(exc)) from exc
+
+        path = output_dir / "snapshot.pdf"
+        path.write_bytes(pdf_bytes)
+        return GeneratedArtifact(filename="snapshot.pdf", mime_type="application/pdf", path=path)
 
     def _render_pdf_first_page(
         self,

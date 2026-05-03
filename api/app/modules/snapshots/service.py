@@ -253,6 +253,10 @@ class SnapshotService:
         source_assets = [asset for asset in content_object.assets if asset.role == "original"]
 
         for asset in source_assets:
+            # For link notes, skip non-link assets — their text is note metadata,
+            # not a site to snapshot.
+            if content_object.media_type == "link" and asset.media_type != "link":
+                continue
             for job_type in plan_snapshot_job_types(asset, effective):
                 await self._enqueue_job(
                     content_object,

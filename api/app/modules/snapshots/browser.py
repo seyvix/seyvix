@@ -30,6 +30,43 @@ def render_url(url: str) -> BrowserSnapshot:
         return pool.submit(_render_in_thread, url).result()
 
 
+def render_url_pdf(url: str) -> bytes:
+    """Render *url* as a PDF via headless Chromium.
+
+    Returns raw PDF bytes.
+    Raises BrowserRenderError on any failure.
+    """
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(_render_pdf_in_thread, url).result()
+
+
+def _render_pdf_in_thread(url: str) -> bytes:
+    try:
+        playwright_mod = importlib.import_module("playwright.sync_api")
+    except ImportError as exc:
+        raise BrowserRenderError("playwright package is not installed") from exc
+
+    sync_playwright = playwright_mod.sync_playwright
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(
+                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+            )
+            try:
+                page = browser.new_page(
+                    viewport={"width": BROWSER_VIEWPORT_WIDTH, "height": BROWSER_VIEWPORT_HEIGHT},
+                )
+                page.goto(url, timeout=BROWSER_TIMEOUT_MS, wait_until="networkidle")
+                pdf_bytes: bytes = page.pdf(format="A4", print_background=True)
+                return pdf_bytes
+            finally:
+                browser.close()
+    except BrowserRenderError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise BrowserRenderError(f"Browser PDF rendering failed: {exc}") from exc
+
+
 def _render_in_thread(url: str) -> BrowserSnapshot:
     try:
         playwright_mod = importlib.import_module("playwright.sync_api")
