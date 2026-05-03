@@ -64,13 +64,13 @@ function snapshotViewsForAsset(asset: BackendAsset): SnapshotView[] {
   if (asset.thumbnail_url) views.push({ kind: 'thumbnail', label: 'Миниатюра', url: asset.thumbnail_url })
   if (asset.markdown_url) views.push({ kind: 'markdown', label: 'Markdown', url: asset.markdown_url })
   if (asset.pdf_url) views.push({ kind: 'pdf', label: 'PDF', url: asset.pdf_url })
-  if (asset.html_url) views.push({ kind: 'html', label: 'HTML', url: asset.html_url })
+  if (asset.html_url) views.push({ kind: 'webpage_html', label: 'HTML', url: asset.html_url })
   return views
 }
 
 function mapAsset(asset: BackendAsset, downloadUrl: string, createdAt: string): NoteObject {
   const type = mediaTypeToObjectType(asset.media_type)
-  const content = type === 'text'
+  const content = (type === 'text' || type === 'link')
     ? (asset.text_content ?? asset.url ?? downloadUrl)
     : (asset.url ?? downloadUrl)
   return {
@@ -98,8 +98,10 @@ export function mapBackendNote(b: BackendNote): Note {
       const type = firstAsset
         ? mediaTypeToObjectType(firstAsset.media_type)
         : mediaTypeToObjectType(item.media_type)
-      const content = firstAsset?.url ?? item.download_url
-      const thumbnailUrl = type === 'document' ? (firstAsset?.thumbnail_url ?? null) : undefined
+      const content = type === 'link'
+        ? (firstAsset?.text_content ?? firstAsset?.url ?? item.download_url)
+        : (firstAsset?.url ?? item.download_url)
+      const thumbnailUrl = (type === 'document' || type === 'link') ? (firstAsset?.thumbnail_url ?? null) : undefined
       const cover = type === 'document' ? undefined : (firstAsset?.url ?? undefined)
       return {
         id: item.id,

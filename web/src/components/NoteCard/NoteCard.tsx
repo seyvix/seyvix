@@ -110,10 +110,15 @@ function buildLayerPositions(layerCount: number) {
 
 const FALLBACK_COLORS = ['#1e3a2a', '#1e2a3a', '#2e1e3a', '#3a2e1e']
 
+// Фавиконка для одной ссылки (вынесена в отдельный компонент чтобы вызывать useFavicon)
+function LinkFaviconItem({ url }: { url: string }) {
+  const favicon = useFavicon(url)
+  if (favicon) return <img src={favicon} alt="" className={styles.collectionLayerFavicon} />
+  return <div className={styles.linkFaviconPlaceholder}><ExternalLink size={12} /></div>
+}
+
 // Контент одного слоя в стопке коллекции
 function LayerContent({ obj, fallback }: { obj: NoteObject | undefined; fallback: string }) {
-  const faviconUrl = useFavicon(obj?.type === 'link' ? obj.content : null)
-
   if (!obj) {
     return <div className={styles.collectionLayerBg} style={{ background: fallback }} />
   }
@@ -124,7 +129,6 @@ function LayerContent({ obj, fallback }: { obj: NoteObject | undefined; fallback
     const thumb = obj.thumbnailUrl ?? obj.cover
     const thumbStyle = obj.imageWidth && obj.imageHeight ? { aspectRatio: `${obj.imageWidth}/${obj.imageHeight}` } : undefined
     if (thumb) return <AuthImage src={thumb} alt="" className={styles.collectionLayerImg} style={thumbStyle} />
-    // thumbnailUrl === null means backend is generating it → shimmer
     if (obj.thumbnailUrl === null) {
       return <div className={styles.thumbPending} style={thumbStyle} />
     }
@@ -135,23 +139,14 @@ function LayerContent({ obj, fallback }: { obj: NoteObject | undefined; fallback
     )
   }
   if (obj.type === 'link') {
+    // Thumbnail ready → show like document
+    if (obj.thumbnailUrl) {
+      return <AuthImage src={obj.thumbnailUrl} alt="" className={styles.collectionLayerImg} />
+    }
+    // Pending or no thumbnail → show favicon
     return (
-      <div
-        className={`${styles.collectionLayerBg} ${styles.collectionLayerLink}`}
-        style={{ background: fallback, position: 'relative' }}
-      >
-        {faviconUrl
-          ? <img src={faviconUrl} alt="" className={styles.collectionLayerFavicon} />
-          : <ExternalLink size={20} />
-        }
-        {obj.thumbnailUrl && (
-          <AuthImage
-            src={obj.thumbnailUrl}
-            alt=""
-            className={styles.collectionLayerImg}
-            style={{ position: 'absolute', inset: 0, background: 'transparent' }}
-          />
-        )}
+      <div className={`${styles.collectionLayerBg} ${styles.collectionLayerLink}`} style={{ background: fallback }}>
+        <LinkFaviconItem url={obj.content} />
       </div>
     )
   }
@@ -186,7 +181,7 @@ function CollectionStats({ objects }: { objects: Note['objects'] }) {
 }
 
 function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClick?: (name: string) => void; titleNode?: React.ReactNode }) {
-  const visualObjs = note.objects.filter(o => o.type === 'image' || o.type === 'document').slice(0, 5)
+  const visualObjs = note.objects.filter(o => o.type === 'image' || o.type === 'document' || o.type === 'link').slice(0, 5)
   const fallback   = FALLBACK_COLORS[note.id.charCodeAt(0) % FALLBACK_COLORS.length]
 
   let visual: React.ReactNode
@@ -195,6 +190,8 @@ function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClic
     const obj = visualObjs[0]
     if (obj.type === 'image') {
       visual = <AuthImage src={getObjectPreviewSource(obj)} alt="" className={styles.collectionSingle} />
+    } else if (obj.type === 'link' && obj.thumbnailUrl) {
+      visual = <AuthImage src={obj.thumbnailUrl} alt="" className={styles.collectionSingle} />
     } else {
       visual = (
         <div className={styles.collectionSingleNonImage}>
@@ -208,9 +205,11 @@ function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClic
         {visualObjs.map(obj => (
           obj.type === 'image'
             ? <AuthImage key={obj.id} src={getObjectPreviewSource(obj)} alt="" className={styles.collectionPairImg} />
-            : <div key={obj.id} className={styles.collectionPairSlot}>
-                <LayerContent obj={obj} fallback={fallback} />
-              </div>
+            : obj.type === 'link' && obj.thumbnailUrl
+              ? <AuthImage key={obj.id} src={obj.thumbnailUrl} alt="" className={styles.collectionPairImg} />
+              : <div key={obj.id} className={styles.collectionPairSlot}>
+                  <LayerContent obj={obj} fallback={fallback} />
+                </div>
         ))}
       </div>
     )
@@ -299,7 +298,7 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
   const firstDoc  = docs[0]
   const docThumb  = firstDoc ? (firstDoc.thumbnailUrl ?? firstDoc.cover) : undefined
   const firstLink = links[0]
-  const linkFaviconUrl = useFavicon(firstLink?.content ?? null)
+  const firstLinkThumb = firstLink?.thumbnailUrl ?? null
 
   return (
     <Link draggable={false} to={`/notes/${note.slug}`} className={`${styles.card} ${styles.cardComposite}`}>
@@ -313,21 +312,15 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
             : firstDoc?.thumbnailUrl === null
               ? <div className={styles.thumbPending} />
               : firstLink
-                ? (
-                  <div className={styles.compositeCoverEmpty} style={{ position: 'relative' }}>
-                    {linkFaviconUrl && (
-                      <img src={linkFaviconUrl} alt="" className={styles.collectionLayerFavicon} />
-                    )}
-                    {firstLink.thumbnailUrl && (
-                      <AuthImage
-                        src={firstLink.thumbnailUrl}
-                        alt=""
-                        className={styles.compositeCoverImg}
-                        style={{ position: 'absolute', inset: 0, background: 'transparent' }}
-                      />
-                    )}
-                  </div>
-                )
+                ? firstLinkThumb
+                  ? <AuthImage src={firstLinkThumb} alt="" className={styles.compositeCoverImg} />
+                  : (
+                    <div className={styles.compositeCoverEmpty}>
+                      <div className={styles.linkFaviconRow}>
+                        {links.slice(0, 4).map(l => <LinkFaviconItem key={l.id} url={l.content} />)}
+                      </div>
+                    </div>
+                  )
                 : <div className={styles.compositeCoverEmpty}>
                     {textObj && <span className={styles.compositeCoverText}>{getObjectDisplayText(textObj, 240)}</span>}
                   </div>

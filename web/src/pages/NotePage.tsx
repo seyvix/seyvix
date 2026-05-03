@@ -152,7 +152,9 @@ const SNAPSHOT_ICON: Record<string, React.ReactNode> = {
 }
 
 function SnapshotLinks({ obj }: { obj: NoteObject }) {
-  const views = (obj.snapshotViews ?? []).filter(v => v.kind !== 'thumbnail')
+  const views = (obj.snapshotViews ?? []).filter(v =>
+    v.kind !== 'thumbnail' && !(obj.type === 'link' && v.kind === 'webpage_html')
+  )
   if (views.length === 0) return null
   return (
     <div className={styles.snapshotLinks}>
