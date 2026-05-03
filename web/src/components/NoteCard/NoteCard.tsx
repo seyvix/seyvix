@@ -18,6 +18,7 @@ import { useCreateNote } from '../../hooks/useCreateNote'
 import { useUpdateNote } from '../../hooks/useUpdateNote'
 import { useDragContext } from '../../contexts/DragContext'
 import { getObjectDisplayText, getObjectPreviewSource } from '../../utils/notePreview'
+import { useFavicon } from '../../hooks/useFavicon'
 import styles from './NoteCard.module.css'
 
 const FILE_HOVER_THRESHOLD_MS = 750
@@ -111,6 +112,8 @@ const FALLBACK_COLORS = ['#1e3a2a', '#1e2a3a', '#2e1e3a', '#3a2e1e']
 
 // Контент одного слоя в стопке коллекции
 function LayerContent({ obj, fallback }: { obj: NoteObject | undefined; fallback: string }) {
+  const faviconUrl = useFavicon(obj?.type === 'link' ? obj.content : null)
+
   if (!obj) {
     return <div className={styles.collectionLayerBg} style={{ background: fallback }} />
   }
@@ -132,11 +135,6 @@ function LayerContent({ obj, fallback }: { obj: NoteObject | undefined; fallback
     )
   }
   if (obj.type === 'link') {
-    let faviconUrl: string | null = null
-    try {
-      const domain = new URL(obj.content).hostname
-      faviconUrl = `https://www.google.com/s2/favicons?domain=${domain}&sz=64`
-    } catch { /* ignore */ }
     return (
       <div
         className={`${styles.collectionLayerBg} ${styles.collectionLayerLink}`}
@@ -253,12 +251,10 @@ function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClic
 // ─── Composite ────────────────────────────────────────────────────────────────
 
 function LinkChip({ obj }: { obj: NoteObject }) {
-  let favicon: string | null = null
+  const favicon = useFavicon(obj.content)
   let domain = ''
   try {
-    const u = new URL(obj.content)
-    domain  = u.hostname.replace(/^www\./, '')
-    favicon = `https://www.google.com/s2/favicons?domain=${u.hostname}&sz=32`
+    domain = new URL(obj.content).hostname.replace(/^www\./, '')
   } catch { /* ignore */ }
 
   return (
@@ -303,13 +299,7 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
   const firstDoc  = docs[0]
   const docThumb  = firstDoc ? (firstDoc.thumbnailUrl ?? firstDoc.cover) : undefined
   const firstLink = links[0]
-
-  let linkFaviconUrl: string | null = null
-  if (firstLink) {
-    try {
-      linkFaviconUrl = `https://www.google.com/s2/favicons?domain=${new URL(firstLink.content).hostname}&sz=64`
-    } catch { /* ignore */ }
-  }
+  const linkFaviconUrl = useFavicon(firstLink?.content ?? null)
 
   return (
     <Link draggable={false} to={`/notes/${note.slug}`} className={`${styles.card} ${styles.cardComposite}`}>

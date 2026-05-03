@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import PDFViewer from '../components/PDFViewer/PDFViewer'
+import { useFavicon } from '../hooks/useFavicon'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -530,18 +531,19 @@ function TextObj({
 
 // ─── Link ──────────────────────────────────────────────────────────────────────
 
-function makeLinkSrcdoc(url: string, domain: string): string {
+function makeLinkSrcdoc(url: string, domain: string, faviconDataUrl?: string | null): string {
   const escaped = url.replace(/"/g, '&quot;')
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:#0f0f0f;color:#f5f5f5;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;user-select:none}img{width:48px;height:48px;border-radius:10px}.domain{font-size:22px;font-weight:600;color:#e5e5e5}.url{font-size:12px;color:#555;max-width:320px;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.badge{font-size:10px;color:#444;border:1px solid #2a2a2a;border-radius:20px;padding:3px 10px;margin-top:8px}</style></head><body><img src="https://www.google.com/s2/favicons?domain=${domain}&sz=96" onerror="this.style.display='none'"/><div class="domain">${domain}</div><div class="url">${escaped}</div><div class="badge">снапшот</div></body></html>`
+  const imgTag = faviconDataUrl
+    ? `<img src="${faviconDataUrl}"/>`
+    : ''
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:#0f0f0f;color:#f5f5f5;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;user-select:none}img{width:48px;height:48px;border-radius:10px}.domain{font-size:22px;font-weight:600;color:#e5e5e5}.url{font-size:12px;color:#555;max-width:320px;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.badge{font-size:10px;color:#444;border:1px solid #2a2a2a;border-radius:20px;padding:3px 10px;margin-top:8px}</style></head><body>${imgTag}<div class="domain">${domain}</div><div class="url">${escaped}</div><div class="badge">снапшот</div></body></html>`
 }
 
 function LinkObj({ obj, isEditing, onDelete }: { obj: NoteObject; isEditing: boolean; onDelete: () => void }) {
+  const favicon = useFavicon(obj.content)
   let domain = obj.content
-  let favicon = ''
   try {
-    const u = new URL(obj.content)
-    domain  = u.hostname.replace(/^www\./, '')
-    favicon = `https://www.google.com/s2/favicons?domain=${u.hostname}&sz=32`
+    domain = new URL(obj.content).hostname.replace(/^www\./, '')
   } catch { /* ignore */ }
 
   const htmlSnapshot = obj.snapshotViews?.find(v => v.kind === 'webpage_html')
@@ -561,7 +563,7 @@ function LinkObj({ obj, isEditing, onDelete }: { obj: NoteObject; isEditing: boo
         ) : (
           <iframe
             className={styles.objLinkIframe}
-            srcDoc={makeLinkSrcdoc(obj.content, domain)}
+            srcDoc={makeLinkSrcdoc(obj.content, domain, favicon)}
             sandbox="allow-same-origin"
             title={domain}
           />
@@ -807,7 +809,6 @@ export default function NotePage() {
 
       {/* Content */}
       <div className={styles.content}>
-
         {/* Meta */}
         <div className={styles.meta}>
           {isEditing
