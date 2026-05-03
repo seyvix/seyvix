@@ -759,7 +759,7 @@ class ContentService:
             owner_user_id=owner_user_id,
             slug=slug,
             title=normalized_title,
-            kind="simple",
+            kind="complex",
             media_type="link",
             source_filename=url,
             mime_type="text/uri-list",
