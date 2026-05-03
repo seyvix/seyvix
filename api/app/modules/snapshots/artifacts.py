@@ -98,6 +98,10 @@ class SnapshotArtifactGenerator:
         source_path: Path,
         output_dir: Path,
     ) -> GeneratedArtifact:
+        if asset.media_type == "link":
+            return self._generate_browser_thumbnail(
+                asset=asset, source_path=source_path, output_dir=output_dir
+            )
         if asset.media_type == "image":
             return self._render_image_thumbnail(
                 source_path=source_path,
@@ -174,14 +178,8 @@ class SnapshotArtifactGenerator:
                 mime_type=asset.mime_type or "application/octet-stream",
             )
         if asset.media_type == "link":
-            text = self._text_for_preview(asset=asset, source_path=source_path)
-            if text is None:
-                raise UnsupportedSnapshotError("No screenshot renderer is available for this URL.")
-            return self._render_text_thumbnail(
-                output_dir=output_dir,
-                filename="screenshot.jpg",
-                title=self._link_url(asset=asset, source_path=source_path),
-                body=text,
+            return self._generate_browser_screenshot(
+                asset=asset, source_path=source_path, output_dir=output_dir
             )
         return self._generate_thumbnail(asset=asset, source_path=source_path, output_dir=output_dir)
 
@@ -195,9 +193,9 @@ class SnapshotArtifactGenerator:
         suffix = source_path.suffix.lower()
         path = output_dir / "snapshot.html"
         if asset.media_type == "link":
-            webpage = self._fetch_webpage(self._link_url(asset=asset, source_path=source_path))
-            path.write_text(webpage.html, encoding="utf-8")
-            return GeneratedArtifact(filename="snapshot.html", mime_type="text/html", path=path)
+            return self._generate_browser_html(
+                asset=asset, source_path=source_path, output_dir=output_dir
+            )
         if asset.mime_type == "text/html" or suffix in {".html", ".htm"}:
             path.write_bytes(source_path.read_bytes())
         else:
@@ -251,6 +249,73 @@ class SnapshotArtifactGenerator:
         doc.save(path)
         doc.close()
         return GeneratedArtifact(filename="snapshot.pdf", mime_type="application/pdf", path=path)
+
+    def _generate_browser_thumbnail(
+        self,
+        *,
+        asset: ContentAsset,
+        source_path: Path,
+        output_dir: Path,
+    ) -> GeneratedArtifact:
+        from app.modules.snapshots.browser import BrowserRenderError, render_url  # noqa: PLC0415
+
+        url = self._link_url(asset=asset, source_path=source_path)
+        try:
+            snapshot = render_url(url)
+        except BrowserRenderError as exc:
+            raise UnsupportedSnapshotError(str(exc)) from exc
+
+        import tempfile  # noqa: PLC0415
+
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            tmp.write(snapshot.screenshot_bytes)
+            tmp_path = Path(tmp.name)
+        try:
+            return self._render_image_thumbnail(
+                source_path=tmp_path,
+                output_dir=output_dir,
+                filename="thumbnail.jpg",
+            )
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    def _generate_browser_screenshot(
+        self,
+        *,
+        asset: ContentAsset,
+        source_path: Path,
+        output_dir: Path,
+    ) -> GeneratedArtifact:
+        from app.modules.snapshots.browser import BrowserRenderError, render_url  # noqa: PLC0415
+
+        url = self._link_url(asset=asset, source_path=source_path)
+        try:
+            snapshot = render_url(url)
+        except BrowserRenderError as exc:
+            raise UnsupportedSnapshotError(str(exc)) from exc
+
+        path = output_dir / "screenshot.jpg"
+        path.write_bytes(snapshot.screenshot_bytes)
+        return GeneratedArtifact(filename="screenshot.jpg", mime_type="image/jpeg", path=path)
+
+    def _generate_browser_html(
+        self,
+        *,
+        asset: ContentAsset,
+        source_path: Path,
+        output_dir: Path,
+    ) -> GeneratedArtifact:
+        from app.modules.snapshots.browser import BrowserRenderError, render_url  # noqa: PLC0415
+
+        url = self._link_url(asset=asset, source_path=source_path)
+        try:
+            snapshot = render_url(url)
+        except BrowserRenderError as exc:
+            raise UnsupportedSnapshotError(str(exc)) from exc
+
+        path = output_dir / "snapshot.html"
+        path.write_text(snapshot.html, encoding="utf-8")
+        return GeneratedArtifact(filename="snapshot.html", mime_type="text/html", path=path)
 
     def _render_pdf_first_page(
         self,
