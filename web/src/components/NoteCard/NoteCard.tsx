@@ -132,17 +132,28 @@ function LayerContent({ obj, fallback }: { obj: NoteObject | undefined; fallback
     )
   }
   if (obj.type === 'link') {
-    let favicon: string | null = null
+    let faviconUrl: string | null = null
     try {
       const domain = new URL(obj.content).hostname
-      favicon = obj.thumbnailUrl || `https://www.google.com/s2/favicons?domain=${domain}&sz=64`
+      faviconUrl = `https://www.google.com/s2/favicons?domain=${domain}&sz=64`
     } catch { /* ignore */ }
     return (
-      <div className={`${styles.collectionLayerBg} ${styles.collectionLayerLink}`} style={{ background: fallback }}>
-        {favicon
-          ? <img src={favicon} alt="" className={styles.collectionLayerFavicon} />
+      <div
+        className={`${styles.collectionLayerBg} ${styles.collectionLayerLink}`}
+        style={{ background: fallback, position: 'relative' }}
+      >
+        {faviconUrl
+          ? <img src={faviconUrl} alt="" className={styles.collectionLayerFavicon} />
           : <ExternalLink size={20} />
         }
+        {obj.thumbnailUrl && (
+          <AuthImage
+            src={obj.thumbnailUrl}
+            alt=""
+            className={styles.collectionLayerImg}
+            style={{ position: 'absolute', inset: 0, background: 'transparent' }}
+          />
+        )}
       </div>
     )
   }
@@ -285,12 +296,20 @@ function DocChip({ obj }: { obj: NoteObject }) {
 }
 
 function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick?: (name: string) => void; titleNode?: React.ReactNode }) {
-  const imageObj = note.objects.find(o => o.type === 'image')
-  const textObj  = note.objects.find(o => o.type === 'text')
-  const links    = note.objects.filter(o => o.type === 'link')
-  const docs     = note.objects.filter(o => o.type === 'document')
-  const firstDoc = docs[0]
-  const docThumb = firstDoc ? (firstDoc.thumbnailUrl ?? firstDoc.cover) : undefined
+  const imageObj  = note.objects.find(o => o.type === 'image')
+  const textObj   = note.objects.find(o => o.type === 'text')
+  const links     = note.objects.filter(o => o.type === 'link')
+  const docs      = note.objects.filter(o => o.type === 'document')
+  const firstDoc  = docs[0]
+  const docThumb  = firstDoc ? (firstDoc.thumbnailUrl ?? firstDoc.cover) : undefined
+  const firstLink = links[0]
+
+  let linkFaviconUrl: string | null = null
+  if (firstLink) {
+    try {
+      linkFaviconUrl = `https://www.google.com/s2/favicons?domain=${new URL(firstLink.content).hostname}&sz=64`
+    } catch { /* ignore */ }
+  }
 
   return (
     <Link draggable={false} to={`/notes/${note.slug}`} className={`${styles.card} ${styles.cardComposite}`}>
@@ -300,12 +319,28 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
         {imageObj
           ? <AuthImage src={getObjectPreviewSource(imageObj)} alt="" className={styles.compositeCoverImg} />
           : docThumb
-            ? <AuthImage src={docThumb} alt="" className={styles.compositeCoverImg} />
+            ? <AuthImage src={docThumb} alt="" className={styles.compositeCoverImg} style={firstDoc?.imageWidth && firstDoc?.imageHeight ? { aspectRatio: `${firstDoc.imageWidth}/${firstDoc.imageHeight}` } : undefined} />
             : firstDoc?.thumbnailUrl === null
               ? <div className={styles.thumbPending} />
-              : <div className={styles.compositeCoverEmpty}>
-                  {textObj && <span className={styles.compositeCoverText}>{getObjectDisplayText(textObj, 240)}</span>}
-                </div>
+              : firstLink
+                ? (
+                  <div className={styles.compositeCoverEmpty} style={{ position: 'relative' }}>
+                    {linkFaviconUrl && (
+                      <img src={linkFaviconUrl} alt="" className={styles.collectionLayerFavicon} />
+                    )}
+                    {firstLink.thumbnailUrl && (
+                      <AuthImage
+                        src={firstLink.thumbnailUrl}
+                        alt=""
+                        className={styles.compositeCoverImg}
+                        style={{ position: 'absolute', inset: 0, background: 'transparent' }}
+                      />
+                    )}
+                  </div>
+                )
+                : <div className={styles.compositeCoverEmpty}>
+                    {textObj && <span className={styles.compositeCoverText}>{getObjectDisplayText(textObj, 240)}</span>}
+                  </div>
         }
       </div>
 
