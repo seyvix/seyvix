@@ -42,6 +42,8 @@ export interface Folder {
   slug: string
   name: string
   path: string
+  directCount: number
+  totalCount: number
   parentId: string | null
   children: Folder[]
 }
@@ -50,6 +52,7 @@ export interface FolderNoteSummary {
   id: string
   slug: string
   title: string
+  taxonomyCategory?: TaxonomyCategory | null
   createdAt: string
   updatedAt: string
 }

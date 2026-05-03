@@ -136,6 +136,49 @@ def test_taxonomy_classification_jobs_endpoint_lists_jobs_for_current_user(
     assert payload["items"][0]["result_status"] == "proposed"
 
 
+def test_unclassified_content_goes_to_inbox_and_can_be_requeued(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client)
+    inbox = _create_category(content_client, headers, slug="inbox", name="Inbox")
+    note = _create_note(content_client, headers, "zzzzzz qqqqqq")
+
+    classify_response = content_client.post(
+        f"/api/v1/taxonomy/content/{note['id']}/classify",
+        headers=headers,
+        json={"mode": "semantic_only", "dry_run": False},
+    )
+
+    assert classify_response.status_code == 200, classify_response.text
+    assert classify_response.json()["selected_category"]["id"] == inbox["id"]
+    assert classify_response.json()["status"] == "accepted"
+
+    current_response = content_client.get(
+        f"/api/v1/taxonomy/content/{note['id']}/category",
+        headers=headers,
+    )
+    assert current_response.status_code == 200
+    assert current_response.json()["category_path_snapshot"] == "inbox"
+
+    requeue_response = content_client.post(
+        "/api/v1/taxonomy/content/inbox/reclassify",
+        headers=headers,
+    )
+
+    assert requeue_response.status_code == 202, requeue_response.text
+    assert requeue_response.json()["enqueued_count"] == 1
+
+    async def count_jobs() -> int:
+        async with app.state.session_factory() as session:
+            return await session.scalar(
+                select(func.count()).select_from(TaxonomyClassificationJob).where(
+                    TaxonomyClassificationJob.content_object_id == note["id"],
+                )
+            )
+
+    assert content_client.portal.call(count_jobs) >= 2
+
+
 def test_category_tree_validation_and_archive_behavior(content_client: TestClient) -> None:
     headers = _auth_headers(content_client)
 
@@ -218,6 +261,14 @@ def test_profile_manual_assignment_history_and_ownership(content_client: TestCli
     other_category = _create_category(content_client, other_headers, slug="private", name="Private")
     note = _create_note(content_client, headers, "Assignment target")
 
+    settings_response = content_client.patch(
+        "/api/v1/taxonomy/settings",
+        headers=headers,
+        json={"category_profile_editing_enabled": True},
+    )
+    assert settings_response.status_code == 200, settings_response.text
+    assert settings_response.json()["category_profile_editing_enabled"] is True
+
     profile_response = content_client.put(
         f"/api/v1/taxonomy/categories/{ai['id']}/profile",
         headers=headers,
@@ -298,6 +349,68 @@ def test_profile_manual_assignment_history_and_ownership(content_client: TestCli
         json={"category_id": other_category["id"]},
     )
     assert cross_owner_response.status_code == 404
+
+
+def test_category_profile_editing_setting_and_llm_draft(content_client: TestClient) -> None:
+    headers = _auth_headers(content_client)
+    ai = _create_category(content_client, headers, slug="ai", name="AI")
+
+    default_settings = content_client.get("/api/v1/taxonomy/settings", headers=headers)
+    assert default_settings.status_code == 200, default_settings.text
+    assert default_settings.json()["category_profile_editing_enabled"] is False
+
+    blocked_profile = content_client.put(
+        f"/api/v1/taxonomy/categories/{ai['id']}/profile",
+        headers=headers,
+        json={"summary": "Blocked edit."},
+    )
+    assert blocked_profile.status_code == 403
+
+    enabled = content_client.patch(
+        "/api/v1/taxonomy/settings",
+        headers=headers,
+        json={"category_profile_editing_enabled": True},
+    )
+    assert enabled.status_code == 200, enabled.text
+
+    saved_profile = content_client.put(
+        f"/api/v1/taxonomy/categories/{ai['id']}/profile",
+        headers=headers,
+        json={
+            "summary": "AI systems and tooling.",
+            "keywords": ["ai"],
+            "positive_examples": ["LLM architecture"],
+            "negative_examples": ["house chores"],
+        },
+    )
+    assert saved_profile.status_code == 200, saved_profile.text
+
+    llm = _FakeLLMStructuredGenerator(
+        {
+            "summary": "Research notes about model design, inference and AI tooling.",
+            "keywords": ["ai", "llm", "inference"],
+            "positive_examples": ["Prompt engineering", "Vector search architecture"],
+            "negative_examples": ["Personal tasks"],
+            "reasoning": "The user wants AI infrastructure materials in this category.",
+        }
+    )
+
+    async def suggest() -> dict[str, object]:
+        async with app.state.session_factory() as session:
+            service = TaxonomyService(session, llm_generator=llm)
+            draft = await service.suggest_profile_improvement(
+                owner_user_id=str(enabled.json()["owner_user_id"]),
+                category_id=str(ai["id"]),
+                user_guidance="Оставлять здесь материалы про LLM, инференс и инструменты AI.",
+            )
+            return draft.model_dump()
+
+    draft = content_client.portal.call(suggest)
+    assert draft["summary"] == "Research notes about model design, inference and AI tooling."
+    assert draft["keywords"] == ["ai", "llm", "inference"]
+    assert draft["positive_examples"] == ["Prompt engineering", "Vector search architecture"]
+    assert draft["negative_examples"] == ["Personal tasks"]
+    assert "AI infrastructure" in str(llm.calls[0]["prompt"])
 
 
 def test_templates_initialize_user_taxonomy_and_module_registration(

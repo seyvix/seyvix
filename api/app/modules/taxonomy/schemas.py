@@ -183,6 +183,10 @@ class TaxonomyClassificationJobListResponse(BaseModel):
     items: list[TaxonomyClassificationJobResponse]
 
 
+class TaxonomyInboxReclassifyResponse(BaseModel):
+    enqueued_count: int
+
+
 class TaxonomyTemplateSummaryResponse(BaseModel):
     id: str
     slug: str

@@ -1,7 +1,9 @@
-import { useMemo, type CSSProperties } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties } from 'react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, NavLink, useParams } from 'react-router-dom'
 import {
   ArrowRight,
+  ChevronDown,
   ChevronRight,
   FileText,
   Hash,
@@ -10,15 +12,11 @@ import {
   Search,
   Tags,
 } from 'lucide-react'
+import { reclassifyInbox } from '../api/folders'
 import { useFolder } from '../hooks/useFolder'
 import { useFolders } from '../hooks/useFolders'
 import type { Folder, FolderNoteSummary } from '../types'
 import styles from './FoldersPage.module.css'
-
-interface FlatCategory {
-  category: Folder
-  depth: number
-}
 
 function categoryUrl(path: string): string {
   return `/categories/${path.split('/').map(encodeURIComponent).join('/')}`
@@ -26,13 +24,6 @@ function categoryUrl(path: string): string {
 
 function notesUrl(path: string): string {
   return `/notes?folders=${encodeURIComponent(path)}`
-}
-
-function flattenCategories(categories: Folder[], depth = 0): FlatCategory[] {
-  return categories.flatMap(category => [
-    { category, depth },
-    ...flattenCategories(category.children, depth + 1),
-  ])
 }
 
 function countCategories(categories: Folder[]): number {
@@ -46,6 +37,11 @@ function findCategory(categories: Folder[], path: string): Folder | null {
     if (child) return child
   }
   return null
+}
+
+function ancestorPaths(path: string): string[] {
+  const segments = path.split('/').filter(Boolean)
+  return segments.slice(0, -1).map((_, index) => segments.slice(0, index + 1).join('/'))
 }
 
 function Breadcrumbs({ category }: { category: Folder }) {
@@ -67,43 +63,70 @@ function Breadcrumbs({ category }: { category: Folder }) {
   )
 }
 
-function CategoryTree({
-  categories,
+function CategoryTreeNode({
+  category,
+  depth,
+  expandedPaths,
   selectedPath,
+  onToggle,
 }: {
-  categories: FlatCategory[]
+  category: Folder
+  depth: number
+  expandedPaths: Set<string>
   selectedPath: string
+  onToggle: (path: string) => void
 }) {
-  if (categories.length === 0) {
-    return (
-      <div className={styles.emptyTree}>
-        <ListTree size={18} strokeWidth={1.8} />
-        <span>Категории появятся после настройки таксономии.</span>
-      </div>
-    )
-  }
+  const hasChildren = category.children.length > 0
+  const expanded = expandedPaths.has(category.path)
 
   return (
-    <nav className={styles.tree} aria-label="Категории">
-      {categories.map(({ category, depth }) => (
+    <div>
+      <div
+        className={[
+          styles.treeRow,
+          selectedPath === category.path ? styles.treeRowActive : '',
+        ].filter(Boolean).join(' ')}
+        style={{ '--depth': depth } as CSSProperties}
+      >
+        <button
+          className={styles.treeToggle}
+          disabled={!hasChildren}
+          onClick={() => onToggle(category.path)}
+          aria-label={expanded ? 'Свернуть категорию' : 'Развернуть категорию'}
+        >
+          {hasChildren && (
+            expanded ? <ChevronDown size={14} strokeWidth={1.8} /> : <ChevronRight size={14} strokeWidth={1.8} />
+          )}
+        </button>
         <NavLink
-          key={category.id}
           to={categoryUrl(category.path)}
           className={({ isActive }) =>
             [styles.treeItem, isActive || selectedPath === category.path ? styles.treeItemActive : '']
               .filter(Boolean)
               .join(' ')
           }
-          style={{ '--depth': depth } as CSSProperties}
         >
           <span className={styles.treeRail} />
           <span className={styles.treeName}>{category.name}</span>
-          {category.children.length > 0 && (
-            <span className={styles.treeCount}>{category.children.length}</span>
-          )}
+          <span className={styles.treeCount}>{category.totalCount}</span>
         </NavLink>
-      ))}
-    </nav>
+      </div>
+
+      {hasChildren && expanded && (
+        <div className={styles.treeChildren}>
+          {category.children.map(child => (
+            <CategoryTreeNode
+              key={child.id}
+              category={child}
+              depth={depth + 1}
+              expandedPaths={expandedPaths}
+              selectedPath={selectedPath}
+              onToggle={onToggle}
+            />
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -120,7 +143,10 @@ function CategoryCard({ category }: { category: Folder }) {
   )
 }
 
-function NoteRow({ note }: { note: FolderNoteSummary }) {
+function NoteRow({ note, selectedPath }: { note: FolderNoteSummary; selectedPath: string }) {
+  const notePath = note.taxonomyCategory?.path
+  const isNested = Boolean(notePath && notePath !== selectedPath)
+
   return (
     <Link to={`/notes/${note.slug}`} className={styles.noteRow}>
       <span className={styles.noteIcon}><FileText size={15} strokeWidth={1.8} /></span>
@@ -128,6 +154,7 @@ function NoteRow({ note }: { note: FolderNoteSummary }) {
         <strong>{note.title}</strong>
         <small>{new Date(note.updatedAt).toLocaleDateString('ru-RU')}</small>
       </span>
+      {isNested && <span className={styles.noteCategory}>{notePath}</span>}
       <ArrowRight size={14} strokeWidth={1.8} />
     </Link>
   )
@@ -135,14 +162,21 @@ function NoteRow({ note }: { note: FolderNoteSummary }) {
 
 export default function FoldersPage() {
   const { '*': selectedPath = '' } = useParams()
+  const queryClient = useQueryClient()
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set())
   const { data: categories = [], isPending: treePending, isError: treeError } = useFolders()
   const {
     data: detail,
     isPending: detailPending,
     isError: detailError,
   } = useFolder(selectedPath)
+  const reclassify = useMutation({
+    mutationFn: reclassifyInbox,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['category', 'inbox'] })
+    },
+  })
 
-  const flatCategories = useMemo(() => flattenCategories(categories), [categories])
   const totalCategories = useMemo(() => countCategories(categories), [categories])
   const selectedFromTree = useMemo(
     () => selectedPath ? findCategory(categories, selectedPath) : null,
@@ -151,6 +185,24 @@ export default function FoldersPage() {
   const selectedCategory = detail?.category ?? selectedFromTree
   const childCategories = selectedFromTree?.children ?? selectedCategory?.children ?? categories
   const notes = detail?.notes ?? []
+
+  useEffect(() => {
+    if (!selectedPath) return
+    setExpandedPaths(prev => {
+      const next = new Set(prev)
+      ancestorPaths(selectedPath).forEach(path => next.add(path))
+      return next
+    })
+  }, [selectedPath])
+
+  function handleToggle(path: string) {
+    setExpandedPaths(prev => {
+      const next = new Set(prev)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
+  }
 
   return (
     <div className={styles.page}>
@@ -183,7 +235,23 @@ export default function FoldersPage() {
           {treePending && <div className={styles.state}>Загружаю категории...</div>}
           {treeError && <div className={styles.stateError}>Не удалось загрузить категории.</div>}
           {!treePending && !treeError && (
-            <CategoryTree categories={flatCategories} selectedPath={selectedPath} />
+            <nav className={styles.tree} aria-label="Категории">
+              {categories.length === 0 ? (
+                <div className={styles.emptyTree}>
+                  <ListTree size={18} strokeWidth={1.8} />
+                  <span>Категории появятся после настройки таксономии.</span>
+                </div>
+              ) : categories.map(category => (
+                <CategoryTreeNode
+                  key={category.id}
+                  category={category}
+                  depth={0}
+                  expandedPaths={expandedPaths}
+                  selectedPath={selectedPath}
+                  onToggle={handleToggle}
+                />
+              ))}
+            </nav>
           )}
         </aside>
 
@@ -222,10 +290,28 @@ export default function FoldersPage() {
                   <FileText size={16} strokeWidth={1.8} />
                   Заметки
                 </Link>
+                {selectedCategory.path === 'inbox' && (
+                  <button
+                    className={styles.secondaryAction}
+                    disabled={reclassify.isPending}
+                    onClick={() => reclassify.mutate()}
+                  >
+                    <Layers3 size={16} strokeWidth={1.8} />
+                    {reclassify.isPending ? 'Запускаю...' : 'Перераспределить'}
+                  </button>
+                )}
               </div>
 
               {detailPending && <div className={styles.state}>Загружаю содержимое категории...</div>}
               {detailError && <div className={styles.stateError}>Не удалось загрузить содержимое категории.</div>}
+              {reclassify.isSuccess && selectedCategory.path === 'inbox' && (
+                <div className={styles.state}>
+                  В очередь отправлено: {reclassify.data.enqueuedCount}
+                </div>
+              )}
+              {reclassify.isError && selectedCategory.path === 'inbox' && (
+                <div className={styles.stateError}>Не удалось запустить перераспределение inbox.</div>
+              )}
 
               <div className={styles.detailGrid}>
                 <section className={styles.detailBlock}>
@@ -266,12 +352,12 @@ export default function FoldersPage() {
                 <section className={styles.detailBlockWide}>
                   <div className={styles.sectionHeader}>
                     <h3>Заметки</h3>
-                    <span>{notes.length}</span>
+                    <span>{selectedCategory.directCount} / {selectedCategory.totalCount}</span>
                   </div>
                   {notes.length > 0 ? (
                     <div className={styles.notesList}>
                       {notes.map(note => (
-                        <NoteRow key={note.id} note={note} />
+                        <NoteRow key={note.id} note={note} selectedPath={selectedCategory.path} />
                       ))}
                     </div>
                   ) : (

@@ -280,7 +280,11 @@ class ContentService:
         for content_object in objects:
             assignment = assignment_by_object_id.get(content_object.id)
             if folder_path and (
-                assignment is None or assignment.category_path_snapshot != folder_path
+                assignment is None
+                or not self._path_matches_or_descends(
+                    assignment.category_path_snapshot,
+                    folder_path,
+                )
             ):
                 continue
             if normalized_tags and not normalized_tags.issubset(
@@ -300,6 +304,13 @@ class ContentService:
 
         if sort == "custom":
             items.sort(key=lambda item: (item.sort_order, item.created_at))
+        elif folder_path:
+            items.sort(
+                key=lambda item: (
+                    assignment_by_object_id[item.id].category_path_snapshot != folder_path,
+                    -item.created_at.timestamp(),
+                )
+            )
         else:
             items.sort(key=lambda item: item.created_at, reverse=True)
 
@@ -586,8 +597,14 @@ class ContentService:
             owner_user_id=owner_user_id,
             include_archived=False,
         )
+        counts = await self._folder_counts(owner_user_id=owner_user_id)
         by_id: dict[str, FolderTreeItem] = {
-            category.id: self._folder_tree_item(category) for category in categories
+            category.id: self._folder_tree_item(
+                category,
+                direct_count=counts.get(category.path, (0, 0))[0],
+                total_count=counts.get(category.path, (0, 0))[1],
+            )
+            for category in categories
         }
         roots: list[FolderTreeItem] = []
         for category in categories:
@@ -611,35 +628,55 @@ class ContentService:
         )
         if category is None:
             raise FolderNotFoundError
-        notes = await self.list_notes(
-            owner_user_id=owner_user_id,
-            search=None,
-            tag_slugs=[],
-            folder_path=folder_path,
-            sort="newest",
-        )
+        counts = await self._folder_counts(owner_user_id=owner_user_id)
         assignment_by_object_id = await self._current_assignment_map(owner_user_id)
         all_notes = await self.content.list_all(owner_user_id=owner_user_id)
         tags_by_object_id = await self.tag_service.list_active_tags_for_contents(
             owner_user_id=owner_user_id,
             content_object_ids=[note.id for note in all_notes],
         )
+        folder_notes = [
+            note
+            for note in all_notes
+            if self._is_visible_note(note)
+            and assignment_by_object_id.get(note.id) is not None
+            and self._path_matches_or_descends(
+                assignment_by_object_id[note.id].category_path_snapshot,
+                folder_path,
+            )
+        ]
+        folder_notes.sort(
+            key=lambda note: (
+                assignment_by_object_id[note.id].category_path_snapshot != folder_path,
+                -note.created_at.timestamp(),
+            )
+        )
         tags = sorted(
             {
                 tag.slug: tag
-                for note in all_notes
+                for note in folder_notes
                 if (
                     assignment_by_object_id.get(note.id) is not None
-                    and assignment_by_object_id[note.id].category_path_snapshot == folder_path
+                    and self._path_matches_or_descends(
+                        assignment_by_object_id[note.id].category_path_snapshot,
+                        folder_path,
+                    )
                 )
                 for tag in tags_by_object_id.get(note.id, [])
             }.values(),
             key=lambda tag: tag.name.casefold(),
         )
         return FolderDetailResponse(
-            folder=self._folder_response(category),
+            folder=self._folder_response(
+                category,
+                direct_count=counts.get(category.path, (0, 0))[0],
+                total_count=counts.get(category.path, (0, 0))[1],
+            ),
             tags=[self._tag_response(tag) for tag in tags],
-            notes=notes.items,
+            notes=[
+                await self._to_card(note, active_tags=tags_by_object_id.get(note.id, []))
+                for note in folder_notes
+            ],
         )
 
     async def _create_text_note(
@@ -1115,9 +1152,18 @@ class ContentService:
         try:
             if doc.page_count == 0:
                 return None, None
-            page: Any = doc[0]
-            width = int(page.rect.width)
-            height = int(page.rect.height)
+            try:
+                page: Any = doc[0]
+                width = int(page.rect.width)
+                height = int(page.rect.height)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "content.image_dimensions_unavailable",
+                    filename=uploaded.filename,
+                    content_type=uploaded.content_type,
+                    exc_info=True,
+                )
+                return None, None
             if width <= 0 or height <= 0:
                 return None, None
             return width, height
@@ -1606,22 +1652,69 @@ class ContentService:
             return None
         return text[:max_chars]
 
+    async def _folder_counts(self, *, owner_user_id: str) -> dict[str, tuple[int, int]]:
+        categories = await self.taxonomy.repository.list_categories(
+            owner_user_id=owner_user_id,
+            include_archived=False,
+        )
+        paths = [category.path for category in categories]
+        direct_counts = {path: 0 for path in paths}
+        total_counts = {path: 0 for path in paths}
+        assignments = await self._current_assignment_map(owner_user_id)
+        for content_object in await self.content.list_all(owner_user_id=owner_user_id):
+            if not self._is_visible_note(content_object):
+                continue
+            assignment = assignments.get(content_object.id)
+            if assignment is None:
+                continue
+            assigned_path = assignment.category_path_snapshot
+            if assigned_path in direct_counts:
+                direct_counts[assigned_path] += 1
+            for path in paths:
+                if self._path_matches_or_descends(assigned_path, path):
+                    total_counts[path] += 1
+        return {path: (direct_counts[path], total_counts[path]) for path in paths}
+
     @staticmethod
-    def _folder_response(category: TaxonomyCategory) -> FolderResponse:
+    def _is_visible_note(content_object: ContentObject) -> bool:
+        return not (
+            content_object.kind != "collection" and content_object.collection_memberships
+        )
+
+    @staticmethod
+    def _path_matches_or_descends(candidate_path: str, parent_path: str) -> bool:
+        return candidate_path == parent_path or candidate_path.startswith(f"{parent_path}/")
+
+    @staticmethod
+    def _folder_response(
+        category: TaxonomyCategory,
+        *,
+        direct_count: int = 0,
+        total_count: int = 0,
+    ) -> FolderResponse:
         return FolderResponse(
             id=category.id,
             name=category.name,
             slug=category.slug,
             path=category.path,
+            direct_count=direct_count,
+            total_count=total_count,
         )
 
     @staticmethod
-    def _folder_tree_item(category: TaxonomyCategory) -> FolderTreeItem:
+    def _folder_tree_item(
+        category: TaxonomyCategory,
+        *,
+        direct_count: int = 0,
+        total_count: int = 0,
+    ) -> FolderTreeItem:
         return FolderTreeItem(
             id=category.id,
             name=category.name,
             slug=category.slug,
             path=category.path,
+            direct_count=direct_count,
+            total_count=total_count,
             children=[],
         )
 

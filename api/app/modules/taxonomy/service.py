@@ -31,6 +31,7 @@ from app.modules.taxonomy.schemas import (
     TaxonomyClassificationCandidateResponse,
     TaxonomyClassificationCategoryResponse,
     TaxonomyClassificationResponse,
+    TaxonomyInboxReclassifyResponse,
     TaxonomyLLMDecisionResponse,
     TaxonomyProfileResponse,
     TaxonomyTemplateDetailResponse,
@@ -592,6 +593,34 @@ class TaxonomyService:
             content_object_id=content_object_id,
         )
 
+    async def enqueue_inbox_reclassification_jobs(
+        self,
+        *,
+        owner_user_id: str,
+    ) -> TaxonomyInboxReclassifyResponse:
+        inbox = await self.repository.get_category_by_path(
+            owner_user_id=owner_user_id,
+            path="inbox",
+            include_archived=False,
+        )
+        if inbox is None:
+            raise TaxonomyNotFoundError
+        assignments = await self.repository.list_current_assignments(owner_user_id=owner_user_id)
+        enqueued_count = 0
+        for assignment in assignments:
+            if assignment.category_path_snapshot != "inbox":
+                continue
+            await self.enqueue_classification_job(
+                owner_user_id=owner_user_id,
+                content_object_id=assignment.content_object_id,
+                priority=20,
+                source_event_id=None,
+                correlation_id=str(uuid4()),
+            )
+            enqueued_count += 1
+        await self.session.commit()
+        return TaxonomyInboxReclassifyResponse(enqueued_count=enqueued_count)
+
     async def accept_assignment(
         self,
         *,
@@ -709,6 +738,32 @@ class TaxonomyService:
                 limit=candidate_limit,
             )
         if not candidates:
+            inbox_assignment = await self._create_inbox_assignment(
+                owner_user_id=owner_user_id,
+                content_object_id=content_object_id,
+                dry_run=dry_run,
+                confidence=None,
+                reasoning="No semantic taxonomy candidates found; assigned to inbox.",
+            )
+            if inbox_assignment is not None:
+                assignment, inbox = inbox_assignment
+                selected_category = self._classification_category(inbox)
+                return self._classification_response(
+                    content_object_id=content_object_id,
+                    mode=mode,
+                    dry_run=dry_run,
+                    assignment=assignment,
+                    selected_category=selected_category,
+                    status="accepted",
+                    confidence=None,
+                    reasoning="No semantic taxonomy candidates found; assigned to inbox.",
+                    semantic_candidates=[],
+                    classification_text=query,
+                    llm_decision=None,
+                    would_assign=True,
+                    would_status="accepted",
+                    would_category=selected_category,
+                )
             return self._classification_response(
                 content_object_id=content_object_id,
                 mode=mode,
@@ -802,6 +857,36 @@ class TaxonomyService:
     ) -> TaxonomyClassificationResponse:
         best = candidates[0]
         if best.result.score < self.settings.taxonomy_classification_medium_threshold:
+            reasoning = (
+                fallback_reason
+                or "Semantic similarity was below assignment threshold; assigned to inbox."
+            )
+            inbox_assignment = await self._create_inbox_assignment(
+                owner_user_id=owner_user_id,
+                content_object_id=content_object_id,
+                dry_run=dry_run,
+                confidence=best.result.score,
+                reasoning=reasoning,
+            )
+            if inbox_assignment is not None:
+                assignment, inbox = inbox_assignment
+                selected_category = self._classification_category(inbox)
+                return self._classification_response(
+                    content_object_id=content_object_id,
+                    mode=response_mode,
+                    dry_run=dry_run,
+                    assignment=assignment,
+                    selected_category=selected_category,
+                    status="accepted",
+                    confidence=best.result.score,
+                    reasoning=reasoning,
+                    semantic_candidates=self._candidate_responses(candidates),
+                    classification_text=classification_text,
+                    llm_decision=None,
+                    would_assign=True,
+                    would_status="accepted",
+                    would_category=selected_category,
+                )
             return self._classification_response(
                 content_object_id=content_object_id,
                 mode=response_mode,
@@ -993,6 +1078,50 @@ class TaxonomyService:
             would_status=status,
             would_category=selected_category,
         )
+
+    async def _create_inbox_assignment(
+        self,
+        *,
+        owner_user_id: str,
+        content_object_id: str,
+        dry_run: bool,
+        confidence: float | None,
+        reasoning: str,
+    ) -> tuple[TaxonomyContentAssignment, TaxonomyCategory] | None:
+        inbox = await self.repository.get_category_by_path(
+            owner_user_id=owner_user_id,
+            path="inbox",
+            include_archived=False,
+        )
+        if inbox is None:
+            return None
+        if dry_run:
+            assignment = TaxonomyContentAssignment(
+                owner_user_id=owner_user_id,
+                content_object_id=content_object_id,
+                category_id=inbox.id,
+                category_name_snapshot=inbox.name,
+                category_path_snapshot=inbox.path,
+                status="accepted",
+                confidence=confidence,
+                reasoning=reasoning,
+                assigned_by="system",
+                alternatives=[],
+                is_current=False,
+            )
+            return assignment, inbox
+        assignment = await self._create_current_assignment(
+            owner_user_id=owner_user_id,
+            content_object_id=content_object_id,
+            category=inbox,
+            status="accepted",
+            assigned_by="system",
+            confidence=confidence,
+            reasoning=reasoning,
+            alternatives=[],
+            commit=True,
+        )
+        return assignment, inbox
 
     async def _run_llm_judge(
         self,
@@ -1455,6 +1584,7 @@ class TaxonomyService:
             category_path_snapshot=category.path,
             is_current=True,
         )
+        assignment.category = category
         self.repository.add_assignment(assignment)
         await self.session.flush()
         if commit:

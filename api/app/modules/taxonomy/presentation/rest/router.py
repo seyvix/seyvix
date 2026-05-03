@@ -20,6 +20,7 @@ from app.modules.taxonomy.schemas import (
     TaxonomyClassificationJobResponse,
     TaxonomyClassificationRequest,
     TaxonomyClassificationResponse,
+    TaxonomyInboxReclassifyResponse,
     TaxonomyInitializeRequest,
     TaxonomyInitializeResponse,
     TaxonomyInterestInitializeRequest,
@@ -402,6 +403,23 @@ async def list_classification_jobs(
     return TaxonomyClassificationJobListResponse(
         items=[_classification_job_response(job) for job in jobs],
     )
+
+
+@router.post(
+    "/content/inbox/reclassify",
+    response_model=TaxonomyInboxReclassifyResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Requeue inbox content for taxonomy classification",
+    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+)
+async def reclassify_inbox_content(
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[TaxonomyService, Depends(get_taxonomy_service)],
+) -> TaxonomyInboxReclassifyResponse:
+    try:
+        return await service.enqueue_inbox_reclassification_jobs(owner_user_id=context.user.id)
+    except TaxonomyNotFoundError as exc:
+        raise _not_found("Inbox category not found.") from exc
 
 
 @router.get(

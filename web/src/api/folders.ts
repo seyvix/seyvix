@@ -9,6 +9,8 @@ export interface BackendFolderItem {
   name: string
   slug: string
   path: string
+  direct_count?: number
+  total_count?: number
   children?: BackendFolderItem[]
 }
 
@@ -16,6 +18,12 @@ interface BackendFolderNote {
   id: string
   slug: string
   title: string
+  taxonomy_category?: {
+    id: string
+    name: string
+    slug: string
+    path: string
+  } | null
   created_at: string
   updated_at: string
 }
@@ -36,6 +44,8 @@ export function mapBackendFolder(item: BackendFolderItem, parentId: string | nul
     slug: item.slug,
     name: item.name,
     path: item.path,
+    directCount: item.direct_count ?? 0,
+    totalCount: item.total_count ?? 0,
     parentId,
     children: (item.children ?? []).map(c => mapBackendFolder(c, item.id)),
   }
@@ -46,6 +56,7 @@ function mapBackendNoteSummary(note: BackendFolderNote): FolderNoteSummary {
     id: note.id,
     slug: note.slug,
     title: note.title,
+    taxonomyCategory: note.taxonomy_category ?? null,
     createdAt: note.created_at,
     updatedAt: note.updated_at,
   }
@@ -72,4 +83,11 @@ export async function fetchFolder(path: string): Promise<FolderDetail> {
   const res = await apiFetch(`${BASE}/${encodeFolderPath(path)}`)
   if (!res.ok) throw new Error('Failed to fetch folder')
   return mapBackendFolderDetail(await res.json())
+}
+
+export async function reclassifyInbox(): Promise<{ enqueuedCount: number }> {
+  const res = await apiFetch('/api/v1/taxonomy/content/inbox/reclassify', { method: 'POST' })
+  if (!res.ok) throw new Error('Failed to reclassify inbox')
+  const data = await res.json()
+  return { enqueuedCount: data.enqueued_count ?? 0 }
 }

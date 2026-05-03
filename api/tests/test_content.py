@@ -593,6 +593,14 @@ def test_folder_tree_and_folder_tags_are_available(content_client: TestClient) -
     _create_text_note(
         content_client,
         headers,
+        title="Nested folder note",
+        text="Nested body",
+        folder_path="work/research/llm",
+        tag_names=["rag"],
+    )
+    _create_text_note(
+        content_client,
+        headers,
         title="Other folder note",
         text="Other body",
         folder_path="work/archive",
@@ -604,14 +612,28 @@ def test_folder_tree_and_folder_tags_are_available(content_client: TestClient) -
 
     assert tree_response.status_code == 200
     assert tree_response.json()["items"][0]["name"] == "work"
+    assert tree_response.json()["items"][0]["direct_count"] == 0
+    assert tree_response.json()["items"][0]["total_count"] == 3
     assert {child["path"] for child in tree_response.json()["items"][0]["children"]} == {
         "work/archive",
         "work/research",
     }
+    research_node = next(
+        child
+        for child in tree_response.json()["items"][0]["children"]
+        if child["path"] == "work/research"
+    )
+    assert research_node["direct_count"] == 1
+    assert research_node["total_count"] == 2
     assert folder_response.status_code == 200
     assert folder_response.json()["folder"]["path"] == "work/research"
-    assert folder_response.json()["tags"][0]["name"] == "ml"
-    assert folder_response.json()["tags"][0]["slug"] == "ml"
+    assert [tag["slug"] for tag in folder_response.json()["tags"]] == ["ml", "rag"]
+    assert [item["title"] for item in folder_response.json()["notes"]] == [
+        "Folder note",
+        "Nested folder note",
+    ]
+    assert folder_response.json()["notes"][0]["taxonomy_category"]["path"] == "work/research"
+    assert folder_response.json()["notes"][1]["taxonomy_category"]["path"] == "work/research/llm"
     assert notes_response.status_code == 200
-    assert len(notes_response.json()["items"]) == 1
+    assert len(notes_response.json()["items"]) == 2
     assert notes_response.json()["items"][0]["taxonomy_category"]["path"] == "work/research"

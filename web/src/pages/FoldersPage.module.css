@@ -100,16 +100,56 @@
   padding-right: 2px;
 }
 
+.treeRow {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+  padding-left: calc(var(--depth) * 18px);
+}
+
+.treeToggle {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  display: flex;
+  flex-shrink: 0;
+  height: 28px;
+  justify-content: center;
+  padding: 0;
+  width: 24px;
+}
+
+.treeToggle:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--color-text-primary);
+}
+
+.treeToggle:disabled {
+  cursor: default;
+  opacity: 0.25;
+}
+
+.treeChildren {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
 .treeItem {
   align-items: center;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   color: var(--color-text-secondary);
   display: flex;
+  flex: 1;
   font-size: var(--font-size-sm);
   gap: 8px;
   min-height: 34px;
-  padding: 7px 8px 7px calc(8px + (var(--depth) * 18px));
+  min-width: 0;
+  padding: 7px 8px;
   text-decoration: none;
   transition: background var(--duration-fast), border-color var(--duration-fast), color var(--duration-fast);
 }
@@ -329,13 +369,15 @@
   color: var(--color-text-primary);
 }
 
-.primaryAction {
+.primaryAction,
+.secondaryAction {
   align-items: center;
-  background: var(--color-accent);
+  border: 0;
   border-radius: var(--radius-sm);
-  color: #fff;
+  cursor: pointer;
   display: inline-flex;
   flex-shrink: 0;
+  font-family: var(--font-family);
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-semibold);
   gap: 8px;
@@ -345,8 +387,27 @@
   transition: background var(--duration-fast);
 }
 
+.primaryAction {
+  background: var(--color-accent);
+  color: #fff;
+}
+
 .primaryAction:hover {
   background: var(--color-accent-hover);
+}
+
+.secondaryAction {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--color-text-primary);
+}
+
+.secondaryAction:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.secondaryAction:disabled {
+  color: var(--color-text-secondary);
+  cursor: default;
 }
 
 .detailGrid {
@@ -398,6 +459,20 @@
 .noteIcon {
   background: rgba(245, 158, 11, 0.12);
   color: #fbbf24;
+}
+
+.noteCategory {
+  background: rgba(99, 102, 241, 0.12);
+  border: 1px solid rgba(129, 140, 248, 0.2);
+  border-radius: 999px;
+  color: #c7d2fe;
+  flex-shrink: 1;
+  font-size: var(--font-size-xs);
+  max-width: 220px;
+  overflow: hidden;
+  padding: 3px 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .state,
