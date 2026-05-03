@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -160,11 +161,20 @@ class ContentService:
             return card
 
         if media_type in (None, "text", "link") and text is not None:
-            plain_url = self._plain_url(text)
-            if plain_url is not None:
-                return await self._create_link_note(
+            links, remaining_text = self._extract_links_from_text(text)
+            if links:
+                if not remaining_text and len(links) == 1:
+                    return await self._create_link_note(
+                        owner_user_id=owner_user_id,
+                        url=links[0],
+                        title=title,
+                        folder_path=folder_path,
+                        tag_names=tag_names,
+                    )
+                return await self._create_note_from_text_and_links(
                     owner_user_id=owner_user_id,
-                    url=plain_url,
+                    text=remaining_text,
+                    links=links,
                     title=title,
                     folder_path=folder_path,
                     tag_names=tag_names,
@@ -780,6 +790,127 @@ class ContentService:
                 text_content=url,
             ),
         )
+        self.content.add(content_object)
+        await self.session.flush()
+        await self.tag_service.replace_manual_tags_for_content(
+            owner_user_id=owner_user_id,
+            content_object_id=content_object.id,
+            tag_names=tag_names,
+            assigned_by_user_id=owner_user_id,
+            commit=False,
+        )
+        await self._sync_legacy_tags_for_content(
+            owner_user_id=owner_user_id,
+            content_object=content_object,
+            tag_names=tag_names,
+        )
+        await self.taxonomy.assign_content_to_path(
+            owner_user_id=owner_user_id,
+            content_object_id=content_object.id,
+            raw_path=folder_path,
+            reasoning="Assigned from note folder path.",
+            commit=False,
+        )
+        await self.session.commit()
+        return await self._reload_write_manifest_and_card(owner_user_id=owner_user_id, slug=slug)
+
+    async def _create_note_from_text_and_links(
+        self,
+        *,
+        owner_user_id: str,
+        text: str,
+        links: list[str],
+        title: str | None,
+        folder_path: str | None,
+        tag_names: list[str],
+    ) -> NoteCardResponse:
+        has_text = bool(text.strip())
+        normalized_title = title or self._link_title(links[0])
+        slug = await self._unique_slug(owner_user_id, normalized_title)
+        sort_order = await self.content.get_max_sort_order(owner_user_id=owner_user_id) + 10
+        content_object_id = str(uuid4())
+
+        first_link_data = f"{links[0]}\n".encode()
+        content_object = ContentObject(
+            id=content_object_id,
+            owner_user_id=owner_user_id,
+            slug=slug,
+            title=normalized_title,
+            kind="complex",
+            media_type="link",
+            source_filename=links[0],
+            mime_type="text/uri-list",
+            size_bytes=len(first_link_data),
+            storage_path=f"content-assets/{content_object_id}",
+            sort_order=sort_order,
+        )
+
+        for i, url in enumerate(links, start=1):
+            asset_id = str(uuid4())
+            filename = f"link-{i}.url"
+            stored_file = self.storage.write_binary_object(
+                content_object_id=content_object_id,
+                asset_id=asset_id,
+                filename=filename,
+                data=f"{url}\n".encode(),
+                content_type="text/uri-list",
+            )
+            self.storage_objects.add(
+                self._stored_object_from_file(stored_file),
+                owner_entity_type="content_asset",
+                owner_entity_id=asset_id,
+                metadata={"role": "original", "source_url": url},
+            )
+            content_object.assets.append(
+                ContentAsset(
+                    id=asset_id,
+                    role="original",
+                    media_type="link",
+                    filename=filename,
+                    mime_type="text/uri-list",
+                    size_bytes=stored_file.size_bytes,
+                    storage_path=stored_file.relative_path,
+                    storage_backend=stored_file.storage_backend,
+                    bucket=stored_file.bucket,
+                    storage_key=stored_file.storage_key,
+                    storage_ref=stored_file.storage_ref,
+                    checksum=stored_file.checksum,
+                    text_content=url,
+                ),
+            )
+
+        if has_text:
+            text_asset_id = str(uuid4())
+            stored_text = self.storage.write_text_object(
+                content_object_id=content_object_id,
+                asset_id=text_asset_id,
+                title=normalized_title,
+                text=text,
+            )
+            self.storage_objects.add(
+                self._stored_object_from_file(stored_text),
+                owner_entity_type="content_asset",
+                owner_entity_id=text_asset_id,
+                metadata={"role": "text", "source_filename": stored_text.filename},
+            )
+            content_object.assets.append(
+                ContentAsset(
+                    id=text_asset_id,
+                    role="text",
+                    media_type="text",
+                    filename=stored_text.filename,
+                    mime_type="text/markdown",
+                    size_bytes=stored_text.size_bytes,
+                    storage_path=stored_text.relative_path,
+                    storage_backend=stored_text.storage_backend,
+                    bucket=stored_text.bucket,
+                    storage_key=stored_text.storage_key,
+                    storage_ref=stored_text.storage_ref,
+                    checksum=stored_text.checksum,
+                    text_content=text,
+                ),
+            )
+
         self.content.add(content_object)
         await self.session.flush()
         await self.tag_service.replace_manual_tags_for_content(
@@ -1680,6 +1811,31 @@ class ContentService:
     @staticmethod
     def _is_pdf_asset(asset: ContentAsset) -> bool:
         return asset.mime_type == "application/pdf" or Path(asset.filename).suffix.lower() == ".pdf"
+
+    @staticmethod
+    def _extract_links_from_text(text: str) -> tuple[list[str], str]:
+        """Extract HTTP/HTTPS URLs from text; return (urls, remaining_text)."""
+        url_re = re.compile(r"https?://\S+")
+        links: list[str] = []
+        seen: set[str] = set()
+        remaining_parts: list[str] = []
+        last_end = 0
+        for match in url_re.finditer(text):
+            raw = match.group(0)
+            url = raw.rstrip(".,;:!?)]\\'\">`")
+            parsed = urlparse(url)
+            if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                remaining_parts.append(text[last_end : match.end()])
+                last_end = match.end()
+                continue
+            remaining_parts.append(text[last_end : match.start()])
+            if url not in seen:
+                seen.add(url)
+                links.append(url)
+            last_end = match.start() + len(url)
+        remaining_parts.append(text[last_end:])
+        remaining = re.sub(r"\s+", " ", "".join(remaining_parts)).strip()
+        return links, remaining
 
     @staticmethod
     def _plain_url(value: str) -> str | None:
