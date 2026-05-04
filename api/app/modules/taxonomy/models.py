@@ -107,6 +107,24 @@ class TaxonomyCategoryProfile(Base):
     category: Mapped[TaxonomyCategory] = relationship(back_populates="profile")
 
 
+class TaxonomyUserSettings(Base):
+    __tablename__ = "taxonomy_user_settings"
+
+    owner_user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    category_profile_editing_enabled: Mapped[bool] = mapped_column(Boolean(), default=False)
+    trash_enabled: Mapped[bool] = mapped_column(Boolean(), default=True)
+    trash_retention_days: Mapped[int] = mapped_column(Integer(), default=30)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )
+
+
 class TaxonomyContentAssignment(Base):
     __tablename__ = "taxonomy_content_assignments"
     __table_args__ = (

@@ -14,6 +14,7 @@ export interface Tag {
   id: string
   name: string
   slug?: string
+  count?: number
 }
 
 export interface TaxonomyCategory {
@@ -41,8 +42,52 @@ export interface Folder {
   id: string
   slug: string
   name: string
+  path: string
+  directCount: number
+  totalCount: number
   parentId: string | null
   children: Folder[]
+}
+
+export interface FolderNoteSummary {
+  id: string
+  slug: string
+  title: string
+  taxonomyCategory?: TaxonomyCategory | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface FolderDetail {
+  category: Folder
+  tags: Tag[]
+  notes: FolderNoteSummary[]
+}
+
+export interface TaxonomySettings {
+  ownerUserId: string
+  categoryProfileEditingEnabled: boolean
+  trashEnabled: boolean
+  trashRetentionDays: number
+}
+
+export interface CategoryProfile {
+  id?: string
+  categoryId: string
+  summary: string | null
+  keywords: string[]
+  positiveExamples: string[]
+  negativeExamples: string[]
+  createdAt?: string
+  updatedAt?: string
+}
+
+export interface CategoryProfileDraft {
+  summary: string | null
+  keywords: string[]
+  positiveExamples: string[]
+  negativeExamples: string[]
+  reasoning: string
 }
 
 export interface NoteObject {

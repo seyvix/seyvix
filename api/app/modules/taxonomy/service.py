@@ -13,6 +13,7 @@ from app.modules.llm.contracts import (
     StructuredLLMGenerator,
     build_structured_llm_generator,
 )
+from app.modules.content.models import ContentObject
 from app.modules.search.schemas import SemanticSearchResult
 from app.modules.taxonomy.infrastructure.repositories import TaxonomyRepository
 from app.modules.taxonomy.models import (
@@ -22,17 +23,22 @@ from app.modules.taxonomy.models import (
     TaxonomyContentAssignment,
     TaxonomyTemplate,
     TaxonomyTemplateCategory,
+    TaxonomyUserSettings,
 )
 from app.modules.taxonomy.schemas import (
     TaxonomyAssignmentResponse,
     TaxonomyBreadcrumbResponse,
+    TaxonomyCategoryDeleteResponse,
     TaxonomyCategoryResponse,
     TaxonomyCategoryTreeItem,
     TaxonomyClassificationCandidateResponse,
     TaxonomyClassificationCategoryResponse,
     TaxonomyClassificationResponse,
+    TaxonomyInboxReclassifyResponse,
     TaxonomyLLMDecisionResponse,
+    TaxonomyProfileDraftResponse,
     TaxonomyProfileResponse,
+    TaxonomySettingsResponse,
     TaxonomyTemplateDetailResponse,
     TaxonomyTemplateSummaryResponse,
     TaxonomyTemplateTreeItem,
@@ -64,6 +70,10 @@ class TaxonomyValidationError(Exception):
 
 
 class TaxonomyLLMClassificationError(Exception):
+    pass
+
+
+class TaxonomyPermissionError(Exception):
     pass
 
 
@@ -106,6 +116,14 @@ class ClassificationCandidate:
 class _GeneratedInterestNode(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     children: list[_GeneratedInterestNode] = Field(default_factory=list, max_length=8)
+
+
+class _GeneratedProfileDraft(BaseModel):
+    summary: str | None = None
+    keywords: list[str] = Field(default_factory=list, max_length=20)
+    positive_examples: list[str] = Field(default_factory=list, max_length=20)
+    negative_examples: list[str] = Field(default_factory=list, max_length=20)
+    reasoning: str = Field(min_length=1, max_length=2000)
 
 
 class TaxonomyService:
@@ -322,6 +340,94 @@ class TaxonomyService:
         category.is_archived = True
         await self.session.commit()
 
+    async def delete_category(
+        self,
+        *,
+        owner_user_id: str,
+        category_id: str,
+        delete_notes: bool,
+        confirm_category_name: str | None,
+        confirm_delete_notes_text: str | None,
+    ) -> TaxonomyCategoryDeleteResponse:
+        category = await self.get_category(owner_user_id=owner_user_id, category_id=category_id)
+        if category.is_system:
+            raise TaxonomyConflictError
+        if delete_notes and (
+            confirm_category_name != category.name or confirm_delete_notes_text != category.path
+        ):
+            raise TaxonomyValidationError
+        inbox = await self.repository.get_category_by_path(
+            owner_user_id=owner_user_id,
+            path="inbox",
+            include_archived=False,
+        )
+        if inbox is None:
+            raise TaxonomyNotFoundError
+
+        categories = await self.repository.list_categories(
+            owner_user_id=owner_user_id,
+            include_archived=False,
+        )
+        subtree = [
+            item
+            for item in categories
+            if item.path == category.path or item.path.startswith(f"{category.path}/")
+        ]
+        subtree_paths = {item.path for item in subtree}
+        current_assignments = await self.repository.list_current_assignments(
+            owner_user_id=owner_user_id
+        )
+        affected_assignments = [
+            assignment
+            for assignment in current_assignments
+            if assignment.category_path_snapshot in subtree_paths
+        ]
+
+        deleted_notes_count = 0
+        moved_notes_count = 0
+        if delete_notes:
+            content_ids = [assignment.content_object_id for assignment in affected_assignments]
+            if content_ids:
+                slugs = list(
+                    await self.session.scalars(
+                        select(ContentObject.slug).where(
+                            ContentObject.owner_user_id == owner_user_id,
+                            ContentObject.id.in_(content_ids),
+                        )
+                    )
+                )
+                if slugs:
+                    from app.modules.content.service import ContentService
+
+                    await ContentService(self.session).delete_notes(
+                        owner_user_id=owner_user_id,
+                        slugs=slugs,
+                    )
+                    deleted_notes_count = len(slugs)
+        else:
+            for assignment in affected_assignments:
+                await self._create_current_assignment(
+                    owner_user_id=owner_user_id,
+                    content_object_id=assignment.content_object_id,
+                    category=inbox,
+                    status="accepted",
+                    assigned_by="system",
+                    confidence=1.0,
+                    reasoning=f"Category {category.path} was deleted; moved to inbox.",
+                    commit=False,
+                )
+                moved_notes_count += 1
+
+        for item in sorted(subtree, key=lambda node: node.depth, reverse=True):
+            item.is_archived = True
+        await self.session.commit()
+        return TaxonomyCategoryDeleteResponse(
+            category_id=category.id,
+            archived_categories_count=len(subtree),
+            moved_notes_count=moved_notes_count,
+            deleted_notes_count=deleted_notes_count,
+        )
+
     async def restore_category(
         self,
         *,
@@ -400,6 +506,35 @@ class TaxonomyService:
             raise TaxonomyNotFoundError
         return profile
 
+    async def get_user_settings(self, *, owner_user_id: str) -> TaxonomyUserSettings:
+        settings = await self.repository.get_settings(owner_user_id=owner_user_id)
+        if settings is not None:
+            return settings
+        settings = TaxonomyUserSettings(owner_user_id=owner_user_id)
+        self.repository.add_settings(settings)
+        await self.session.commit()
+        await self.session.refresh(settings)
+        return settings
+
+    async def update_user_settings(
+        self,
+        *,
+        owner_user_id: str,
+        category_profile_editing_enabled: bool | None,
+        trash_enabled: bool | None,
+        trash_retention_days: int | None,
+    ) -> TaxonomyUserSettings:
+        settings = await self.get_user_settings(owner_user_id=owner_user_id)
+        if category_profile_editing_enabled is not None:
+            settings.category_profile_editing_enabled = category_profile_editing_enabled
+        if trash_enabled is not None:
+            settings.trash_enabled = trash_enabled
+        if trash_retention_days is not None:
+            settings.trash_retention_days = trash_retention_days
+        await self.session.commit()
+        await self.session.refresh(settings)
+        return settings
+
     async def put_profile(
         self,
         *,
@@ -410,6 +545,9 @@ class TaxonomyService:
         positive_examples: list[str],
         negative_examples: list[str],
     ) -> TaxonomyCategoryProfile:
+        settings = await self.get_user_settings(owner_user_id=owner_user_id)
+        if not settings.category_profile_editing_enabled:
+            raise TaxonomyPermissionError
         await self.get_category(owner_user_id=owner_user_id, category_id=category_id)
         profile = await self.repository.get_profile(category_id=category_id)
         if profile is None:
@@ -427,6 +565,49 @@ class TaxonomyService:
         await self.session.commit()
         await self.session.refresh(profile)
         return profile
+
+    async def suggest_profile_improvement(
+        self,
+        *,
+        owner_user_id: str,
+        category_id: str,
+        user_guidance: str,
+    ) -> TaxonomyProfileDraftResponse:
+        category = await self.get_category(owner_user_id=owner_user_id, category_id=category_id)
+        profile = await self.repository.get_profile(category_id=category_id)
+        children = [
+            item
+            for item in await self.repository.list_categories(
+                owner_user_id=owner_user_id,
+                include_archived=False,
+            )
+            if item.parent_id == category.id
+        ]
+        prompt = self._build_profile_improvement_prompt(
+            category=category,
+            profile=profile,
+            children=children,
+            user_guidance=user_guidance,
+        )
+        try:
+            raw = await self.llm_generator.generate_structured(
+                prompt=prompt,
+                schema=_GeneratedProfileDraft.model_json_schema(),
+                model_config={
+                    "model": self.settings.taxonomy_llm_classification_model,
+                    "prompt_version": "taxonomy_profile_improvement_v1",
+                },
+            )
+            draft = _GeneratedProfileDraft.model_validate(raw)
+        except (LLMGenerationError, ValidationError) as exc:
+            raise TaxonomyLLMClassificationError("LLM profile improvement failed.") from exc
+        return TaxonomyProfileDraftResponse(
+            summary=draft.summary,
+            keywords=draft.keywords,
+            positive_examples=draft.positive_examples,
+            negative_examples=draft.negative_examples,
+            reasoning=draft.reasoning,
+        )
 
     async def build_category_profile_document(
         self,
@@ -592,6 +773,34 @@ class TaxonomyService:
             content_object_id=content_object_id,
         )
 
+    async def enqueue_inbox_reclassification_jobs(
+        self,
+        *,
+        owner_user_id: str,
+    ) -> TaxonomyInboxReclassifyResponse:
+        inbox = await self.repository.get_category_by_path(
+            owner_user_id=owner_user_id,
+            path="inbox",
+            include_archived=False,
+        )
+        if inbox is None:
+            raise TaxonomyNotFoundError
+        assignments = await self.repository.list_current_assignments(owner_user_id=owner_user_id)
+        enqueued_count = 0
+        for assignment in assignments:
+            if assignment.category_path_snapshot != "inbox":
+                continue
+            await self.enqueue_classification_job(
+                owner_user_id=owner_user_id,
+                content_object_id=assignment.content_object_id,
+                priority=20,
+                source_event_id=None,
+                correlation_id=str(uuid4()),
+            )
+            enqueued_count += 1
+        await self.session.commit()
+        return TaxonomyInboxReclassifyResponse(enqueued_count=enqueued_count)
+
     async def accept_assignment(
         self,
         *,
@@ -709,6 +918,32 @@ class TaxonomyService:
                 limit=candidate_limit,
             )
         if not candidates:
+            inbox_assignment = await self._create_inbox_assignment(
+                owner_user_id=owner_user_id,
+                content_object_id=content_object_id,
+                dry_run=dry_run,
+                confidence=None,
+                reasoning="No semantic taxonomy candidates found; assigned to inbox.",
+            )
+            if inbox_assignment is not None:
+                assignment, inbox = inbox_assignment
+                selected_category = self._classification_category(inbox)
+                return self._classification_response(
+                    content_object_id=content_object_id,
+                    mode=mode,
+                    dry_run=dry_run,
+                    assignment=assignment,
+                    selected_category=selected_category,
+                    status="accepted",
+                    confidence=None,
+                    reasoning="No semantic taxonomy candidates found; assigned to inbox.",
+                    semantic_candidates=[],
+                    classification_text=query,
+                    llm_decision=None,
+                    would_assign=True,
+                    would_status="accepted",
+                    would_category=selected_category,
+                )
             return self._classification_response(
                 content_object_id=content_object_id,
                 mode=mode,
@@ -802,6 +1037,36 @@ class TaxonomyService:
     ) -> TaxonomyClassificationResponse:
         best = candidates[0]
         if best.result.score < self.settings.taxonomy_classification_medium_threshold:
+            reasoning = (
+                fallback_reason
+                or "Semantic similarity was below assignment threshold; assigned to inbox."
+            )
+            inbox_assignment = await self._create_inbox_assignment(
+                owner_user_id=owner_user_id,
+                content_object_id=content_object_id,
+                dry_run=dry_run,
+                confidence=best.result.score,
+                reasoning=reasoning,
+            )
+            if inbox_assignment is not None:
+                assignment, inbox = inbox_assignment
+                selected_category = self._classification_category(inbox)
+                return self._classification_response(
+                    content_object_id=content_object_id,
+                    mode=response_mode,
+                    dry_run=dry_run,
+                    assignment=assignment,
+                    selected_category=selected_category,
+                    status="accepted",
+                    confidence=best.result.score,
+                    reasoning=reasoning,
+                    semantic_candidates=self._candidate_responses(candidates),
+                    classification_text=classification_text,
+                    llm_decision=None,
+                    would_assign=True,
+                    would_status="accepted",
+                    would_category=selected_category,
+                )
             return self._classification_response(
                 content_object_id=content_object_id,
                 mode=response_mode,
@@ -993,6 +1258,50 @@ class TaxonomyService:
             would_status=status,
             would_category=selected_category,
         )
+
+    async def _create_inbox_assignment(
+        self,
+        *,
+        owner_user_id: str,
+        content_object_id: str,
+        dry_run: bool,
+        confidence: float | None,
+        reasoning: str,
+    ) -> tuple[TaxonomyContentAssignment, TaxonomyCategory] | None:
+        inbox = await self.repository.get_category_by_path(
+            owner_user_id=owner_user_id,
+            path="inbox",
+            include_archived=False,
+        )
+        if inbox is None:
+            return None
+        if dry_run:
+            assignment = TaxonomyContentAssignment(
+                owner_user_id=owner_user_id,
+                content_object_id=content_object_id,
+                category_id=inbox.id,
+                category_name_snapshot=inbox.name,
+                category_path_snapshot=inbox.path,
+                status="accepted",
+                confidence=confidence,
+                reasoning=reasoning,
+                assigned_by="system",
+                alternatives=[],
+                is_current=False,
+            )
+            return assignment, inbox
+        assignment = await self._create_current_assignment(
+            owner_user_id=owner_user_id,
+            content_object_id=content_object_id,
+            category=inbox,
+            status="accepted",
+            assigned_by="system",
+            confidence=confidence,
+            reasoning=reasoning,
+            alternatives=[],
+            commit=True,
+        )
+        return assignment, inbox
 
     async def _run_llm_judge(
         self,
@@ -1218,6 +1527,55 @@ class TaxonomyService:
                 ]
             )
         return "\n".join(lines)
+
+    def _build_profile_improvement_prompt(
+        self,
+        *,
+        category: TaxonomyCategory,
+        profile: TaxonomyCategoryProfile | None,
+        children: list[TaxonomyCategory],
+        user_guidance: str,
+    ) -> str:
+        return "\n".join(
+            [
+                "prompt_version = taxonomy_profile_improvement_v1",
+                "",
+                "You improve taxonomy category profiles for a personal knowledge base.",
+                "Return a draft only. Do not save or apply changes.",
+                "Keep the category boundary practical for classification.",
+                "Prefer concise Russian text if the user guidance is in Russian.",
+                "",
+                "Category:",
+                f"Category path: {category.path}",
+                f"Category name: {category.name}",
+                f"Category description: {category.description or ''}",
+                "",
+                "Current profile:",
+                f"Summary: {profile.summary if profile is not None and profile.summary else ''}",
+                "Keywords: "
+                + (", ".join(profile.keywords) if profile is not None and profile.keywords else ""),
+                "Positive examples: "
+                + (
+                    " | ".join(profile.positive_examples)
+                    if profile is not None and profile.positive_examples
+                    else ""
+                ),
+                "Negative examples: "
+                + (
+                    " | ".join(profile.negative_examples)
+                    if profile is not None and profile.negative_examples
+                    else ""
+                ),
+                "",
+                "Child categories:",
+                *[f"- {child.path}: {child.description or child.name}" for child in children],
+                "",
+                "User guidance:",
+                user_guidance,
+                "",
+                "Return JSON matching the schema. Make summary, keywords, positive examples and negative examples directly useful for future automatic classification.",
+            ]
+        )
 
     @staticmethod
     def _llm_judge_schema() -> dict[str, Any]:
@@ -1455,6 +1813,7 @@ class TaxonomyService:
             category_path_snapshot=category.path,
             is_current=True,
         )
+        assignment.category = category
         self.repository.add_assignment(assignment)
         await self.session.flush()
         if commit:
@@ -1685,6 +2044,10 @@ class TaxonomyService:
         return TaxonomyProfileResponse.model_validate(profile, from_attributes=True)
 
     @staticmethod
+    def settings_response(settings: TaxonomyUserSettings) -> TaxonomySettingsResponse:
+        return TaxonomySettingsResponse.model_validate(settings, from_attributes=True)
+
+    @staticmethod
     def assignment_response(assignment: TaxonomyContentAssignment) -> TaxonomyAssignmentResponse:
         return TaxonomyAssignmentResponse(
             id=assignment.id,
@@ -1812,10 +2175,19 @@ class TaxonomyService:
     def _profile(name: str) -> dict[str, object]:
         keyword = TaxonomyService._slugify_path_segment(name)
         return {
-            "profile_summary": f"Materials related to {name}.",
-            "profile_keywords": [keyword],
-            "profile_positive_examples": [f"example item about {name}"],
-            "profile_negative_examples": [f"item unrelated to {name}"],
+            "profile_summary": (
+                f"Материалы, где основная тема - {name}. Используйте категорию для заметок, "
+                "ссылок и файлов, которые явно помогают найти или развить эту область знаний."
+            ),
+            "profile_keywords": [keyword, name.strip().casefold()],
+            "profile_positive_examples": [
+                f"Заметка, где {name} является центральной темой.",
+                f"Материал с практическими выводами, инструментами или источниками по теме {name}.",
+            ],
+            "profile_negative_examples": [
+                f"Упоминание {name} без полезного содержания по теме.",
+                "Общая заметка, которую точнее отнести к другой категории.",
+            ],
         }
 
     @staticmethod
@@ -1905,9 +2277,11 @@ class TaxonomyService:
     def _build_custom_interest_prompt(custom_description: str) -> str:
         return (
             "Create a concise personal knowledge taxonomy from the user's interests. "
-            "Return 3-6 top-level categories, with up to 4 useful children each. "
-            "Use short category names. Do not include generic labels like Misc or Other. "
-            "Return JSON only.\n\n"
+            "Return 3-6 top-level categories with up to 4 useful children each. "
+            "Use short, specific category names that will work as stable navigation labels. "
+            "Make categories non-overlapping: each note should have one obvious best category. "
+            "Avoid generic labels like Misc, Other, Useful, Notes, or Inbox. "
+            "Prefer the user's language. Return JSON only.\n\n"
             f"User interests:\n{custom_description[:2000]}"
         )
 

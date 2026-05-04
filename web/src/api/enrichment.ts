@@ -126,8 +126,50 @@ async function readJson<T>(res: Response, fallbackMessage: string): Promise<T> {
   return res.json() as Promise<T>
 }
 
+const cyrillicTranslit: Record<string, string> = {
+  а: 'a',
+  б: 'b',
+  в: 'v',
+  г: 'g',
+  д: 'd',
+  е: 'e',
+  ё: 'e',
+  ж: 'zh',
+  з: 'z',
+  и: 'i',
+  й: 'j',
+  к: 'k',
+  л: 'l',
+  м: 'm',
+  н: 'n',
+  о: 'o',
+  п: 'p',
+  р: 'r',
+  с: 's',
+  т: 't',
+  у: 'u',
+  ф: 'f',
+  х: 'h',
+  ц: 'c',
+  ч: 'ch',
+  ш: 'sh',
+  щ: 'sch',
+  ъ: '',
+  ы: 'y',
+  ь: '',
+  э: 'e',
+  ю: 'yu',
+  я: 'ya',
+}
+
 function slugify(value: string): string {
-  return value.trim().toLowerCase().replace(/[^a-z0-9а-яё]+/gi, '-').replace(/^-+|-+$/g, '')
+  const transliterated = value
+    .trim()
+    .toLowerCase()
+    .split('')
+    .map(char => cyrillicTranslit[char] ?? char)
+    .join('')
+  return transliterated.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'category'
 }
 
 export async function fetchSnapshotArtifacts(contentObjectId: string): Promise<SnapshotArtifact[]> {
@@ -186,7 +228,7 @@ export async function assignExistingTagToContent(contentObjectId: string, tagId:
 }
 
 export async function removeTagFromContent(contentObjectId: string, tagId: string): Promise<void> {
-  const res = await apiFetch(`${API}/content/${contentObjectId}/tags/${tagId}`, { method: 'DELETE' })
+  const res = await apiFetch(`${API}/content/${contentObjectId}/tags/${tagId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } })
   if (!res.ok) throw new Error('Failed to remove tag')
 }
 
@@ -211,12 +253,12 @@ export async function fetchContentTagJobs(contentObjectId: string): Promise<Cont
 }
 
 export async function acceptTagSuggestion(contentObjectId: string, assignmentId: string): Promise<ContentTagAssignment> {
-  const res = await apiFetch(`${API}/content/${contentObjectId}/tags/suggestions/${assignmentId}/accept`, { method: 'POST' })
+  const res = await apiFetch(`${API}/content/${contentObjectId}/tags/suggestions/${assignmentId}/accept`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
   return readJson<ContentTagAssignment>(res, 'Failed to accept tag suggestion')
 }
 
 export async function rejectTagSuggestion(contentObjectId: string, assignmentId: string): Promise<ContentTagAssignment> {
-  const res = await apiFetch(`${API}/content/${contentObjectId}/tags/suggestions/${assignmentId}/reject`, { method: 'POST' })
+  const res = await apiFetch(`${API}/content/${contentObjectId}/tags/suggestions/${assignmentId}/reject`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
   return readJson<ContentTagAssignment>(res, 'Failed to reject tag suggestion')
 }
 
@@ -270,11 +312,11 @@ export async function fetchTaxonomyClassificationJobs(contentObjectId: string): 
 }
 
 export async function acceptTaxonomyAssignment(contentObjectId: string, assignmentId: string): Promise<TaxonomyAssignment> {
-  const res = await apiFetch(`${API}/taxonomy/content/${contentObjectId}/assignments/${assignmentId}/accept`, { method: 'POST' })
+  const res = await apiFetch(`${API}/taxonomy/content/${contentObjectId}/assignments/${assignmentId}/accept`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
   return readJson<TaxonomyAssignment>(res, 'Failed to accept category')
 }
 
 export async function rejectTaxonomyAssignment(contentObjectId: string, assignmentId: string): Promise<TaxonomyAssignment> {
-  const res = await apiFetch(`${API}/taxonomy/content/${contentObjectId}/assignments/${assignmentId}/reject`, { method: 'POST' })
+  const res = await apiFetch(`${API}/taxonomy/content/${contentObjectId}/assignments/${assignmentId}/reject`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
   return readJson<TaxonomyAssignment>(res, 'Failed to reject category')
 }

@@ -1,0 +1,139 @@
+.page {
+  background: var(--color-bg);
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 20px;
+  min-height: 0;
+  overflow: auto;
+  padding: 28px;
+}
+
+.header {
+  align-items: center;
+  display: flex;
+  gap: 18px;
+  justify-content: space-between;
+}
+
+.header p {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  margin: 0 0 6px;
+  text-transform: uppercase;
+}
+
+.header h1 {
+  color: var(--color-text-primary);
+  font-size: var(--font-size-2xl);
+  margin: 0;
+}
+
+.dangerButton,
+.actions button,
+.actions a {
+  align-items: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 12px;
+  text-decoration: none;
+}
+
+.dangerButton {
+  background: rgba(239, 68, 68, 0.12);
+  color: #fca5a5;
+}
+
+.actions button,
+.actions a {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--color-text-primary);
+}
+
+.dangerButton:disabled,
+.actions button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.list {
+  display: grid;
+  gap: 10px;
+}
+
+.row {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: var(--radius-sm);
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  padding: 14px;
+}
+
+.row h2 {
+  color: var(--color-text-primary);
+  font-size: var(--font-size-base);
+  margin: 0;
+}
+
+.row p {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  margin: 4px 0 0;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+.state,
+.error,
+.success {
+  align-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  display: flex;
+  justify-content: center;
+  min-height: 120px;
+  padding: 20px;
+}
+
+.error {
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #fca5a5;
+}
+
+.success {
+  border-color: rgba(20, 184, 166, 0.28);
+  color: #99f6e4;
+  gap: 12px;
+  justify-content: space-between;
+  min-height: 48px;
+}
+
+.success a {
+  color: var(--color-text-primary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  text-decoration: none;
+}
+
+@media (max-width: 700px) {
+  .header,
+  .row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

@@ -7,13 +7,15 @@ import {
   updateSnapshotSettings,
   type SnapshotFormatKey,
 } from '../api/snapshots'
+import { fetchTaxonomySettings, updateTaxonomySettings } from '../api/folders'
 import styles from './SettingsPage.module.css'
 
-type TabKey = 'profile' | 'snapshots' | 'sessions'
+type TabKey = 'profile' | 'snapshots' | 'taxonomy' | 'sessions'
 
 const tabs: Array<{ key: TabKey; label: string; caption: string }> = [
   { key: 'profile', label: 'Профиль', caption: 'Аккаунт и внешний вид' },
   { key: 'snapshots', label: 'Снапшоты', caption: 'Форматы создания' },
+  { key: 'taxonomy', label: 'Категории', caption: 'Профили и корзина' },
   { key: 'sessions', label: 'Сессии', caption: 'Устройства и входы' },
 ]
 
@@ -58,11 +60,21 @@ export default function SettingsPage() {
     queryKey: ['auth-sessions'],
     queryFn: fetchAuthSessions,
   })
+  const taxonomySettings = useQuery({
+    queryKey: ['taxonomy-settings'],
+    queryFn: fetchTaxonomySettings,
+  })
 
   const updateSnapshots = useMutation({
     mutationFn: updateSnapshotSettings,
     onSuccess: (data) => {
       queryClient.setQueryData(['snapshot-settings'], data)
+    },
+  })
+  const updateTaxonomy = useMutation({
+    mutationFn: updateTaxonomySettings,
+    onSuccess: (data) => {
+      queryClient.setQueryData(['taxonomy-settings'], data)
     },
   })
 
@@ -220,6 +232,70 @@ export default function SettingsPage() {
                   </article>
                 ))}
               </div>
+            </div>
+          )}
+
+          {activeTab === 'taxonomy' && (
+            <div className={styles.section}>
+              <div className={styles.sectionIntro}>
+                <h2>Категории</h2>
+                <p>Настройки профилей категорий, удаления материалов и срока хранения корзины.</p>
+              </div>
+              {taxonomySettings.isLoading && <p className={styles.muted}>Загружаю настройки категорий...</p>}
+              {taxonomySettings.isError && <p className={styles.error}>Не удалось загрузить настройки категорий.</p>}
+              {taxonomySettings.data && (
+                <>
+                  <div className={styles.toggleRow}>
+                    <div>
+                      <h3>Редактирование LLM-профилей</h3>
+                      <p>Показывает форму ручного редактирования summary, keywords и examples.</p>
+                    </div>
+                    <button
+                      className={[styles.switch, taxonomySettings.data.categoryProfileEditingEnabled ? styles.switchOn : ''].filter(Boolean).join(' ')}
+                      disabled={updateTaxonomy.isPending}
+                      onClick={() => updateTaxonomy.mutate({
+                        categoryProfileEditingEnabled: !taxonomySettings.data.categoryProfileEditingEnabled,
+                      })}
+                      aria-pressed={taxonomySettings.data.categoryProfileEditingEnabled}
+                    >
+                      <span />
+                    </button>
+                  </div>
+
+                  <div className={styles.toggleRow}>
+                    <div>
+                      <h3>Корзина</h3>
+                      <p>Удалённые заметки сохраняются перед окончательной очисткой.</p>
+                    </div>
+                    <button
+                      className={[styles.switch, taxonomySettings.data.trashEnabled ? styles.switchOn : ''].filter(Boolean).join(' ')}
+                      disabled={updateTaxonomy.isPending}
+                      onClick={() => updateTaxonomy.mutate({ trashEnabled: !taxonomySettings.data.trashEnabled })}
+                      aria-pressed={taxonomySettings.data.trashEnabled}
+                    >
+                      <span />
+                    </button>
+                  </div>
+
+                  <div className={styles.toggleRow}>
+                    <div>
+                      <h3>Срок хранения</h3>
+                      <p>Дней до окончательной очистки удалённых заметок.</p>
+                    </div>
+                    <input
+                      className={styles.numberInput}
+                      type="number"
+                      min={1}
+                      max={365}
+                      value={taxonomySettings.data.trashRetentionDays}
+                      disabled={updateTaxonomy.isPending}
+                      onChange={(event) => updateTaxonomy.mutate({
+                        trashRetentionDays: Number(event.target.value),
+                      })}
+                    />
+                  </div>
+                </>
+              )}
             </div>
           )}
         </div>

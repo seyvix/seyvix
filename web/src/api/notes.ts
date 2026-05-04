@@ -17,6 +17,14 @@ export async function fetchNotes(params: NotesParams = {}): Promise<Note[]> {
   return ((data as { items?: Note[] }).items ?? []) as Note[]
 }
 
+export async function fetchTrashNotes(): Promise<Note[]> {
+  const res = await apiFetch(`${BASE}/trash`)
+  if (!res.ok) throw new Error('Failed to fetch trash')
+  const data: unknown = await res.json()
+  if (Array.isArray(data)) return data as Note[]
+  return ((data as { items?: Note[] }).items ?? []) as Note[]
+}
+
 export async function fetchNote(noteRef: string): Promise<Note> {
   const res = await apiFetch(`${BASE}/${encodeURIComponent(noteRef)}`)
   if (!res.ok) throw new Error('Failed to fetch note')
@@ -124,6 +132,19 @@ export async function deleteNotes(slugs: string[]): Promise<void> {
     body: JSON.stringify({ slugs }),
   })
   if (!res.ok) throw new Error('Failed to delete notes')
+}
+
+export async function restoreNote(slug: string): Promise<Note> {
+  const res = await apiFetch(`${BASE}/${encodeURIComponent(slug)}/restore`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
+  if (!res.ok) throw new Error('Failed to restore note')
+  return (await res.json()) as Note
+}
+
+export async function cleanupTrash(): Promise<{ deletedCount: number }> {
+  const res = await apiFetch(`${BASE}/trash/cleanup`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
+  if (!res.ok) throw new Error('Failed to cleanup trash')
+  const data = await res.json()
+  return { deletedCount: data.deleted_count ?? 0 }
 }
 
 export async function updateNote(noteRef: string, data: Partial<Note>): Promise<Note> {

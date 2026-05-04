@@ -11,6 +11,7 @@ from app.modules.taxonomy.models import (
     TaxonomyContentAssignment,
     TaxonomyTemplate,
     TaxonomyTemplateCategory,
+    TaxonomyUserSettings,
 )
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,6 +27,9 @@ class TaxonomyRepository:
 
     def add_profile(self, profile: TaxonomyCategoryProfile) -> None:
         self.session.add(profile)
+
+    def add_settings(self, settings: TaxonomyUserSettings) -> None:
+        self.session.add(settings)
 
     def add_assignment(self, assignment: TaxonomyContentAssignment) -> None:
         self.session.add(assignment)
@@ -191,6 +195,12 @@ class TaxonomyRepository:
             TaxonomyCategoryProfile.category_id == category_id
         )
         return cast(TaxonomyCategoryProfile | None, await self.session.scalar(query))
+
+    async def get_settings(self, *, owner_user_id: str) -> TaxonomyUserSettings | None:
+        query = select(TaxonomyUserSettings).where(
+            TaxonomyUserSettings.owner_user_id == owner_user_id
+        )
+        return cast(TaxonomyUserSettings | None, await self.session.scalar(query))
 
     async def get_content_object(
         self,

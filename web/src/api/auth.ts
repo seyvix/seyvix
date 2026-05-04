@@ -85,6 +85,7 @@ export async function apiLogin(
 export async function apiRefresh(): Promise<AuthTokensResponse> {
   const res = await fetch(`${BASE}/refresh`, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
   })
   if (!res.ok) throw await parseError(res)
@@ -94,6 +95,7 @@ export async function apiRefresh(): Promise<AuthTokensResponse> {
 export async function apiLogout(): Promise<void> {
   await fetch(`${BASE}/logout`, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
   })
 }

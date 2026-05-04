@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 TaxonomyCategorySource = Literal[
     "template",
@@ -85,6 +85,23 @@ class TaxonomyProfilePutRequest(BaseModel):
     negative_examples: list[str] = Field(default_factory=list)
 
 
+class TaxonomySettingsPatchRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    category_profile_editing_enabled: bool | None = None
+    trash_enabled: bool | None = None
+    trash_retention_days: int | None = Field(default=None, gt=0, le=365)
+
+
+class TaxonomySettingsResponse(BaseModel):
+    owner_user_id: str
+    category_profile_editing_enabled: bool
+    trash_enabled: bool
+    trash_retention_days: int
+    created_at: datetime
+    updated_at: datetime
+
+
 class TaxonomyProfileResponse(BaseModel):
     id: str
     category_id: str
@@ -94,6 +111,31 @@ class TaxonomyProfileResponse(BaseModel):
     negative_examples: list[str]
     created_at: datetime
     updated_at: datetime
+
+
+class TaxonomyProfileImproveRequest(BaseModel):
+    user_guidance: str = Field(min_length=1, max_length=2000)
+
+
+class TaxonomyProfileDraftResponse(BaseModel):
+    summary: str | None
+    keywords: list[str]
+    positive_examples: list[str]
+    negative_examples: list[str]
+    reasoning: str
+
+
+class TaxonomyCategoryDeleteRequest(BaseModel):
+    delete_notes: bool = False
+    confirm_category_name: str | None = Field(default=None, max_length=255)
+    confirm_delete_notes_text: str | None = Field(default=None, max_length=64)
+
+
+class TaxonomyCategoryDeleteResponse(BaseModel):
+    category_id: str
+    archived_categories_count: int
+    moved_notes_count: int
+    deleted_notes_count: int
 
 
 class TaxonomyAssignmentCreateRequest(BaseModel):
@@ -181,6 +223,10 @@ class TaxonomyClassificationJobResponse(BaseModel):
 
 class TaxonomyClassificationJobListResponse(BaseModel):
     items: list[TaxonomyClassificationJobResponse]
+
+
+class TaxonomyInboxReclassifyResponse(BaseModel):
+    enqueued_count: int
 
 
 class TaxonomyTemplateSummaryResponse(BaseModel):

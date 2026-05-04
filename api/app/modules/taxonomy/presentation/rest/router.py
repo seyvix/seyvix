@@ -12,6 +12,8 @@ from app.modules.taxonomy.schemas import (
     TaxonomyAssignmentCreateRequest,
     TaxonomyAssignmentResponse,
     TaxonomyBreadcrumbResponse,
+    TaxonomyCategoryDeleteRequest,
+    TaxonomyCategoryDeleteResponse,
     TaxonomyCategoryCreateRequest,
     TaxonomyCategoryResponse,
     TaxonomyCategoryTreeItem,
@@ -20,12 +22,17 @@ from app.modules.taxonomy.schemas import (
     TaxonomyClassificationJobResponse,
     TaxonomyClassificationRequest,
     TaxonomyClassificationResponse,
+    TaxonomyInboxReclassifyResponse,
     TaxonomyInitializeRequest,
     TaxonomyInitializeResponse,
     TaxonomyInterestInitializeRequest,
     TaxonomyInterestOptionResponse,
+    TaxonomyProfileDraftResponse,
+    TaxonomyProfileImproveRequest,
     TaxonomyProfilePutRequest,
     TaxonomyProfileResponse,
+    TaxonomySettingsPatchRequest,
+    TaxonomySettingsResponse,
     TaxonomyTemplateDetailResponse,
     TaxonomyTemplateSummaryResponse,
 )
@@ -33,6 +40,7 @@ from app.modules.taxonomy.service import (
     TaxonomyConflictError,
     TaxonomyLLMClassificationError,
     TaxonomyNotFoundError,
+    TaxonomyPermissionError,
     TaxonomyService,
     TaxonomyValidationError,
 )
@@ -62,8 +70,16 @@ def _conflict(message: str) -> AppError:
 
 def _validation_error(message: str) -> AppError:
     return AppError(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         code="validation_error",
+        message=message,
+    )
+
+
+def _forbidden(message: str) -> AppError:
+    return AppError(
+        status_code=status.HTTP_403_FORBIDDEN,
+        code="taxonomy_forbidden",
         message=message,
     )
 
@@ -84,6 +100,40 @@ def _classification_job_response(
         created_at=job.created_at,
         updated_at=job.updated_at,
     )
+
+
+@router.get(
+    "/settings",
+    response_model=TaxonomySettingsResponse,
+    summary="Get taxonomy user settings",
+    responses={401: {"model": ErrorResponse}},
+)
+async def get_settings(
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[TaxonomyService, Depends(get_taxonomy_service)],
+) -> TaxonomySettingsResponse:
+    settings_model = await service.get_user_settings(owner_user_id=context.user.id)
+    return service.settings_response(settings_model)
+
+
+@router.patch(
+    "/settings",
+    response_model=TaxonomySettingsResponse,
+    summary="Update taxonomy user settings",
+    responses={401: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+)
+async def update_settings(
+    payload: TaxonomySettingsPatchRequest,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[TaxonomyService, Depends(get_taxonomy_service)],
+) -> TaxonomySettingsResponse:
+    settings_model = await service.update_user_settings(
+        owner_user_id=context.user.id,
+        category_profile_editing_enabled=payload.category_profile_editing_enabled,
+        trash_enabled=payload.trash_enabled,
+        trash_retention_days=payload.trash_retention_days,
+    )
+    return service.settings_response(settings_model)
 
 
 @router.get(
@@ -265,6 +315,40 @@ async def archive_category(
 
 
 @router.post(
+    "/categories/{category_id}/delete",
+    response_model=TaxonomyCategoryDeleteResponse,
+    summary="Delete taxonomy category",
+    responses={
+        200: {"description": "Category archived and content handled."},
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+    },
+)
+async def delete_category(
+    category_id: str,
+    payload: TaxonomyCategoryDeleteRequest,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[TaxonomyService, Depends(get_taxonomy_service)],
+) -> TaxonomyCategoryDeleteResponse:
+    try:
+        return await service.delete_category(
+            owner_user_id=context.user.id,
+            category_id=category_id,
+            delete_notes=payload.delete_notes,
+            confirm_category_name=payload.confirm_category_name,
+            confirm_delete_notes_text=payload.confirm_delete_notes_text,
+        )
+    except TaxonomyNotFoundError as exc:
+        raise _not_found("Category or inbox not found.") from exc
+    except TaxonomyConflictError as exc:
+        raise _conflict("Category cannot be deleted.") from exc
+    except TaxonomyValidationError as exc:
+        raise _validation_error("Dangerous category deletion requires confirmation.") from exc
+
+
+@router.post(
     "/categories/{category_id}/restore",
     response_model=TaxonomyCategoryResponse,
     summary="Restore archived taxonomy category",
@@ -332,7 +416,41 @@ async def put_profile(
         )
     except TaxonomyNotFoundError as exc:
         raise _not_found("Category not found.") from exc
+    except TaxonomyPermissionError as exc:
+        raise _forbidden("Category profile editing is disabled in taxonomy settings.") from exc
     return service.profile_response(profile)
+
+
+@router.post(
+    "/categories/{category_id}/profile/improve",
+    response_model=TaxonomyProfileDraftResponse,
+    summary="Suggest taxonomy category profile improvements",
+    responses={
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+)
+async def suggest_profile_improvement(
+    category_id: str,
+    payload: TaxonomyProfileImproveRequest,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[TaxonomyService, Depends(get_taxonomy_service)],
+) -> TaxonomyProfileDraftResponse:
+    try:
+        return await service.suggest_profile_improvement(
+            owner_user_id=context.user.id,
+            category_id=category_id,
+            user_guidance=payload.user_guidance,
+        )
+    except TaxonomyNotFoundError as exc:
+        raise _not_found("Category not found.") from exc
+    except TaxonomyLLMClassificationError as exc:
+        raise AppError(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            code="taxonomy_profile_llm_unavailable",
+            message="LLM category profile improvement is unavailable.",
+        ) from exc
 
 
 @router.post(
@@ -402,6 +520,23 @@ async def list_classification_jobs(
     return TaxonomyClassificationJobListResponse(
         items=[_classification_job_response(job) for job in jobs],
     )
+
+
+@router.post(
+    "/content/inbox/reclassify",
+    response_model=TaxonomyInboxReclassifyResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Requeue inbox content for taxonomy classification",
+    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+)
+async def reclassify_inbox_content(
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[TaxonomyService, Depends(get_taxonomy_service)],
+) -> TaxonomyInboxReclassifyResponse:
+    try:
+        return await service.enqueue_inbox_reclassification_jobs(owner_user_id=context.user.id)
+    except TaxonomyNotFoundError as exc:
+        raise _not_found("Inbox category not found.") from exc
 
 
 @router.get(

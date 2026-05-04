@@ -309,7 +309,11 @@ class ContentService:
         for content_object in objects:
             assignment = assignment_by_object_id.get(content_object.id)
             if folder_path and (
-                assignment is None or assignment.category_path_snapshot != folder_path
+                assignment is None
+                or not self._path_matches_or_descends(
+                    assignment.category_path_snapshot,
+                    folder_path,
+                )
             ):
                 continue
             if normalized_tags and not normalized_tags.issubset(
@@ -329,6 +333,13 @@ class ContentService:
 
         if sort == "custom":
             items.sort(key=lambda item: (item.sort_order, item.created_at))
+        elif folder_path:
+            items.sort(
+                key=lambda item: (
+                    assignment_by_object_id[item.id].category_path_snapshot != folder_path,
+                    -item.created_at.timestamp(),
+                )
+            )
         else:
             items.sort(key=lambda item: item.created_at, reverse=True)
 
@@ -341,6 +352,50 @@ class ContentService:
 
     async def get_note(self, *, owner_user_id: str, slug: str) -> NoteCardResponse:
         return await self._to_card(await self._load_note(owner_user_id=owner_user_id, slug=slug))
+
+    async def list_trash(self, *, owner_user_id: str) -> NoteListResponse:
+        objects = await self.content.list_deleted(owner_user_id=owner_user_id)
+        tags_by_object_id = await self.tag_service.list_active_tags_for_contents(
+            owner_user_id=owner_user_id,
+            content_object_ids=[content_object.id for content_object in objects],
+        )
+        return NoteListResponse(
+            items=[
+                await self._to_card(item, active_tags=tags_by_object_id.get(item.id, []))
+                for item in objects
+                if item.kind == "collection" or not item.collection_memberships
+            ]
+        )
+
+    async def restore_note(self, *, owner_user_id: str, slug: str) -> NoteCardResponse:
+        content_object = await self.content.get_by_slug(
+            owner_user_id=owner_user_id,
+            slug=slug,
+            include_deleted=True,
+        )
+        if content_object is None or content_object.deleted_at is None:
+            raise NoteNotFoundError
+        to_restore = await self._collect_objects_for_delete([content_object])
+        for obj in to_restore.values():
+            obj.deleted_at = None
+            obj.delete_after = None
+            self._enqueue_content_changed_event(obj, event_name="content.object.updated")
+        await self.session.commit()
+        await self.session.refresh(content_object)
+        return await self._to_card(content_object)
+
+    async def cleanup_expired_trash(self, *, owner_user_id: str) -> int:
+        now = datetime.now(UTC)
+        objects = [
+            item
+            for item in await self.content.list_deleted(owner_user_id=owner_user_id)
+            if item.delete_after is not None and item.delete_after <= now
+        ]
+        to_delete = await self._collect_objects_for_delete(objects)
+        if not to_delete:
+            return 0
+        await self._hard_delete_objects(to_delete)
+        return len(to_delete)
 
     async def get_download_path(self, *, owner_user_id: str, slug: str) -> Path:
         content_object = await self._load_note(owner_user_id=owner_user_id, slug=slug)
@@ -584,7 +639,24 @@ class ContentService:
             owner_user_id=owner_user_id,
             slugs=slugs,
         )
-        # Collect all objects to delete, including nested collection items
+        to_delete = await self._collect_objects_for_delete(objects)
+        taxonomy_settings = await self.taxonomy.get_user_settings(owner_user_id=owner_user_id)
+        if taxonomy_settings.trash_enabled:
+            now = datetime.now(UTC)
+            delete_after = now + timedelta(days=taxonomy_settings.trash_retention_days)
+            for obj in to_delete.values():
+                obj.deleted_at = now
+                obj.delete_after = delete_after
+                self._enqueue_content_changed_event(obj, event_name="content.object.deleted")
+            await self.session.commit()
+            return
+
+        await self._hard_delete_objects(to_delete)
+
+    async def _collect_objects_for_delete(
+        self,
+        objects: list[ContentObject],
+    ) -> dict[str, ContentObject]:
         to_delete: dict[str, ContentObject] = {}
         queue = list(objects)
         while queue:
@@ -595,19 +667,17 @@ class ContentService:
             if obj.kind == "collection":
                 items = await self.content.list_collection_items(obj.id)
                 queue.extend(item.content_object for item in items)
+        return to_delete
 
-        # Remove storage directories first
+    async def _hard_delete_objects(self, to_delete: dict[str, ContentObject]) -> None:
         for obj in to_delete.values():
             self._enqueue_content_changed_event(obj, event_name="content.object.deleted")
             self.storage.remove_directory(obj)
 
-        # Bulk DELETE via raw SQL — avoids ORM cascade conflicts when both
-        # a collection and its items are deleted in the same session.
-        # DB-level ondelete="CASCADE" on ContentCollectionItem and ContentAsset
-        # handles join/asset row cleanup automatically.
-        await self.session.execute(
-            sql_delete(ContentObject).where(ContentObject.id.in_(list(to_delete.keys())))
-        )
+        if to_delete:
+            await self.session.execute(
+                sql_delete(ContentObject).where(ContentObject.id.in_(list(to_delete.keys())))
+            )
         await self.session.commit()
 
     async def list_folders(self, *, owner_user_id: str) -> FolderTreeResponse:
@@ -615,8 +685,14 @@ class ContentService:
             owner_user_id=owner_user_id,
             include_archived=False,
         )
+        counts = await self._folder_counts(owner_user_id=owner_user_id)
         by_id: dict[str, FolderTreeItem] = {
-            category.id: self._folder_tree_item(category) for category in categories
+            category.id: self._folder_tree_item(
+                category,
+                direct_count=counts.get(category.path, (0, 0))[0],
+                total_count=counts.get(category.path, (0, 0))[1],
+            )
+            for category in categories
         }
         roots: list[FolderTreeItem] = []
         for category in categories:
@@ -640,35 +716,49 @@ class ContentService:
         )
         if category is None:
             raise FolderNotFoundError
-        notes = await self.list_notes(
-            owner_user_id=owner_user_id,
-            search=None,
-            tag_slugs=[],
-            folder_path=folder_path,
-            sort="newest",
-        )
+        counts = await self._folder_counts(owner_user_id=owner_user_id)
         assignment_by_object_id = await self._current_assignment_map(owner_user_id)
         all_notes = await self.content.list_all(owner_user_id=owner_user_id)
         tags_by_object_id = await self.tag_service.list_active_tags_for_contents(
             owner_user_id=owner_user_id,
             content_object_ids=[note.id for note in all_notes],
         )
+        folder_notes = [
+            note
+            for note in all_notes
+            if self._is_visible_note(note)
+            and assignment_by_object_id.get(note.id) is not None
+            and self._path_matches_or_descends(
+                assignment_by_object_id[note.id].category_path_snapshot,
+                folder_path,
+            )
+        ]
+        folder_notes.sort(
+            key=lambda note: (
+                assignment_by_object_id[note.id].category_path_snapshot != folder_path,
+                -note.created_at.timestamp(),
+            )
+        )
+        tag_counts: dict[str, tuple[Tag, int]] = {}
+        for note in folder_notes:
+            for tag in tags_by_object_id.get(note.id, []):
+                _, count = tag_counts.get(tag.slug, (tag, 0))
+                tag_counts[tag.slug] = (tag, count + 1)
         tags = sorted(
-            {
-                tag.slug: tag
-                for note in all_notes
-                if (
-                    assignment_by_object_id.get(note.id) is not None
-                    and assignment_by_object_id[note.id].category_path_snapshot == folder_path
-                )
-                for tag in tags_by_object_id.get(note.id, [])
-            }.values(),
-            key=lambda tag: tag.name.casefold(),
+            tag_counts.values(),
+            key=lambda item: (-item[1], item[0].name.casefold()),
         )
         return FolderDetailResponse(
-            folder=self._folder_response(category),
-            tags=[self._tag_response(tag) for tag in tags],
-            notes=notes.items,
+            folder=self._folder_response(
+                category,
+                direct_count=counts.get(category.path, (0, 0))[0],
+                total_count=counts.get(category.path, (0, 0))[1],
+            ),
+            tags=[self._tag_response(tag, count=count) for tag, count in tags],
+            notes=[
+                await self._to_card(note, active_tags=tags_by_object_id.get(note.id, []))
+                for note in folder_notes
+            ],
         )
 
     async def _create_text_note(
@@ -1293,9 +1383,18 @@ class ContentService:
         try:
             if doc.page_count == 0:
                 return None, None
-            page: Any = doc[0]
-            width = int(page.rect.width)
-            height = int(page.rect.height)
+            try:
+                page: Any = doc[0]
+                width = int(page.rect.width)
+                height = int(page.rect.height)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "content.image_dimensions_unavailable",
+                    filename=uploaded.filename,
+                    content_type=uploaded.content_type,
+                    exc_info=True,
+                )
+                return None, None
             if width <= 0 or height <= 0:
                 return None, None
             return width, height
@@ -1875,22 +1974,69 @@ class ContentService:
             return None
         return text[:max_chars]
 
+    async def _folder_counts(self, *, owner_user_id: str) -> dict[str, tuple[int, int]]:
+        categories = await self.taxonomy.repository.list_categories(
+            owner_user_id=owner_user_id,
+            include_archived=False,
+        )
+        paths = [category.path for category in categories]
+        direct_counts = {path: 0 for path in paths}
+        total_counts = {path: 0 for path in paths}
+        assignments = await self._current_assignment_map(owner_user_id)
+        for content_object in await self.content.list_all(owner_user_id=owner_user_id):
+            if not self._is_visible_note(content_object):
+                continue
+            assignment = assignments.get(content_object.id)
+            if assignment is None:
+                continue
+            assigned_path = assignment.category_path_snapshot
+            if assigned_path in direct_counts:
+                direct_counts[assigned_path] += 1
+            for path in paths:
+                if self._path_matches_or_descends(assigned_path, path):
+                    total_counts[path] += 1
+        return {path: (direct_counts[path], total_counts[path]) for path in paths}
+
     @staticmethod
-    def _folder_response(category: TaxonomyCategory) -> FolderResponse:
+    def _is_visible_note(content_object: ContentObject) -> bool:
+        return not (
+            content_object.kind != "collection" and content_object.collection_memberships
+        )
+
+    @staticmethod
+    def _path_matches_or_descends(candidate_path: str, parent_path: str) -> bool:
+        return candidate_path == parent_path or candidate_path.startswith(f"{parent_path}/")
+
+    @staticmethod
+    def _folder_response(
+        category: TaxonomyCategory,
+        *,
+        direct_count: int = 0,
+        total_count: int = 0,
+    ) -> FolderResponse:
         return FolderResponse(
             id=category.id,
             name=category.name,
             slug=category.slug,
             path=category.path,
+            direct_count=direct_count,
+            total_count=total_count,
         )
 
     @staticmethod
-    def _folder_tree_item(category: TaxonomyCategory) -> FolderTreeItem:
+    def _folder_tree_item(
+        category: TaxonomyCategory,
+        *,
+        direct_count: int = 0,
+        total_count: int = 0,
+    ) -> FolderTreeItem:
         return FolderTreeItem(
             id=category.id,
             name=category.name,
             slug=category.slug,
             path=category.path,
+            direct_count=direct_count,
+            total_count=total_count,
             children=[],
         )
 
@@ -1917,8 +2063,8 @@ class ContentService:
         return {assignment.content_object_id: assignment for assignment in assignments}
 
     @staticmethod
-    def _tag_response(tag: Tag) -> TagResponse:
-        return TagResponse(id=tag.id, name=tag.name, slug=tag.slug)
+    def _tag_response(tag: Tag, *, count: int = 0) -> TagResponse:
+        return TagResponse(id=tag.id, name=tag.name, slug=tag.slug, count=count)
 
     @staticmethod
     def _media_type(filename: str, content_type: str | None) -> str:

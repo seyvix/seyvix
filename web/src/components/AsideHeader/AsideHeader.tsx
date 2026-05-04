@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
+import { Tags, Trash2 } from 'lucide-react'
 import { useLocalStorage } from '../../hooks/useLocalStorage'
 import { useSettings } from '../../contexts/SettingsContext'
 import { useAuth } from '../../contexts/AuthContext'
@@ -14,14 +15,6 @@ function IconNotes() {
       <line x1="5" y1="6" x2="11" y2="6"/>
       <line x1="5" y1="9" x2="11" y2="9"/>
       <line x1="5" y1="12" x2="8" y2="12"/>
-    </svg>
-  )
-}
-
-function IconFolders() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M2 4a1 1 0 0 1 1-1h3.586a1 1 0 0 1 .707.293L8.414 4.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4z"/>
     </svg>
   )
 }
@@ -118,13 +111,24 @@ export default function AsideHeader() {
         </NavLink>
 
         <NavLink
-          to="/folders"
+          to="/categories"
           className={({ isActive }) =>
             [styles.navItem, isActive ? styles.active : ''].filter(Boolean).join(' ')
           }
         >
-          <span className={styles.navIcon}><IconFolders /></span>
-          <span className={styles.navLabel}>Папки</span>
+          <span className={styles.navIcon}><Tags size={18} strokeWidth={1.8} /></span>
+          <span className={styles.navLabel}>Категории</span>
+          <span className={styles.navDot} />
+        </NavLink>
+
+        <NavLink
+          to="/trash"
+          className={({ isActive }) =>
+            [styles.navItem, isActive ? styles.active : ''].filter(Boolean).join(' ')
+          }
+        >
+          <span className={styles.navIcon}><Trash2 size={18} strokeWidth={1.8} /></span>
+          <span className={styles.navLabel}>Корзина</span>
           <span className={styles.navDot} />
         </NavLink>
       </nav>

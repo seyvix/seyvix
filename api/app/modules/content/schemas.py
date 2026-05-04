@@ -15,6 +15,7 @@ class TagResponse(BaseModel):
     id: str
     name: str
     slug: str
+    count: int = 0
 
 
 class FolderResponse(BaseModel):
@@ -22,6 +23,8 @@ class FolderResponse(BaseModel):
     name: str
     slug: str
     path: str
+    direct_count: int = 0
+    total_count: int = 0
 
 
 class ContentTaxonomyCategoryResponse(BaseModel):
