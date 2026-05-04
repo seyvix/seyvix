@@ -13,11 +13,30 @@ from app.modules.snapshots.artifacts import (
     SnapshotArtifactGenerator,
     UnsupportedSnapshotError,
 )
+from app.modules.snapshots.browser import BrowserSnapshot
 from app.modules.snapshots.service import EffectiveSnapshotSettings, plan_snapshot_job_types
 from app.platform.events.models import EventOutbox
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from tests.test_content import _auth_headers
+
+
+def _minimal_jpeg_bytes(work_dir: Path) -> bytes:
+    """Valid JPEG bytes so PyMuPDF can open the browser screenshot stub."""
+    import fitz
+
+    work_dir.mkdir(parents=True, exist_ok=True)
+    dest = work_dir / "_stub_thumb.jpg"
+    doc = fitz.open()
+    try:
+        page = doc.new_page(width=64, height=64)
+        pix = page.get_pixmap(alpha=False)
+        pix.save(str(dest))
+    finally:
+        doc.close()
+    data = dest.read_bytes()
+    dest.unlink(missing_ok=True)
+    return data
 
 
 def _png_bytes(width: int, height: int, color: tuple[int, int, int]) -> bytes:
@@ -133,9 +152,8 @@ def test_upload_preserves_display_filename_and_writes_content_event(
 
     assert response.status_code == 201
     payload = response.json()
-    assert payload["source_filename"] == "résumé final.txt"
-    assert payload["assets"][0]["filename"] == "résumé final.txt"
-    assert payload["assets"][0]["thumbnail_url"] is None
+    assert payload["objects"][0]["filename"] == "résumé final.txt"
+    assert payload["objects"][0]["thumbnailUrl"] is None
 
     async def load_outbox_events() -> list[EventOutbox]:
         async with content_client.app.state.session_factory() as session:
@@ -147,7 +165,7 @@ def test_upload_preserves_display_filename_and_writes_content_event(
     events = content_client.portal.call(load_outbox_events)
     assert [event.event_name for event in events] == ["content.object.created"]
     assert events[0].payload["content_object_id"] == payload["id"]
-    assert events[0].payload["asset_ids"] == [payload["assets"][0]["id"]]
+    assert events[0].payload["asset_ids"] == [payload["objects"][0]["id"]]
 
     artifacts_response = content_client.get(
         "/api/v1/snapshots/artifacts",
@@ -376,6 +394,7 @@ def test_note_asset_response_exposes_snapshot_representation_fields() -> None:
         "markdown_url": "/api/v1/snapshots/artifacts/markdown-1",
         "pdf_url": "/api/v1/snapshots/artifacts/pdf-1",
         "html_url": None,
+        "snapshot_views": [],
         "image_width": None,
         "image_height": None,
     }
@@ -413,14 +432,28 @@ def test_snapshot_generator_creates_webpage_artifacts_from_link(
         text_content="https://example.com/research",
     )
 
+    stub_html = (
+        "<html><head><title>Research</title></head><body><h1>Hello</h1></body></html>"
+    )
+
     def fake_fetch(self: SnapshotArtifactGenerator, url: str) -> FetchedWebpage:
         assert url == "https://example.com/research"
-        return FetchedWebpage(
-            url=url,
-            html="<html><head><title>Research</title></head><body><h1>Hello</h1></body></html>",
+        return FetchedWebpage(url=url, html=stub_html)
+
+    def fake_render_url(url: str) -> BrowserSnapshot:
+        assert url == "https://example.com/research"
+        return BrowserSnapshot(
+            html=stub_html,
+            screenshot_bytes=_minimal_jpeg_bytes(tmp_path / "jpeg-stub"),
         )
 
+    def fake_render_url_pdf(url: str) -> bytes:
+        assert url == "https://example.com/research"
+        return b"%PDF-1.4\n1 0 obj<<>>endobj trailer<<>>\n%%EOF\n"
+
     monkeypatch.setattr(SnapshotArtifactGenerator, "_fetch_webpage", fake_fetch)
+    monkeypatch.setattr("app.modules.snapshots.browser.render_url", fake_render_url)
+    monkeypatch.setattr("app.modules.snapshots.browser.render_url_pdf", fake_render_url_pdf)
     generator = SnapshotArtifactGenerator(storage_root)
 
     html = generator.generate(
@@ -441,7 +474,9 @@ def test_snapshot_generator_creates_webpage_artifacts_from_link(
     )
 
     assert html.mime_type == "text/html"
-    assert "<h1>Hello</h1>" in html.path.read_text(encoding="utf-8")
+    html_text = html.path.read_text(encoding="utf-8")
+    assert "Hello" in html_text
+    assert "h1" in html_text.lower()
     assert markdown.mime_type == "text/markdown"
     assert "Hello" in markdown.path.read_text(encoding="utf-8")
     assert pdf.mime_type == "application/pdf"

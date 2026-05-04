@@ -123,7 +123,7 @@
 /* ── Enrichment ── */
 .enrichmentPanel {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1px;
   margin: 0 0 24px;
   border-top: 1px solid var(--color-border);
@@ -178,18 +178,11 @@
   cursor: default;
 }
 
-.chipRow,
-.snapshotLinks {
+.chipRow {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-}
-
-.snapshotLinks {
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--color-border);
-  background: rgba(255, 255, 255, 0.02);
 }
 
 .snapshotDownloadLink,
@@ -612,6 +605,32 @@
   margin: 0;
 }
 
+.inlineMarkdownLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  color: var(--color-accent);
+  text-decoration: none;
+  vertical-align: -2px;
+}
+
+.inlineMarkdownLink:hover {
+  text-decoration: underline;
+}
+
+.inlineMarkdownLink img {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.inlineMarkdownLink span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .objTextarea {
   font-size: var(--font-size-base);
   font-family: var(--font-family);
@@ -643,11 +662,19 @@
   align-self: flex-start;
 }
 
+.mediaPlayerWrap {
+  position: relative;
+  min-height: 120px;
+  background: #080808;
+}
+
 .mediaBox audio,
 .mediaBox video {
   display: block;
   width: 100%;
   background: #080808;
+  position: relative;
+  z-index: 1;
 }
 
 .mediaMeta {
@@ -667,6 +694,7 @@
 }
 
 /* Link */
+.assetFrame,
 .objLinkFrame {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
@@ -674,12 +702,188 @@
   background: var(--color-surface);
 }
 
+.assetFrame {
+  display: flex;
+  flex-direction: column;
+}
+
+.assetFrameCollapsed {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.assetChrome,
 .objLinkChrome {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.assetFrameCollapsed .assetChrome {
+  border-bottom: none;
+  cursor: pointer;
+}
+
+.assetChrome:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.assetTitle {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assetTabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.02);
+  flex-shrink: 0;
+}
+
+.assetTab {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px;
+  border-radius: calc(var(--radius-sm) - 2px);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  cursor: pointer;
+  transition: background var(--duration-fast), color var(--duration-fast);
+}
+
+.assetTab:hover {
+  color: var(--color-text-primary);
+  background: var(--color-surface-hover);
+}
+
+.assetTabActive,
+.assetTabActive:hover {
+  color: var(--color-text-primary);
+  background: var(--color-accent);
+}
+
+.assetTabJobPct {
+  font-variant-numeric: tabular-nums;
+  font-size: 9px;
+  font-weight: 600;
+  margin-left: 4px;
+  opacity: 0.85;
+  color: var(--color-text-secondary);
+}
+
+.assetTabJobFailed {
+  font-variant-numeric: tabular-nums;
+  font-size: 9px;
+  font-weight: 700;
+  margin-left: 4px;
+  color: rgba(240, 80, 80, 0.95);
+}
+
+.assetTabPending {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px;
+  border-radius: calc(var(--radius-sm) - 2px);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  opacity: 0.85;
+  cursor: default;
+  user-select: none;
+  border: 1px dashed var(--color-border);
+}
+
+.assetAction {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  color: var(--color-text-secondary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--duration-fast), color var(--duration-fast);
+}
+
+.assetAction:hover {
+  color: var(--color-text-primary);
+  background: var(--color-surface-hover);
+}
+
+.assetBody {
+  flex: 1;
+  min-height: 420px;
+  min-width: 0;
+  background: #080808;
+  display: flex;
+  flex-direction: column;
+}
+
+.assetBodyInner {
+  flex: 1;
+  min-height: 420px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.assetPanelLoader {
+  flex: 1;
+  min-height: 420px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0f0f0f;
+}
+
+.assetWebsiteFrame {
+  width: 100%;
+  height: 420px;
+  border: none;
+  display: block;
+}
+
+.assetMarkdown {
+  min-height: 420px;
+  max-height: 70vh;
+  overflow: auto;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 24px 28px;
+  color: var(--color-text-primary);
+  background: #0f0f0f;
+  white-space: pre-wrap;
+  line-height: 1.65;
+  font-size: var(--font-size-sm);
+  font-family: var(--font-family);
+}
+
+.assetEmpty {
+  min-height: 420px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
 }
 
 .objLinkFavicon {
@@ -716,6 +920,50 @@
   display: block;
 }
 
+.objLinkSnapshotPending {
+  height: 420px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px;
+  background: #0f0f0f;
+  color: var(--color-text-primary);
+  user-select: none;
+}
+
+.objLinkSnapshotIcon {
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+}
+
+.objLinkSnapshotDomain {
+  font-size: 22px;
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+.objLinkSnapshotUrl {
+  max-width: 360px;
+  overflow: hidden;
+  color: var(--color-text-tertiary, #555);
+  font-size: var(--font-size-xs);
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.objLinkSnapshotBadge {
+  margin-top: 4px;
+  padding: 3px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 20px;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+}
+
 /* ── Document viewer ── */
 .docViewer {
   border-radius: var(--radius-md);
@@ -723,27 +971,6 @@
   width: 100%;
   background: #080808;
 }
-
-.docLoader {
-  height: 80vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-@keyframes docSpin {
-  to { transform: rotate(360deg); }
-}
-
-.docLoaderSpinner {
-  width: 32px;
-  height: 32px;
-  border: 2px solid rgba(255, 255, 255, 0.08);
-  border-top-color: var(--color-accent);
-  border-radius: 50%;
-  animation: docSpin 0.8s linear infinite;
-}
-
 
 /* ── Not found / empty ── */
 .notFound {

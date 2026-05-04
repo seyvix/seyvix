@@ -403,7 +403,7 @@ def test_content_creation_uses_taxonomy_assignment_not_legacy_category_id(
     assert note_response.status_code == 201, note_response.text
     note = note_response.json()
     assert "folder" not in note
-    assert note["taxonomy_category"]["path"] == "work/research"
+    assert note["taxonomyCategory"]["path"] == "work/research"
 
     assignment_response = content_client.get(
         f"/api/v1/taxonomy/content/{note['id']}/category",
@@ -486,7 +486,7 @@ def test_end_to_end_taxonomy_cutover_flow(content_client: TestClient) -> None:
     assert note_response.status_code == 201, note_response.text
     note = note_response.json()
     assert "folder" not in note
-    assert note["taxonomy_category"] is None
+    assert note["taxonomyCategory"] is None
 
     first_assignment_response = content_client.post(
         f"/api/v1/taxonomy/content/{note['id']}/assignments",
@@ -530,7 +530,7 @@ def test_end_to_end_taxonomy_cutover_flow(content_client: TestClient) -> None:
     assert get_note_response.status_code == 200
     get_note_payload = get_note_response.json()
     assert "folder" not in get_note_payload
-    assert get_note_payload["taxonomy_category"]["path"] == "programming/python"
+    assert get_note_payload["taxonomyCategory"]["path"] == "programming/python"
 
     async def load_content_object() -> ContentObject | None:
         async with content_client.app.state.session_factory() as session:

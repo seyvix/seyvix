@@ -8,16 +8,20 @@ from app.api.errors import AppError
 from app.api.schemas import ErrorResponse
 from app.modules.auth.presentation.rest.router import get_auth_context
 from app.modules.auth.service import AuthContext
+from app.modules.content.app_note import (
+    AppNote,
+    AppNoteListResponse,
+    FileUploadAppResponse,
+    FolderDetailAppResponse,
+    note_card_to_app_note,
+    upload_result_to_json_bytes,
+)
 from app.modules.content.schemas import (
     BulkDeleteRequest,
     CreateNoteRequest,
     FavoriteNoteRequest,
-    FileUploadResponse,
-    FolderDetailResponse,
     FolderTreeResponse,
     MergeNotesRequest,
-    NoteCardResponse,
-    NoteListResponse,
     NoteSort,
     RemoveCollectionItemsRequest,
     ReorderNotesRequest,
@@ -58,7 +62,7 @@ def _not_found(exc: Exception) -> AppError:
 
 @router.post(
     "/notes",
-    response_model=NoteCardResponse,
+    response_model=AppNote,
     status_code=status.HTTP_201_CREATED,
     summary="Create note object",
     description=(
@@ -77,16 +81,18 @@ async def create_note(
     payload: CreateNoteRequest,
     context: Annotated[AuthContext, Depends(get_auth_context)],
     service: Annotated[ContentService, Depends(get_content_service)],
-) -> NoteCardResponse:
+) -> AppNote:
     try:
-        return await service.create_note(
-            owner_user_id=context.user.id,
-            media_type=payload.media_type,
-            text=payload.text,
-            title=payload.title,
-            folder_path=payload.folder_path,
-            tag_names=payload.tag_names,
-            file_upload_ids=payload.file_upload_ids,
+        return note_card_to_app_note(
+            await service.create_note(
+                owner_user_id=context.user.id,
+                media_type=payload.media_type,
+                text=payload.text,
+                title=payload.title,
+                folder_path=payload.folder_path,
+                tag_names=payload.tag_names,
+                file_upload_ids=payload.file_upload_ids,
+            )
         )
     except NoteNotFoundError as exc:
         raise _not_found(exc) from exc
@@ -103,8 +109,8 @@ async def create_note(
     ),
     responses={
         201: {
-            "description": "Temporary upload metadata or created object returned.",
-            "model": FileUploadResponse,
+            "description": "Temporary upload metadata or created object returned (camelCase App note when object is present).",
+            "model": FileUploadAppResponse,
         },
         401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
         422: {"model": ErrorResponse, "description": "Validation error in input payload."},
@@ -164,7 +170,7 @@ async def upload_note_files(
         object_id=object_id,
     )
     return Response(
-        content=result.model_dump_json(),
+        content=upload_result_to_json_bytes(result),
         media_type="application/json",
         status_code=status.HTTP_201_CREATED,
     )
@@ -172,7 +178,7 @@ async def upload_note_files(
 
 @router.get(
     "/notes",
-    response_model=NoteListResponse,
+    response_model=AppNoteListResponse,
     summary="List notes",
     description=(
         "Returns note cards for the dashboard. When search is present, collections are expanded "
@@ -188,14 +194,15 @@ async def list_notes(
     folder: Annotated[str | None, Query(max_length=1024)] = None,
     folders: Annotated[str | None, Query(max_length=1024)] = None,
     sort: Annotated[NoteSort, Query()] = "newest",
-) -> NoteListResponse:
-    return await service.list_notes(
+) -> AppNoteListResponse:
+    lst = await service.list_notes(
         owner_user_id=context.user.id,
         search=search,
         tag_slugs=tags or [],
         folder_path=folders or folder,
         sort=sort,
     )
+    return AppNoteListResponse(items=[note_card_to_app_note(n) for n in lst.items])
 
 
 @router.delete(
@@ -248,7 +255,7 @@ async def reorder_notes(
 
 @router.post(
     "/notes/merge",
-    response_model=NoteCardResponse,
+    response_model=AppNote,
     summary="Merge notes",
     description=(
         "Moves source objects or collection items into the target object. If the target is not "
@@ -265,13 +272,15 @@ async def merge_notes(
     payload: MergeNotesRequest,
     context: Annotated[AuthContext, Depends(get_auth_context)],
     service: Annotated[ContentService, Depends(get_content_service)],
-) -> NoteCardResponse:
+) -> AppNote:
     try:
-        return await service.merge_notes(
-            owner_user_id=context.user.id,
-            target_slug=payload.target_slug,
-            source_slugs=payload.source_slugs,
-            title=payload.title,
+        return note_card_to_app_note(
+            await service.merge_notes(
+                owner_user_id=context.user.id,
+                target_slug=payload.target_slug,
+                source_slugs=payload.source_slugs,
+                title=payload.title,
+            )
         )
     except NoteNotFoundError as exc:
         raise _not_found(exc) from exc
@@ -279,9 +288,9 @@ async def merge_notes(
 
 @router.get(
     "/notes/{note_slug}",
-    response_model=NoteCardResponse,
+    response_model=AppNote,
     summary="Get note",
-    description="Returns a single note, object, or collection by slug.",
+    description="Returns a single note, object, or collection by slug or by id (UUID).",
     responses={
         401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
         404: {"model": ErrorResponse, "description": "Note not found."},
@@ -291,16 +300,16 @@ async def get_note(
     note_slug: str,
     context: Annotated[AuthContext, Depends(get_auth_context)],
     service: Annotated[ContentService, Depends(get_content_service)],
-) -> NoteCardResponse:
+) -> AppNote:
     try:
-        return await service.get_note(owner_user_id=context.user.id, slug=note_slug)
+        return note_card_to_app_note(await service.get_note(owner_user_id=context.user.id, slug=note_slug))
     except NoteNotFoundError as exc:
         raise _not_found(exc) from exc
 
 
 @router.patch(
     "/notes/{note_slug}",
-    response_model=NoteCardResponse,
+    response_model=AppNote,
     summary="Update note",
     description="Updates mutable fields of a note: title and/or tags.",
     responses={
@@ -314,13 +323,15 @@ async def update_note(
     payload: UpdateNoteRequest,
     context: Annotated[AuthContext, Depends(get_auth_context)],
     service: Annotated[ContentService, Depends(get_content_service)],
-) -> NoteCardResponse:
+) -> AppNote:
     try:
-        return await service.update_note(
-            owner_user_id=context.user.id,
-            slug=note_slug,
-            title=payload.title,
-            tag_names=payload.tag_names,
+        return note_card_to_app_note(
+            await service.update_note(
+                owner_user_id=context.user.id,
+                slug=note_slug,
+                title=payload.title,
+                tag_names=payload.tag_names,
+            )
         )
     except NoteNotFoundError as exc:
         raise _not_found(exc) from exc
@@ -446,7 +457,7 @@ async def remove_collection_items(
 
 @router.patch(
     "/notes/{note_slug}/favorite",
-    response_model=NoteCardResponse,
+    response_model=AppNote,
     summary="Set note favorite state",
     description="Marks or unmarks a note, object, or collection as favorite.",
     responses={
@@ -460,12 +471,14 @@ async def set_note_favorite(
     payload: FavoriteNoteRequest,
     context: Annotated[AuthContext, Depends(get_auth_context)],
     service: Annotated[ContentService, Depends(get_content_service)],
-) -> NoteCardResponse:
+) -> AppNote:
     try:
-        return await service.set_favorite(
-            owner_user_id=context.user.id,
-            slug=note_slug,
-            is_favorite=payload.is_favorite,
+        return note_card_to_app_note(
+            await service.set_favorite(
+                owner_user_id=context.user.id,
+                slug=note_slug,
+                is_favorite=payload.is_favorite,
+            )
         )
     except NoteNotFoundError as exc:
         raise _not_found(exc) from exc
@@ -487,7 +500,7 @@ async def list_folders(
 
 @router.get(
     "/folders/{folder_path:path}",
-    response_model=FolderDetailResponse,
+    response_model=FolderDetailAppResponse,
     summary="Get folder detail",
     description="Returns a folder, notes inside it, and tags used by notes in that folder.",
     responses={
@@ -499,11 +512,16 @@ async def get_folder(
     folder_path: str,
     context: Annotated[AuthContext, Depends(get_auth_context)],
     service: Annotated[ContentService, Depends(get_content_service)],
-) -> FolderDetailResponse:
+) -> FolderDetailAppResponse:
     try:
-        return await service.get_folder_detail(
+        detail = await service.get_folder_detail(
             owner_user_id=context.user.id,
             folder_path=folder_path,
+        )
+        return FolderDetailAppResponse(
+            folder=detail.folder,
+            tags=detail.tags,
+            notes=[note_card_to_app_note(n) for n in detail.notes],
         )
     except FolderNotFoundError as exc:
         raise AppError(

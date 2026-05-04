@@ -55,7 +55,7 @@ export function useUploadFiles() {
     onSuccess: async ({ noteId, noteSlug }, _vars, ctx) => {
       // Fetch full note to get real asset URLs and correct type/objects
       try {
-        const serverNote = await fetchNote(noteSlug)
+        const serverNote = await fetchNote(noteId)
         updateLocalNote(ctx.stableKey, {
           ...serverNote,
           stableKey: ctx.stableKey,

@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 ContentKind = Literal["simple", "complex", "collection"]
 ContentMediaType = Literal["text", "image", "audio", "video", "link", "document"]
+SnapshotViewKind = Literal["webpage_html", "pdf", "markdown"]
 NoteSort = Literal["newest", "custom"]
 
 
@@ -44,6 +45,12 @@ class CollectionParentResponse(BaseModel):
     title: str
 
 
+class SnapshotViewResponse(BaseModel):
+    kind: SnapshotViewKind
+    label: str
+    url: str
+
+
 class NoteAssetResponse(BaseModel):
     id: str
     role: str
@@ -58,6 +65,7 @@ class NoteAssetResponse(BaseModel):
     markdown_url: str | None = None
     pdf_url: str | None = None
     html_url: str | None = None
+    snapshot_views: list[SnapshotViewResponse] = Field(default_factory=list)
     image_width: int | None = None
     image_height: int | None = None
 

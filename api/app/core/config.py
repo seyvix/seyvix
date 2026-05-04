@@ -66,7 +66,7 @@ class Settings(BaseSettings):
     telegram_dev_photo_url: str | None = None
     content_storage_root: str = "data/content"
     snapshot_archive_screenshot_enabled: bool = True
-    snapshot_archive_webpage_html_enabled: bool = False
+    snapshot_archive_webpage_html_enabled: bool = True
     snapshot_archive_pdf_enabled: bool = True
     snapshot_archive_markdown_enabled: bool = True
     snapshot_archive_org_enabled: bool = False
