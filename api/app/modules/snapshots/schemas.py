@@ -3,6 +3,13 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 
+class SnapshotFormatOption(BaseModel):
+    key: str
+    label: str
+    description: str
+    server_enabled: bool
+
+
 class SnapshotFormatSettings(BaseModel):
     screenshot: bool
     webpage_html: bool
@@ -20,6 +27,7 @@ class SnapshotFormatOverrides(BaseModel):
 
 
 class SnapshotSettingsResponse(BaseModel):
+    available: list[SnapshotFormatOption]
     effective: SnapshotFormatSettings
     overrides: SnapshotFormatOverrides
 

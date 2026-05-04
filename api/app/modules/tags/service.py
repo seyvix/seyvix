@@ -4,8 +4,6 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.core.config import Settings, get_settings
 from app.modules.content.infrastructure.repositories import ContentRepository
 from app.modules.content.models import ContentObject
@@ -15,6 +13,7 @@ from app.modules.tags.contracts import ContentTagSuggestion
 from app.modules.tags.infrastructure.llm_tagger import LLMContentTagger
 from app.modules.tags.infrastructure.repositories import TagsRepository
 from app.modules.tags.models import ContentTagAssignment, Tag, TaggingJob
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class TagNotFoundError(Exception):

@@ -4,7 +4,6 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
-
 from app.modules.auth.infrastructure.repositories import AuthSessionRepository, UserRepository
 from app.modules.auth.models import AuthSession, User
 

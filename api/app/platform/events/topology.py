@@ -5,10 +5,9 @@ from dataclasses import dataclass
 
 import aio_pika
 from aio_pika.abc import AbstractRobustConnection
-from faststream.rabbit import ExchangeType, QueueType, RabbitExchange, RabbitQueue
-
 from app.core.config import Settings
 from app.core.logging import get_logger
+from faststream.rabbit import ExchangeType, QueueType, RabbitExchange, RabbitQueue
 
 logger = get_logger(__name__)
 

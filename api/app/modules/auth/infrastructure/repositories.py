@@ -3,12 +3,11 @@ from __future__ import annotations
 from datetime import datetime
 from typing import cast
 
+from app.modules.auth.models import AuthSession, User
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-
-from app.modules.auth.models import AuthSession, User
 
 
 class UserRepository:

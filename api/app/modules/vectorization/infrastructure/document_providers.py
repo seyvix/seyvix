@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.content.service import ContentService, NoteNotFoundError
 from app.modules.taxonomy.service import TaxonomyNotFoundError, TaxonomyService
 from app.modules.vectorization.contracts import (
@@ -11,6 +9,7 @@ from app.modules.vectorization.contracts import (
     build_content_object_vector_subject,
     vectorization_document_from_subject,
 )
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class VectorizationDocumentProvider(Protocol):

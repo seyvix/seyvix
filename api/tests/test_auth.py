@@ -5,15 +5,15 @@ import os
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
-
 from app.core.config import get_settings
 from app.core.database import Base, build_session_factory
 from app.main import app
+from app.modules.auth.presentation.rest import router as auth_router
 from app.modules.auth.schemas import TelegramLoginRequest
 from app.modules.auth.service import AuthService
+from fastapi.testclient import TestClient
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 TELEGRAM_BOT_TOKEN = "123456:test-bot-token"
 
@@ -307,6 +307,47 @@ def test_me_returns_current_user_for_valid_bearer_token(auth_client: TestClient)
 
     assert response.status_code == 200
     assert response.json()["telegram_id"] == "100500"
+    assert response.json()["avatar_url"] == "/api/v1/auth/me/avatar"
+
+
+def test_current_user_avatar_proxies_telegram_photo(
+    auth_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested_urls: list[str] = []
+
+    class FakeAsyncClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def get(self, url: str):
+            requested_urls.append(url)
+
+            class FakeResponse:
+                content = b"avatar-bytes"
+                headers = {"content-type": "image/jpeg"}
+
+                def raise_for_status(self) -> None:
+                    return None
+
+            return FakeResponse()
+
+    monkeypatch.setattr(auth_router.httpx, "AsyncClient", FakeAsyncClient)
+    _telegram_login(auth_client, photo_url="https://t.me/i/userpic/320/example.jpg")
+
+    response = auth_client.get("/api/v1/auth/me/avatar")
+
+    assert response.status_code == 200
+    assert response.content == b"avatar-bytes"
+    assert response.headers["content-type"] == "image/jpeg"
+    assert response.headers["cache-control"] == "private, max-age=3600"
+    assert requested_urls == ["https://t.me/i/userpic/320/example.jpg"]
 
 
 def test_sessions_returns_active_sessions_for_current_user(auth_client: TestClient) -> None:

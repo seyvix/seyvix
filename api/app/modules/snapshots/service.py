@@ -5,8 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.modules.content.models import ContentAsset, ContentObject
@@ -19,6 +17,7 @@ from app.modules.snapshots.models import SnapshotUserSettings
 from app.modules.snapshots.schemas import (
     SnapshotArtifactListResponse,
     SnapshotArtifactResponse,
+    SnapshotFormatOption,
     SnapshotFormatOverrides,
     SnapshotFormatSettings,
     SnapshotJobListResponse,
@@ -27,6 +26,7 @@ from app.modules.snapshots.schemas import (
     UpdateSnapshotSettingsRequest,
 )
 from app.platform.storage.service import LocalVolumeStorage, StorageBackend
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = get_logger(__name__)
 
@@ -38,6 +38,39 @@ SNAPSHOT_JOB_TYPES = (
     "webpage_html",
     "pdf",
     "archive_org",
+)
+
+SNAPSHOT_FORMAT_OPTIONS = (
+    (
+        "screenshot",
+        "Screenshot",
+        "Visual webpage screenshot for link materials.",
+        "snapshot_archive_screenshot_enabled",
+    ),
+    (
+        "webpage_html",
+        "HTML archive",
+        "Stored HTML copy of a linked webpage.",
+        "snapshot_archive_webpage_html_enabled",
+    ),
+    (
+        "pdf",
+        "PDF",
+        "PDF representation for documents, text files, and links.",
+        "snapshot_archive_pdf_enabled",
+    ),
+    (
+        "markdown",
+        "Markdown",
+        "Markdown text extracted from supported files and webpages.",
+        "snapshot_archive_markdown_enabled",
+    ),
+    (
+        "archive_org",
+        "Archive.org",
+        "External Internet Archive snapshot for link materials.",
+        "snapshot_archive_org_enabled",
+    ),
 )
 
 MARKDOWN_SUFFIXES = {".md", ".markdown"}
@@ -145,6 +178,7 @@ class SnapshotService:
             default_webpage_html=get_settings().snapshot_archive_webpage_html_enabled,
         )
         return SnapshotSettingsResponse(
+            available=self._available_format_options(),
             effective=SnapshotFormatSettings(
                 screenshot=effective.screenshot,
                 webpage_html=effective.webpage_html,
@@ -486,6 +520,19 @@ class SnapshotService:
                 else settings.snapshot_archive_org_enabled
             ),
         )
+
+    @staticmethod
+    def _available_format_options() -> list[SnapshotFormatOption]:
+        settings = get_settings()
+        return [
+            SnapshotFormatOption(
+                key=key,
+                label=label,
+                description=description,
+                server_enabled=bool(getattr(settings, setting_name)),
+            )
+            for key, label, description, setting_name in SNAPSHOT_FORMAT_OPTIONS
+        ]
 
 
 def _uses_text_thumbnail(asset: ContentAsset) -> bool:

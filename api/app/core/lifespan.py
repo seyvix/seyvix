@@ -1,10 +1,9 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
-
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from fastapi import FastAPI
 
 
 @asynccontextmanager

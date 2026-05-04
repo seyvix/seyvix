@@ -8,9 +8,6 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
-
 from app.contracts.events import (
     ContentObjectChangedPayload,
     EventEnvelope,
@@ -34,6 +31,8 @@ from app.platform.events import topology
 from app.platform.events.idempotency import EventAlreadyProcessedError, ProcessedEventStore
 from app.platform.events.outbox import EventOutboxRepository
 from app.platform.storage.service import LocalVolumeStorage, StorageKeyBuilder
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 
 async def _prepare_database(database_url: str) -> async_sessionmaker:

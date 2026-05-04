@@ -17,7 +17,6 @@ from urllib.parse import urlparse
 from xml.etree import ElementTree
 
 import httpx
-
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.modules.content.models import ContentAsset, ContentObject
@@ -466,7 +465,13 @@ class SnapshotArtifactGenerator:
             pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
             path = output_dir / filename
             pix.save(str(path))
-            return GeneratedArtifact(filename=filename, mime_type="image/jpeg", path=path, width=pix.width, height=pix.height)
+            return GeneratedArtifact(
+                filename=filename,
+                mime_type="image/jpeg",
+                path=path,
+                width=pix.width,
+                height=pix.height,
+            )
         finally:
             doc.close()
 
@@ -497,7 +502,13 @@ class SnapshotArtifactGenerator:
             pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
             path = output_dir / filename
             pix.save(str(path))
-            return GeneratedArtifact(filename=filename, mime_type="image/jpeg", path=path, width=pix.width, height=pix.height)
+            return GeneratedArtifact(
+                filename=filename,
+                mime_type="image/jpeg",
+                path=path,
+                width=pix.width,
+                height=pix.height,
+            )
         finally:
             doc.close()
 

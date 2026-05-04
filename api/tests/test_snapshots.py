@@ -6,9 +6,6 @@ import zlib
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import select
-
 from app.modules.content.models import ContentAsset, ContentObject
 from app.modules.content.schemas import NoteAssetResponse
 from app.modules.snapshots.artifacts import (
@@ -19,6 +16,8 @@ from app.modules.snapshots.artifacts import (
 from app.modules.snapshots.browser import BrowserSnapshot
 from app.modules.snapshots.service import EffectiveSnapshotSettings, plan_snapshot_job_types
 from app.platform.events.models import EventOutbox
+from fastapi.testclient import TestClient
+from sqlalchemy import select
 from tests.test_content import _auth_headers
 
 
@@ -63,6 +62,38 @@ def test_snapshot_settings_defaults_and_user_overrides(content_client: TestClien
 
     assert default_response.status_code == 200
     assert default_response.json() == {
+        "available": [
+            {
+                "key": "screenshot",
+                "label": "Screenshot",
+                "description": "Visual webpage screenshot for link materials.",
+                "server_enabled": True,
+            },
+            {
+                "key": "webpage_html",
+                "label": "HTML archive",
+                "description": "Stored HTML copy of a linked webpage.",
+                "server_enabled": False,
+            },
+            {
+                "key": "pdf",
+                "label": "PDF",
+                "description": "PDF representation for documents, text files, and links.",
+                "server_enabled": True,
+            },
+            {
+                "key": "markdown",
+                "label": "Markdown",
+                "description": "Markdown text extracted from supported files and webpages.",
+                "server_enabled": True,
+            },
+            {
+                "key": "archive_org",
+                "label": "Archive.org",
+                "description": "External Internet Archive snapshot for link materials.",
+                "server_enabled": False,
+            },
+        ],
         "effective": {
             "screenshot": True,
             "webpage_html": False,

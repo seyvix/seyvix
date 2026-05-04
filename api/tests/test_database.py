@@ -1,7 +1,6 @@
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
 from app.core.database import NAMING_CONVENTION, Base, build_session_factory, get_session
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 
 def test_base_metadata_uses_stable_naming_convention() -> None:

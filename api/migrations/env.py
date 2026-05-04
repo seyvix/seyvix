@@ -3,10 +3,6 @@ from __future__ import annotations
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import pool
-from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import async_engine_from_config
-
 from app.core.config import get_settings
 from app.core.database import Base
 from app.modules.auth import models as auth_models  # noqa: F401
@@ -17,6 +13,9 @@ from app.modules.taxonomy import models as taxonomy_models  # noqa: F401
 from app.modules.vectorization import models as vectorization_models  # noqa: F401
 from app.platform.events import models as event_models  # noqa: F401
 from app.platform.storage import models as storage_models  # noqa: F401
+from sqlalchemy import pool
+from sqlalchemy.engine import Connection
+from sqlalchemy.ext.asyncio import async_engine_from_config
 
 config = context.config
 

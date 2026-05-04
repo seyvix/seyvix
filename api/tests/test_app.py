@@ -1,8 +1,7 @@
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
 from app.core.config import Settings, get_settings
 from app.main import app, configure_cors
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 client = TestClient(app)
 

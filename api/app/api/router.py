@@ -1,10 +1,6 @@
 import inspect
 
 import aio_pika
-from fastapi import APIRouter, Request
-from redis.asyncio import Redis
-from sqlalchemy import text
-
 from app.api.schemas import HealthResponse
 from app.core.config import get_settings
 from app.modules.auth.presentation.rest.router import router as auth_router
@@ -16,6 +12,9 @@ from app.modules.tags.presentation.rest.router import router as tags_router
 from app.modules.taxonomy.presentation.rest.router import router as taxonomy_router
 from app.modules.vectorization.presentation.rest.router import router as vectorization_router
 from app.shared.module_definitions import ModuleDefinition
+from fastapi import APIRouter, Request
+from redis.asyncio import Redis
+from sqlalchemy import text
 
 api_router = APIRouter()
 api_router.include_router(auth_router)

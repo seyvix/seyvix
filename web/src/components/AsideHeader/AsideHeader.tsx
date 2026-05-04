@@ -35,11 +35,22 @@ function IconSettings() {
   )
 }
 
-function IconProfile() {
+function IconMore() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      <circle cx="3.5" cy="8" r="1.3"/>
+      <circle cx="8" cy="8" r="1.3"/>
+      <circle cx="12.5" cy="8" r="1.3"/>
+    </svg>
+  )
+}
+
+function IconLogout() {
   return (
     <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="8" cy="5.5" r="2.5"/>
-      <path d="M2.5 13.5c0-3 2.5-4.5 5.5-4.5s5.5 1.5 5.5 4.5"/>
+      <path d="M6.5 13H3a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h3.5"/>
+      <path d="M10 5l3 3-3 3"/>
+      <path d="M13 8H6"/>
     </svg>
   )
 }
@@ -64,7 +75,7 @@ export default function AsideHeader() {
   const [expanded, setExpanded] = useLocalStorage(STORAGE_KEY, false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const { cols, setCols } = useSettings()
-  const { user } = useAuth()
+  const { user, logout } = useAuth()
 
   const sidebarClass = [styles.sidebar, expanded ? styles.expanded : ''].filter(Boolean).join(' ')
   const initials = user?.display_name
@@ -79,7 +90,7 @@ export default function AsideHeader() {
           {user?.telegram_photo_url && (
             <img
               className={styles.avatarImage}
-              src={user.telegram_photo_url}
+              src={user.avatar_url ?? user.telegram_photo_url}
               alt=""
               referrerPolicy="no-referrer"
               onError={event => { event.currentTarget.hidden = true }}
@@ -119,16 +130,12 @@ export default function AsideHeader() {
       </nav>
 
       <div className={styles.bottom}>
-        <button
-          className={[styles.navItem, settingsOpen ? styles.active : ''].filter(Boolean).join(' ')}
-          onClick={() => setSettingsOpen(v => !v)}
-        >
-          <span className={styles.navIcon}><IconSettings /></span>
-          <span className={styles.navLabel}>Настройки</span>
-        </button>
-
-        {settingsOpen && (
-          <div className={styles.settingsPanel}>
+        <div className={[styles.moreMenu, settingsOpen ? styles.moreMenuOpen : ''].filter(Boolean).join(' ')}>
+          <NavLink to="/settings" className={styles.moreCard}>
+            <span className={styles.moreCardIcon}><IconSettings /></span>
+            <span className={styles.moreCardText}>Настройки</span>
+          </NavLink>
+          <div className={styles.columnsCard}>
             <div className={styles.settingsRow}>
               <span className={styles.settingsLabel}>Колонки</span>
               <div className={styles.colsPicker}>
@@ -144,10 +151,22 @@ export default function AsideHeader() {
               </div>
             </div>
           </div>
-        )}
-        <button className={styles.navItem}>
-          <span className={styles.navIcon}><IconProfile /></span>
-          <span className={styles.navLabel}>Профиль</span>
+        </div>
+
+        <button
+          className={[styles.navItem, settingsOpen ? styles.active : ''].filter(Boolean).join(' ')}
+          onClick={() => {
+            if (!expanded) setExpanded(true)
+            setSettingsOpen(v => !v)
+          }}
+        >
+          <span className={styles.navIcon}><IconMore /></span>
+          <span className={styles.navLabel}>Ещё</span>
+        </button>
+
+        <button className={styles.navItem} onClick={() => void logout()}>
+          <span className={styles.navIcon}><IconLogout /></span>
+          <span className={styles.navLabel}>Выйти</span>
         </button>
       </div>
 

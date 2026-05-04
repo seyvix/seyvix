@@ -10,10 +10,6 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete as sql_delete
-from sqlalchemy import update as sql_update
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.contracts.events import ContentObjectChangedPayload, EventEnvelope
 from app.core.config import get_settings
 from app.core.logging import get_logger
@@ -56,6 +52,9 @@ from app.modules.taxonomy.service import TaxonomyService
 from app.platform.events.outbox import EventOutboxRepository
 from app.platform.storage.repositories import StorageObjectRepository
 from app.platform.storage.service import StorageBackend, StoredObject
+from sqlalchemy import delete as sql_delete
+from sqlalchemy import update as sql_update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 def _note_path_ref_as_uuid(ref: str) -> str | None:
@@ -1279,7 +1278,9 @@ class ContentService:
     def _image_dimensions(uploaded: UploadedContent) -> tuple[int | None, int | None]:
         try:
             fitz: Any = importlib.import_module("fitz")
-            doc: Any = fitz.open(stream=uploaded.data, filetype=ContentService._image_filetype(uploaded))
+            doc: Any = fitz.open(
+                stream=uploaded.data, filetype=ContentService._image_filetype(uploaded)
+            )
         except Exception:  # noqa: BLE001
             logger.warning(
                 "content.image_dimensions_unavailable",

@@ -7,10 +7,6 @@ from pathlib import Path
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
-from pydantic import ValidationError
-from sqlalchemy import select
-
 from app.core.config import Settings
 from app.core.database import build_session_factory
 from app.modules.vectorization.contracts import (
@@ -34,6 +30,9 @@ from app.modules.vectorization.models import (
 )
 from app.modules.vectorization.service import VectorizationService, compute_source_hash
 from app.modules.vectorization.worker import VectorizationWorker
+from fastapi.testclient import TestClient
+from pydantic import ValidationError
+from sqlalchemy import select
 
 TELEGRAM_BOT_TOKEN = "123456:test-bot-token"
 

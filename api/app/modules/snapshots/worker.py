@@ -7,8 +7,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.contracts.events import EventEnvelope
 from app.core.config import get_settings
 from app.core.logging import get_logger
@@ -28,6 +26,7 @@ from app.modules.snapshots.service import SnapshotService
 from app.platform.events.idempotency import EventAlreadyProcessedError, ProcessedEventStore
 from app.platform.storage.repositories import StorageObjectRepository
 from app.platform.storage.service import LocalVolumeStorage, StorageBackend, StorageKeyBuilder
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = get_logger(__name__)
 
@@ -250,7 +249,12 @@ class SnapshotWorker:
             status=artifact.status,
         )
 
-        if job.job_type == "thumbnail" and asset is not None and generated.width and generated.height:
+        if (
+            job.job_type == "thumbnail"
+            and asset is not None
+            and generated.width
+            and generated.height
+        ):
             asset.image_width = generated.width
             asset.image_height = generated.height
 
