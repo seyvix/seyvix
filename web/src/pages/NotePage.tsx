@@ -17,6 +17,7 @@ import {
   RefreshCw,
   Search,
   Tag as TagIcon,
+  Trash2,
 } from 'lucide-react'
 import { useNote } from '../hooks/useNote'
 import { useUpdateNote } from '../hooks/useUpdateNote'
@@ -24,6 +25,7 @@ import { useRemoveCollectionItems } from '../hooks/useRemoveCollectionItems'
 import { getTagColor } from '../utils/tagColor'
 import AuthImage from '../components/AuthImage/AuthImage'
 import { apiFetch } from '../lib/apiClient'
+import { deleteNotes } from '../api/notes'
 import {
   acceptTagSuggestion,
   acceptTaxonomyAssignment,
@@ -715,6 +717,7 @@ function CollectionStream({
 export default function NotePage() {
   const { noteSlug } = useParams<{ noteSlug: string }>()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const { data: note, isLoading } = useNote(noteSlug!)
   const { mutate: updateNote } = useUpdateNote()
   const { mutate: removeItems } = useRemoveCollectionItems()
@@ -732,6 +735,16 @@ export default function NotePage() {
   const [editTexts,      setEditTexts]      = useState<Record<string, string>>({})
   const [deletedObjs,    setDeletedObjs]    = useState<Set<string>>(new Set())
   const [removedSlugs,   setRemovedSlugs]   = useState<Set<string>>(new Set())
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
+
+  const deleteNote = useMutation({
+    mutationFn: () => deleteNotes(note ? [note.slug] : []),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['notes'] })
+      await queryClient.invalidateQueries({ queryKey: ['notes-trash'] })
+      navigate('/notes')
+    },
+  })
 
   function enterEdit() {
     if (!note) return
@@ -792,10 +805,35 @@ export default function NotePage() {
               <button className={styles.saveBtn} onClick={saveEdit}>Сохранить</button>
             </>
           ) : (
-            <button className={styles.editBtn} onClick={enterEdit}>Редактировать</button>
+            <>
+              <button className={styles.editBtn} onClick={enterEdit}>Редактировать</button>
+              <button className={styles.deleteNoteBtn} onClick={() => setDeleteConfirmOpen(value => !value)}>
+                <Trash2 size={14} />
+                Удалить
+              </button>
+            </>
           )}
         </div>
       </div>
+
+      {deleteConfirmOpen && (
+        <div className={styles.deleteConfirm}>
+          <div>
+            <strong>Удалить заметку?</strong>
+            <span>Заметка попадёт в корзину, если она включена в настройках.</span>
+          </div>
+          <button className={styles.editBtn} onClick={() => setDeleteConfirmOpen(false)}>Отмена</button>
+          <button
+            className={styles.deleteNoteBtn}
+            disabled={deleteNote.isPending}
+            onClick={() => deleteNote.mutate()}
+          >
+            <Trash2 size={14} />
+            {deleteNote.isPending ? 'Удаляю...' : 'Удалить'}
+          </button>
+          {deleteNote.isError && <span className={styles.deleteError}>Не удалось удалить заметку.</span>}
+        </div>
+      )}
 
       {/* Content */}
       <div className={styles.content}>

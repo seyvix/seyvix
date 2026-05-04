@@ -353,7 +353,7 @@ class TaxonomyService:
         if category.is_system:
             raise TaxonomyConflictError
         if delete_notes and (
-            confirm_category_name != category.name or confirm_delete_notes_text != "DELETE_NOTES"
+            confirm_category_name != category.name or confirm_delete_notes_text != category.path
         ):
             raise TaxonomyValidationError
         inbox = await self.repository.get_category_by_path(
@@ -1546,9 +1546,9 @@ class TaxonomyService:
                 "Prefer concise Russian text if the user guidance is in Russian.",
                 "",
                 "Category:",
-                f"Path: {category.path}",
-                f"Name: {category.name}",
-                f"Description: {category.description or ''}",
+                f"Category path: {category.path}",
+                f"Category name: {category.name}",
+                f"Category description: {category.description or ''}",
                 "",
                 "Current profile:",
                 f"Summary: {profile.summary if profile is not None and profile.summary else ''}",
@@ -1573,7 +1573,7 @@ class TaxonomyService:
                 "User guidance:",
                 user_guidance,
                 "",
-                "Interpret this as an AI infrastructure taxonomy request when relevant.",
+                "Return JSON matching the schema. Make summary, keywords, positive examples and negative examples directly useful for future automatic classification.",
             ]
         )
 
@@ -2175,10 +2175,19 @@ class TaxonomyService:
     def _profile(name: str) -> dict[str, object]:
         keyword = TaxonomyService._slugify_path_segment(name)
         return {
-            "profile_summary": f"Materials related to {name}.",
-            "profile_keywords": [keyword],
-            "profile_positive_examples": [f"example item about {name}"],
-            "profile_negative_examples": [f"item unrelated to {name}"],
+            "profile_summary": (
+                f"Материалы, где основная тема - {name}. Используйте категорию для заметок, "
+                "ссылок и файлов, которые явно помогают найти или развить эту область знаний."
+            ),
+            "profile_keywords": [keyword, name.strip().casefold()],
+            "profile_positive_examples": [
+                f"Заметка, где {name} является центральной темой.",
+                f"Материал с практическими выводами, инструментами или источниками по теме {name}.",
+            ],
+            "profile_negative_examples": [
+                f"Упоминание {name} без полезного содержания по теме.",
+                "Общая заметка, которую точнее отнести к другой категории.",
+            ],
         }
 
     @staticmethod
@@ -2268,9 +2277,11 @@ class TaxonomyService:
     def _build_custom_interest_prompt(custom_description: str) -> str:
         return (
             "Create a concise personal knowledge taxonomy from the user's interests. "
-            "Return 3-6 top-level categories, with up to 4 useful children each. "
-            "Use short category names. Do not include generic labels like Misc or Other. "
-            "Return JSON only.\n\n"
+            "Return 3-6 top-level categories with up to 4 useful children each. "
+            "Use short, specific category names that will work as stable navigation labels. "
+            "Make categories non-overlapping: each note should have one obvious best category. "
+            "Avoid generic labels like Misc, Other, Useful, Notes, or Inbox. "
+            "Prefer the user's language. Return JSON only.\n\n"
             f"User interests:\n{custom_description[:2000]}"
         )
 

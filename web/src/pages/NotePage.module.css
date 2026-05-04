@@ -63,6 +63,64 @@
   border-color: #555;
 }
 
+.deleteNoteBtn {
+  all: unset;
+  align-items: center;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.24);
+  border-radius: var(--radius-sm);
+  color: #fca5a5;
+  cursor: pointer;
+  display: inline-flex;
+  font-family: var(--font-family);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  gap: 6px;
+  padding: 6px 12px;
+  transition: background var(--duration-fast), border-color var(--duration-fast);
+}
+
+.deleteNoteBtn:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.16);
+  border-color: rgba(239, 68, 68, 0.36);
+}
+
+.deleteNoteBtn:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.deleteConfirm {
+  align-items: center;
+  background: rgba(239, 68, 68, 0.08);
+  border-bottom: 1px solid rgba(239, 68, 68, 0.22);
+  color: var(--color-text-primary);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 20px;
+}
+
+.deleteConfirm div {
+  display: grid;
+  flex: 1 1 260px;
+  gap: 2px;
+}
+
+.deleteConfirm strong {
+  font-size: var(--font-size-sm);
+}
+
+.deleteConfirm span,
+.deleteError {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+}
+
+.deleteError {
+  color: #fca5a5;
+}
+
 .saveBtn {
   all: unset;
   font-size: var(--font-size-sm);

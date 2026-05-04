@@ -98,7 +98,8 @@
 }
 
 .state,
-.error {
+.error,
+.success {
   align-items: center;
   border: 1px solid rgba(255, 255, 255, 0.075);
   border-radius: var(--radius-sm);
@@ -112,6 +113,21 @@
 .error {
   border-color: rgba(239, 68, 68, 0.3);
   color: #fca5a5;
+}
+
+.success {
+  border-color: rgba(20, 184, 166, 0.28);
+  color: #99f6e4;
+  gap: 12px;
+  justify-content: space-between;
+  min-height: 48px;
+}
+
+.success a {
+  color: var(--color-text-primary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  text-decoration: none;
 }
 
 @media (max-width: 700px) {

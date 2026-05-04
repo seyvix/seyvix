@@ -710,20 +710,14 @@ class ContentService:
                 -note.created_at.timestamp(),
             )
         )
+        tag_counts: dict[str, tuple[Tag, int]] = {}
+        for note in folder_notes:
+            for tag in tags_by_object_id.get(note.id, []):
+                _, count = tag_counts.get(tag.slug, (tag, 0))
+                tag_counts[tag.slug] = (tag, count + 1)
         tags = sorted(
-            {
-                tag.slug: tag
-                for note in folder_notes
-                if (
-                    assignment_by_object_id.get(note.id) is not None
-                    and self._path_matches_or_descends(
-                        assignment_by_object_id[note.id].category_path_snapshot,
-                        folder_path,
-                    )
-                )
-                for tag in tags_by_object_id.get(note.id, [])
-            }.values(),
-            key=lambda tag: tag.name.casefold(),
+            tag_counts.values(),
+            key=lambda item: (-item[1], item[0].name.casefold()),
         )
         return FolderDetailResponse(
             folder=self._folder_response(
@@ -731,7 +725,7 @@ class ContentService:
                 direct_count=counts.get(category.path, (0, 0))[0],
                 total_count=counts.get(category.path, (0, 0))[1],
             ),
-            tags=[self._tag_response(tag) for tag in tags],
+            tags=[self._tag_response(tag, count=count) for tag, count in tags],
             notes=[
                 await self._to_card(note, active_tags=tags_by_object_id.get(note.id, []))
                 for note in folder_notes
@@ -1800,8 +1794,8 @@ class ContentService:
         return {assignment.content_object_id: assignment for assignment in assignments}
 
     @staticmethod
-    def _tag_response(tag: Tag) -> TagResponse:
-        return TagResponse(id=tag.id, name=tag.name, slug=tag.slug)
+    def _tag_response(tag: Tag, *, count: int = 0) -> TagResponse:
+        return TagResponse(id=tag.id, name=tag.name, slug=tag.slug, count=count)
 
     @staticmethod
     def _media_type(filename: str, content_type: str | None) -> str:

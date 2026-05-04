@@ -56,7 +56,7 @@ test('backend folder tree maps category paths through every level', () => {
 test('backend folder detail maps selected category tags and note summaries', () => {
   const detail = mapBackendFolderDetail({
     folder: backendFolder,
-    tags: [{ id: 'tag-1', name: 'machine-learning', slug: 'machine-learning' }],
+    tags: [{ id: 'tag-1', name: 'machine-learning', slug: 'machine-learning', count: 4 }],
     notes: [
       {
         id: 'note-1',
@@ -75,7 +75,7 @@ test('backend folder detail maps selected category tags and note summaries', () 
   })
 
   assert.equal(detail.category.path, 'work/research')
-  assert.deepEqual(detail.tags, [{ id: 'tag-1', name: 'machine-learning', slug: 'machine-learning' }])
+  assert.deepEqual(detail.tags, [{ id: 'tag-1', name: 'machine-learning', slug: 'machine-learning', count: 4 }])
   assert.equal(detail.notes[0].slug, 'transformer-notes')
   assert.equal(detail.notes[0].taxonomyCategory?.path, 'work/research/llm')
   assert.equal(detail.notes[0].updatedAt, '2026-05-02T11:00:00Z')
@@ -162,7 +162,7 @@ test('category CRUD API sends taxonomy category payloads', async () => {
   await deleteCategory('cat-2', {
     deleteNotes: true,
     confirmCategoryName: 'LLM inference',
-    confirmDeleteNotesText: 'DELETE_NOTES',
+    confirmDeleteNotesText: 'ai/inference',
   })
 
   assert.equal(calls[0].url, '/api/v1/taxonomy/categories')
@@ -187,6 +187,6 @@ test('category CRUD API sends taxonomy category payloads', async () => {
   assert.equal(calls[3].init?.body, JSON.stringify({
     delete_notes: true,
     confirm_category_name: 'LLM inference',
-    confirm_delete_notes_text: 'DELETE_NOTES',
+    confirm_delete_notes_text: 'ai/inference',
   }))
 })

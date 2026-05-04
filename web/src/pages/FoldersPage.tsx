@@ -12,6 +12,8 @@ import {
   Hash,
   Layers3,
   ListTree,
+  MoreHorizontal,
+  PanelRightOpen,
   Plus,
   Search,
   Sparkles,
@@ -234,8 +236,9 @@ export default function FoldersPage() {
   const [createDescription, setCreateDescription] = useState('')
   const [renameOpen, setRenameOpen] = useState(false)
   const [renameName, setRenameName] = useState('')
+  const [moreOpen, setMoreOpen] = useState(false)
+  const [profileSidebarOpen, setProfileSidebarOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
-  const [deleteNotes, setDeleteNotes] = useState(false)
   const [deleteConfirmName, setDeleteConfirmName] = useState('')
   const [deleteConfirmText, setDeleteConfirmText] = useState('')
   const { data: categories = [], isPending: treePending, isError: treeError } = useFolders()
@@ -308,11 +311,11 @@ export default function FoldersPage() {
     },
   })
   const deleteCategoryMutation = useMutation({
-    mutationFn: () => deleteCategory(selectedCategory?.id ?? '', {
-      deleteNotes,
-      confirmCategoryName: deleteConfirmName,
-      confirmDeleteNotesText: deleteConfirmText,
-    }),
+    mutationFn: (payload: {
+      deleteNotes?: boolean
+      confirmCategoryName?: string
+      confirmDeleteNotesText?: string
+    }) => deleteCategory(selectedCategory?.id ?? '', payload),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['folders'] })
       navigate('/categories')
@@ -322,6 +325,7 @@ export default function FoldersPage() {
   const totalCategories = useMemo(() => countCategories(categories), [categories])
   const childCategories = selectedFromTree?.children ?? selectedCategory?.children ?? categories
   const notes = detail?.notes ?? []
+  const popularTags = (detail?.tags ?? []).slice(0, 12)
   const profile = categoryProfile.data
   const profileEditingAllowed = taxonomySettings.data?.categoryProfileEditingEnabled === true
 
@@ -341,14 +345,22 @@ export default function FoldersPage() {
     setProfileGuidance('')
     setRenameName(selectedCategory?.name ?? '')
     setRenameOpen(false)
+    setMoreOpen(false)
     setDeleteOpen(false)
-    setDeleteNotes(false)
     setDeleteConfirmName('')
     setDeleteConfirmText('')
+    setProfileSidebarOpen(false)
     setCreateOpen(false)
     setCreateName('')
     setCreateDescription('')
   }, [profile, selectedCategory?.id])
+
+  useEffect(() => {
+    if (profileEditingAllowed) return
+    setProfileEditing(false)
+    setProfileDraft(null)
+    setProfileGuidance('')
+  }, [profileEditingAllowed])
 
   function handleToggle(path: string) {
     setExpandedPaths(prev => {
@@ -478,11 +490,19 @@ export default function FoldersPage() {
                   <h2>{selectedCategory.name}</h2>
                   <p>{selectedCategory.path}</p>
                 </div>
-                <Link className={styles.primaryAction} to={notesUrl(selectedCategory.path)}>
-                  <FileText size={16} strokeWidth={1.8} />
-                  Заметки
-                </Link>
-                {selectedCategory.path === 'inbox' && (
+                <div className={styles.detailHeaderActions}>
+                  <button
+                    className={styles.secondaryAction}
+                    onClick={() => setProfileSidebarOpen(true)}
+                  >
+                    <PanelRightOpen size={16} strokeWidth={1.8} />
+                    Профиль
+                  </button>
+                  <Link className={styles.primaryAction} to={notesUrl(selectedCategory.path)}>
+                    <FileText size={16} strokeWidth={1.8} />
+                    Заметки
+                  </Link>
+                  {selectedCategory.path === 'inbox' && (
                   <button
                     className={styles.secondaryAction}
                     disabled={reclassify.isPending}
@@ -491,7 +511,8 @@ export default function FoldersPage() {
                     <Layers3 size={16} strokeWidth={1.8} />
                     {reclassify.isPending ? 'Запускаю...' : 'Перераспределить'}
                   </button>
-                )}
+                  )}
+                </div>
               </div>
 
               {detailPending && <div className={styles.state}>Загружаю содержимое категории...</div>}
@@ -524,22 +545,34 @@ export default function FoldersPage() {
                     <Edit3 size={15} strokeWidth={1.8} />
                     Переименовать
                   </button>
-                  <button
-                    className={styles.dangerAction}
-                    disabled={selectedCategory.path === 'inbox' || archiveCategoryMutation.isPending}
-                    onClick={() => archiveCategoryMutation.mutate()}
-                  >
-                    <Archive size={15} strokeWidth={1.8} />
-                    Архивировать
-                  </button>
-                  <button
-                    className={styles.dangerAction}
-                    disabled={selectedCategory.path === 'inbox' || deleteCategoryMutation.isPending}
-                    onClick={() => setDeleteOpen(value => !value)}
-                  >
-                    <X size={15} strokeWidth={1.8} />
-                    Удалить
-                  </button>
+                  <div className={styles.moreMenuWrap}>
+                    <button className={styles.secondaryAction} onClick={() => setMoreOpen(value => !value)}>
+                      <MoreHorizontal size={15} strokeWidth={1.8} />
+                      Ещё
+                    </button>
+                    {moreOpen && (
+                      <div className={styles.moreMenu}>
+                        <button
+                          disabled={selectedCategory.path === 'inbox' || archiveCategoryMutation.isPending}
+                          onClick={() => archiveCategoryMutation.mutate()}
+                        >
+                          <Archive size={15} strokeWidth={1.8} />
+                          Архивировать
+                        </button>
+                        <button
+                          className={styles.moreDanger}
+                          disabled={selectedCategory.path === 'inbox' || deleteCategoryMutation.isPending}
+                          onClick={() => {
+                            setDeleteOpen(value => !value)
+                            setMoreOpen(false)
+                          }}
+                        >
+                          <X size={15} strokeWidth={1.8} />
+                          Удалить
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 {createOpen && (
@@ -585,39 +618,53 @@ export default function FoldersPage() {
 
                 {deleteOpen && (
                   <div className={styles.deletePanel}>
-                    <label className={styles.checkRow}>
-                      <input
-                        type="checkbox"
-                        checked={deleteNotes}
-                        onChange={event => setDeleteNotes(event.target.checked)}
-                      />
-                      <span>Удалить заметки вместе с категорией</span>
-                    </label>
-                    {deleteNotes && (
+                    <div className={styles.deletePanelHeader}>
+                      <strong>Удаление категории</strong>
+                      <span>По умолчанию заметки из этой категории и её подкатегорий будут перенесены в Inbox.</span>
+                    </div>
+                    <button
+                      className={styles.dangerAction}
+                      disabled={deleteCategoryMutation.isPending}
+                      onClick={() => deleteCategoryMutation.mutate({ deleteNotes: false })}
+                    >
+                      <X size={15} strokeWidth={1.8} />
+                      Удалить категорию
+                    </button>
+
+                    <div className={styles.dangerDeleteBlock}>
+                      <div className={styles.deletePanelHeader}>
+                        <strong>Удалить вместе с заметками</strong>
+                        <span>Это отдельный режим: введите название и полный путь категории, чтобы подтвердить удаление содержимого.</span>
+                      </div>
                       <div className={styles.categoryForm}>
                         <input
                           value={deleteConfirmName}
                           onChange={event => setDeleteConfirmName(event.target.value)}
-                          placeholder={selectedCategory.name}
+                          placeholder={`Название: ${selectedCategory.name}`}
                         />
                         <input
                           value={deleteConfirmText}
                           onChange={event => setDeleteConfirmText(event.target.value)}
-                          placeholder="DELETE_NOTES"
+                          placeholder={`Путь: ${selectedCategory.path}`}
                         />
                       </div>
-                    )}
-                    <button
-                      className={styles.dangerAction}
-                      disabled={
-                        deleteCategoryMutation.isPending
-                        || (deleteNotes && (deleteConfirmName !== selectedCategory.name || deleteConfirmText !== 'DELETE_NOTES'))
-                      }
-                      onClick={() => deleteCategoryMutation.mutate()}
-                    >
-                      <X size={15} strokeWidth={1.8} />
-                      {deleteNotes ? 'Удалить категорию и заметки' : 'Удалить категорию'}
-                    </button>
+                      <button
+                        className={styles.dangerAction}
+                        disabled={
+                          deleteCategoryMutation.isPending
+                          || deleteConfirmName !== selectedCategory.name
+                          || deleteConfirmText !== selectedCategory.path
+                        }
+                        onClick={() => deleteCategoryMutation.mutate({
+                          deleteNotes: true,
+                          confirmCategoryName: deleteConfirmName,
+                          confirmDeleteNotesText: deleteConfirmText,
+                        })}
+                      >
+                        <X size={15} strokeWidth={1.8} />
+                        Удалить категорию и заметки
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -641,15 +688,16 @@ export default function FoldersPage() {
 
                 <section className={styles.detailBlock}>
                   <div className={styles.sectionHeader}>
-                    <h3>Теги внутри категории</h3>
+                    <h3>Популярные теги</h3>
                     <span>{detail?.tags.length ?? 0}</span>
                   </div>
-                  {detail?.tags.length ? (
+                  {popularTags.length ? (
                     <div className={styles.tags}>
-                      {detail.tags.map(tag => (
+                      {popularTags.map(tag => (
                         <Link key={tag.id} to={`/notes?tags=${encodeURIComponent(tag.slug ?? tag.name)}`} className={styles.tag}>
                           <Hash size={13} strokeWidth={1.8} />
-                          {tag.name}
+                          <span>{tag.name}</span>
+                          <small>{tag.count ?? 0}</small>
                         </Link>
                       ))}
                     </div>
@@ -659,10 +707,38 @@ export default function FoldersPage() {
                 </section>
 
                 <section className={styles.detailBlockWide}>
-                  <div className={styles.profilePanel}>
-                    <div className={styles.sectionHeader}>
-                      <h3>LLM-профиль категории</h3>
-                      <span>{profileEditingAllowed ? 'редактирование включено' : 'только просмотр'}</span>
+                  <div className={styles.sectionHeader}>
+                    <h3>Заметки</h3>
+                    <span>{selectedCategory.directCount} / {selectedCategory.totalCount}</span>
+                  </div>
+                  {notes.length > 0 ? (
+                    <div className={styles.notesList}>
+                      {notes.map(note => (
+                        <NoteRow key={note.id} note={note} selectedPath={selectedCategory.path} />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className={styles.emptyBlock}>В этой категории пока нет заметок.</div>
+                  )}
+                </section>
+              </div>
+
+              {profileSidebarOpen && (
+                <>
+                  <button
+                    className={styles.profileScrim}
+                    aria-label="Закрыть профиль категории"
+                    onClick={() => setProfileSidebarOpen(false)}
+                  />
+                  <aside className={styles.profileSidebar} aria-label="LLM-профиль категории">
+                    <div className={styles.profileSidebarHeader}>
+                      <div>
+                        <span>{profileEditingAllowed ? 'редактирование включено' : 'только просмотр'}</span>
+                        <h3>LLM-профиль</h3>
+                      </div>
+                      <button className={styles.iconAction} onClick={() => setProfileSidebarOpen(false)} aria-label="Закрыть профиль">
+                        <X size={17} strokeWidth={1.8} />
+                      </button>
                     </div>
 
                     {categoryProfile.isLoading && <div className={styles.emptyBlock}>Загружаю профиль категории...</div>}
@@ -724,69 +800,57 @@ export default function FoldersPage() {
                           )}
                         </div>
 
-                        <div className={styles.profileSuggest}>
-                          <textarea
-                            value={profileGuidance}
-                            onChange={event => setProfileGuidance(event.target.value)}
-                            placeholder="Опишите, что должно попадать в эту категорию или её подкатегории."
-                          />
-                          <button
-                            className={styles.secondaryAction}
-                            disabled={!profileGuidance.trim() || suggestProfile.isPending}
-                            onClick={() => suggestProfile.mutate()}
-                          >
-                            <Sparkles size={15} strokeWidth={1.8} />
-                            {suggestProfile.isPending ? 'Готовлю...' : 'Предложить улучшение'}
-                          </button>
-                        </div>
-
-                        {suggestProfile.isError && <div className={styles.stateError}>Не удалось получить черновик профиля.</div>}
-                        {saveProfile.isError && <div className={styles.stateError}>Не удалось сохранить профиль категории.</div>}
-
-                        {profileDraft && (
-                          <div className={styles.profileDraft}>
-                            <div>
-                              <strong>{profileDraft.summary || 'Без summary'}</strong>
-                              <p>{profileDraft.reasoning}</p>
-                            </div>
-                            <div className={styles.profileLists}>
-                              <ProfileList title="Ключевые слова" values={profileDraft.keywords} />
-                              <ProfileList title="Что подходит" values={profileDraft.positiveExamples} />
-                              <ProfileList title="Что не подходит" values={profileDraft.negativeExamples} />
-                            </div>
-                            <div className={styles.profileActions}>
-                              <button className={styles.primaryAction} disabled={saveProfile.isPending} onClick={() => saveProfile.mutate(profileFormFrom(profileDraft))}>
-                                <Check size={15} strokeWidth={1.8} />
-                                Принять
-                              </button>
-                              <button className={styles.secondaryAction} onClick={() => setProfileDraft(null)}>
-                                <X size={15} strokeWidth={1.8} />
-                                Отклонить
+                        {profileEditingAllowed && (
+                          <>
+                            <div className={styles.profileSuggest}>
+                              <textarea
+                                value={profileGuidance}
+                                onChange={event => setProfileGuidance(event.target.value)}
+                                placeholder="Опишите, что должно попадать в эту категорию или её подкатегории."
+                              />
+                              <button
+                                className={styles.secondaryAction}
+                                disabled={!profileGuidance.trim() || suggestProfile.isPending}
+                                onClick={() => suggestProfile.mutate()}
+                              >
+                                <Sparkles size={15} strokeWidth={1.8} />
+                                {suggestProfile.isPending ? 'Готовлю...' : 'Предложить улучшение'}
                               </button>
                             </div>
-                          </div>
+
+                            {suggestProfile.isError && <div className={styles.stateError}>Не удалось получить черновик профиля.</div>}
+                            {saveProfile.isError && <div className={styles.stateError}>Не удалось сохранить профиль категории.</div>}
+
+                            {profileDraft && (
+                              <div className={styles.profileDraft}>
+                                <div>
+                                  <strong>{profileDraft.summary || 'Без summary'}</strong>
+                                  <p>{profileDraft.reasoning}</p>
+                                </div>
+                                <div className={styles.profileLists}>
+                                  <ProfileList title="Ключевые слова" values={profileDraft.keywords} />
+                                  <ProfileList title="Что подходит" values={profileDraft.positiveExamples} />
+                                  <ProfileList title="Что не подходит" values={profileDraft.negativeExamples} />
+                                </div>
+                                <div className={styles.profileActions}>
+                                  <button className={styles.primaryAction} disabled={saveProfile.isPending} onClick={() => saveProfile.mutate(profileFormFrom(profileDraft))}>
+                                    <Check size={15} strokeWidth={1.8} />
+                                    Принять
+                                  </button>
+                                  <button className={styles.secondaryAction} onClick={() => setProfileDraft(null)}>
+                                    <X size={15} strokeWidth={1.8} />
+                                    Отклонить
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </>
                         )}
                       </div>
                     )}
-                  </div>
-                </section>
-
-                <section className={styles.detailBlockWide}>
-                  <div className={styles.sectionHeader}>
-                    <h3>Заметки</h3>
-                    <span>{selectedCategory.directCount} / {selectedCategory.totalCount}</span>
-                  </div>
-                  {notes.length > 0 ? (
-                    <div className={styles.notesList}>
-                      {notes.map(note => (
-                        <NoteRow key={note.id} note={note} selectedPath={selectedCategory.path} />
-                      ))}
-                    </div>
-                  ) : (
-                    <div className={styles.emptyBlock}>В этой категории пока нет заметок.</div>
-                  )}
-                </section>
-              </div>
+                  </aside>
+                </>
+              )}
             </section>
           )}
         </main>

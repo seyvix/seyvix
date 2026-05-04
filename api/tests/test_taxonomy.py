@@ -413,7 +413,12 @@ def test_category_profile_editing_setting_and_llm_draft(content_client: TestClie
     assert draft["keywords"] == ["ai", "llm", "inference"]
     assert draft["positive_examples"] == ["Prompt engineering", "Vector search architecture"]
     assert draft["negative_examples"] == ["Personal tasks"]
-    assert "AI infrastructure" in str(llm.calls[0]["prompt"])
+    prompt = str(llm.calls[0]["prompt"])
+    assert "Category path: ai" in prompt
+    assert "Current profile:" in prompt
+    assert "AI systems and tooling." in prompt
+    assert "Оставлять здесь материалы про LLM" in prompt
+    assert "AI infrastructure" not in prompt
 
 
 def test_delete_category_moves_descendant_content_to_inbox(content_client: TestClient) -> None:
@@ -495,7 +500,7 @@ def test_delete_category_with_notes_requires_danger_confirmation(
         json={
             "delete_notes": True,
             "confirm_category_name": "Temporary",
-            "confirm_delete_notes_text": "DELETE_NOTES",
+            "confirm_delete_notes_text": "temporary",
         },
     )
     assert confirmed.status_code == 200, confirmed.text

@@ -630,7 +630,7 @@ def test_folder_tree_and_folder_tags_are_available(content_client: TestClient) -
         title="Nested folder note",
         text="Nested body",
         folder_path="work/research/llm",
-        tag_names=["rag"],
+        tag_names=["ml", "rag"],
     )
     _create_text_note(
         content_client,
@@ -661,7 +661,10 @@ def test_folder_tree_and_folder_tags_are_available(content_client: TestClient) -
     assert research_node["total_count"] == 2
     assert folder_response.status_code == 200
     assert folder_response.json()["folder"]["path"] == "work/research"
-    assert [tag["slug"] for tag in folder_response.json()["tags"]] == ["ml", "rag"]
+    assert [(tag["slug"], tag["count"]) for tag in folder_response.json()["tags"]] == [
+        ("ml", 2),
+        ("rag", 1),
+    ]
     assert [item["title"] for item in folder_response.json()["notes"]] == [
         "Folder note",
         "Nested folder note",

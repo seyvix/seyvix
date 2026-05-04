@@ -14,6 +14,7 @@ class TagResponse(BaseModel):
     id: str
     name: str
     slug: str
+    count: int = 0
 
 
 class FolderResponse(BaseModel):

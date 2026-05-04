@@ -344,6 +344,13 @@
   margin-bottom: 24px;
 }
 
+.detailHeaderActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .breadcrumbs {
   align-items: center;
   color: var(--color-text-secondary);
@@ -450,6 +457,55 @@
   gap: 8px;
 }
 
+.moreMenuWrap {
+  position: relative;
+}
+
+.moreMenu {
+  background: #181b24;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.28);
+  display: grid;
+  gap: 4px;
+  min-width: 190px;
+  padding: 6px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+}
+
+.moreMenu button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  font-size: var(--font-size-sm);
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 10px;
+  text-align: left;
+}
+
+.moreMenu button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.moreMenu button:disabled {
+  color: var(--color-text-secondary);
+  cursor: default;
+  opacity: 0.55;
+}
+
+.moreMenu .moreDanger {
+  color: #fca5a5;
+}
+
 .categoryForm {
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid rgba(255, 255, 255, 0.075);
@@ -484,16 +540,27 @@
   padding: 10px;
 }
 
-.checkRow {
-  align-items: center;
-  color: var(--color-text-primary);
-  display: flex;
-  font-size: var(--font-size-sm);
-  gap: 8px;
+.deletePanelHeader {
+  display: grid;
+  gap: 3px;
 }
 
-.checkRow input {
-  accent-color: var(--color-accent);
+.deletePanelHeader strong {
+  color: var(--color-text-primary);
+  font-size: var(--font-size-sm);
+}
+
+.deletePanelHeader span {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  line-height: 1.45;
+}
+
+.dangerDeleteBlock {
+  border-top: 1px solid rgba(239, 68, 68, 0.2);
+  display: grid;
+  gap: 10px;
+  padding-top: 10px;
 }
 
 .detailGrid {
@@ -509,11 +576,6 @@
 
 .detailBlockWide {
   grid-column: 1 / -1;
-}
-
-.profilePanel {
-  display: grid;
-  gap: 12px;
 }
 
 .profileBody {
@@ -618,6 +680,84 @@
   gap: 8px;
 }
 
+.profileScrim {
+  background: rgba(0, 0, 0, 0.28);
+  border: 0;
+  cursor: default;
+  inset: 0;
+  position: fixed;
+  z-index: 30;
+}
+
+.profileSidebar {
+  background: #11151f;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: -24px 0 48px rgba(0, 0, 0, 0.28);
+  display: grid;
+  gap: 12px;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100vh;
+  max-width: min(440px, calc(100vw - 24px));
+  overflow: auto;
+  padding: 18px;
+  position: fixed;
+  right: 0;
+  top: 0;
+  width: 420px;
+  z-index: 31;
+}
+
+.profileSidebarHeader {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.profileSidebarHeader span {
+  color: var(--color-text-secondary);
+  display: block;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  margin-bottom: 4px;
+}
+
+.profileSidebarHeader h3 {
+  color: var(--color-text-primary);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+  margin: 0;
+}
+
+.iconAction {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.06);
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  display: inline-flex;
+  height: 34px;
+  justify-content: center;
+  width: 34px;
+}
+
+.iconAction:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.profileSidebar .profileBody {
+  align-content: start;
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+
+.profileSidebar .profileLists,
+.profileSidebar .profileForm {
+  grid-template-columns: 1fr;
+}
+
 .profileSuggest {
   border-top: 1px solid rgba(255, 255, 255, 0.07);
   padding-top: 12px;
@@ -667,6 +807,25 @@
   min-height: 28px;
   padding: 0 10px;
   text-decoration: none;
+}
+
+.tag span {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tag small {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  color: var(--color-text-primary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  min-width: 18px;
+  padding: 3px 5px;
+  text-align: center;
 }
 
 .notesList {
@@ -760,8 +919,18 @@
     flex-direction: column;
   }
 
+  .detailHeaderActions {
+    justify-content: stretch;
+    width: 100%;
+  }
+
   .primaryAction {
     justify-content: center;
     width: 100%;
+  }
+
+  .profileSidebar {
+    max-width: 100vw;
+    width: 100vw;
   }
 }
