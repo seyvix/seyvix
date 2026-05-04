@@ -6,13 +6,14 @@ export function useUpdateNote() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: ({ slug, data }: { slug: string; data: Parameters<typeof updateNote>[1] }) =>
-      updateNote(slug, data),
+    mutationFn: ({ noteRef, data }: { noteRef: string; data: Parameters<typeof updateNote>[1] }) =>
+      updateNote(noteRef, data),
     onSuccess: (updatedNote: Note) => {
+      queryClient.invalidateQueries({ queryKey: ['note', updatedNote.id] })
       // Immediately apply the updated note into the cache
       queryClient.setQueriesData<Note[]>({ queryKey: ['notes'] }, old =>
         Array.isArray(old)
-          ? old.map(n => n.slug === updatedNote.slug ? updatedNote : n)
+          ? old.map(n => (n.id === updatedNote.id ? updatedNote : n))
           : old,
       )
       queryClient.invalidateQueries({ queryKey: ['notes'] })

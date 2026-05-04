@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from app.core.config import get_settings
+from app.core.logging import get_logger
 from app.modules.content.models import ContentAsset, ContentObject
 from app.modules.snapshots.infrastructure.repositories import (
     SnapshotArtifactRepository,
@@ -25,6 +27,8 @@ from app.modules.snapshots.schemas import (
 )
 from app.platform.storage.service import LocalVolumeStorage, StorageBackend
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = get_logger(__name__)
 
 SNAPSHOT_JOB_TYPES = (
     "thumbnail",
@@ -166,6 +170,13 @@ class SnapshotService:
     async def get_user_settings(self, owner_user_id: str) -> SnapshotSettingsResponse:
         stored = await self.settings.get(owner_user_id)
         effective = self._effective_settings(stored)
+        logger.info(
+            "snapshots.settings.effective",
+            owner_user_id=owner_user_id,
+            stored_webpage_html=stored.archive_as_webpage_html if stored is not None else None,
+            effective_webpage_html=effective.webpage_html,
+            default_webpage_html=get_settings().snapshot_archive_webpage_html_enabled,
+        )
         return SnapshotSettingsResponse(
             available=self._available_format_options(),
             effective=SnapshotFormatSettings(
@@ -285,9 +296,43 @@ class SnapshotService:
         stored = await self.settings.get(content_object.owner_user_id)
         effective = self._effective_settings(stored)
         source_assets = [asset for asset in content_object.assets if asset.role == "original"]
+        logger.info(
+            "snapshots.enqueue.start",
+            owner_user_id=content_object.owner_user_id,
+            content_object_id=content_object.id,
+            kind=content_object.kind,
+            media_type=content_object.media_type,
+            effective_screenshot=effective.screenshot,
+            effective_webpage_html=effective.webpage_html,
+            effective_pdf=effective.pdf,
+            effective_markdown=effective.markdown,
+            source_asset_ids=[asset.id for asset in source_assets],
+            source_asset_media_types=[asset.media_type for asset in source_assets],
+        )
 
         for asset in source_assets:
-            for job_type in plan_snapshot_job_types(asset, effective):
+            # For link notes, skip non-link assets — their text is note metadata,
+            # not a site to snapshot.
+            if content_object.media_type == "link" and asset.media_type != "link":
+                logger.info(
+                    "snapshots.enqueue.asset_skipped",
+                    content_object_id=content_object.id,
+                    asset_id=asset.id,
+                    asset_media_type=asset.media_type,
+                    reason="link_note_non_link_asset",
+                )
+                continue
+            job_types = plan_snapshot_job_types(asset, effective)
+            logger.info(
+                "snapshots.enqueue.asset_plan",
+                owner_user_id=content_object.owner_user_id,
+                content_object_id=content_object.id,
+                asset_id=asset.id,
+                asset_media_type=asset.media_type,
+                asset_mime_type=asset.mime_type,
+                planned_job_types=list(job_types),
+            )
+            for job_type in job_types:
                 await self._enqueue_job(
                     content_object,
                     asset,
@@ -328,6 +373,12 @@ class SnapshotService:
         source_asset_id: str,
     ) -> dict[str, SnapshotArtifactReference]:
         artifacts = await self.artifacts.list_ready_for_asset(source_asset_id=source_asset_id)
+        logger.info(
+            "snapshots.artifact_refs.ready",
+            source_asset_id=source_asset_id,
+            artifact_types=[artifact.artifact_type for artifact in artifacts],
+            artifact_ids=[artifact.id for artifact in artifacts],
+        )
         return {
             artifact.artifact_type: SnapshotArtifactReference(
                 url=f"{self.api_prefix}/snapshots/artifacts/{artifact.id}",
@@ -357,6 +408,32 @@ class SnapshotService:
             data = self.storage_backend.get_bytes(artifact.storage_key or artifact.storage_path)
         return data.decode("utf-8", errors="replace")[:max_chars]
 
+    async def get_artifact_resource(
+        self,
+        *,
+        owner_user_id: str,
+        artifact_id: str,
+        filename: str,
+    ) -> tuple[bytes, str]:
+        artifact = await self.artifacts.get_for_user(
+            owner_user_id=owner_user_id,
+            artifact_id=artifact_id,
+        )
+        if artifact is None:
+            raise SnapshotArtifactNotFoundError
+
+        storage_key = artifact.storage_key or artifact.storage_path
+        prefix = storage_key.rsplit("/", 1)[0]
+
+        try:
+            manifest_bytes = self.storage_backend.get_bytes(f"{prefix}/manifest.json")
+            content_type_map: dict[str, str] = json.loads(manifest_bytes)
+            data = self.storage_backend.get_bytes(f"{prefix}/resources/{filename}")
+        except Exception as exc:  # noqa: BLE001
+            raise SnapshotArtifactNotFoundError from exc
+
+        return data, content_type_map.get(filename, "application/octet-stream")
+
     async def is_thumbnail_unavailable(self, *, source_asset_id: str) -> bool:
         job = await self.jobs.get_for_asset(source_asset_id=source_asset_id, job_type="thumbnail")
         if job is not None:
@@ -382,6 +459,15 @@ class SnapshotService:
             source_asset_id=asset.id if asset is not None else None,
             job_type=job_type,
             status="pending",
+            correlation_id=correlation_id,
+            source_event_id=source_event_id,
+        )
+        logger.info(
+            "snapshots.enqueue.job_requested",
+            owner_user_id=content_object.owner_user_id,
+            content_object_id=content_object.id,
+            source_asset_id=asset.id if asset is not None else None,
+            job_type=job_type,
             correlation_id=correlation_id,
             source_event_id=source_event_id,
         )

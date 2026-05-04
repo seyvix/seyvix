@@ -125,13 +125,12 @@ def test_create_text_note_persists_manifest_and_downloads_archive(
         tag_names=["AI", "draft"],
     )
 
-    assert payload["kind"] == "simple"
-    assert payload["media_type"] == "text"
+    assert payload["type"] == "simple"
+    assert payload["objects"][0]["type"] == "text"
     assert payload["title"] == "Manual title"
     assert "folder" not in payload
-    assert payload["taxonomy_category"]["path"] == "projects/ai"
+    assert payload["taxonomyCategory"]["path"] == "projects/ai"
     assert [tag["name"] for tag in payload["tags"]] == ["AI", "draft"]
-    assert payload["download_url"] == f"/api/v1/notes/{payload['slug']}/download"
 
     manifests = list(content_client.app.state.content_storage_root.rglob("manifest.json"))
     assert len(manifests) == 1
@@ -194,15 +193,13 @@ def test_create_plain_url_note_creates_link_object_and_content_event(
 
     assert response.status_code == 201
     payload = response.json()
-    assert payload["kind"] == "simple"
-    assert payload["media_type"] == "link"
+    assert payload["type"] == "simple"
+    assert payload["objects"][0]["type"] == "link"
     assert payload["title"] == "example.com"
-    assert payload["source_filename"] == "https://example.com/research?item=1"
     assert "folder" not in payload
-    assert payload["taxonomy_category"] is None
-    assert payload["assets"][0]["media_type"] == "link"
-    assert payload["assets"][0]["mime_type"] == "text/uri-list"
-    assert payload["assets"][0]["text_content"] == "https://example.com/research?item=1"
+    assert payload["taxonomyCategory"] is None
+    assert payload["objects"][0]["mimeType"] == "text/uri-list"
+    assert payload["objects"][0]["content"] == "https://example.com/research?item=1"
 
     async def load_processing_rows() -> (
         tuple[
@@ -236,7 +233,7 @@ def test_create_plain_url_note_creates_link_object_and_content_event(
     )
     assert [event.event_name for event in events] == ["content.object.created"]
     assert events[0].payload["metadata"]["media_type"] == "link"
-    assert events[0].payload["asset_ids"] == [payload["assets"][0]["id"]]
+    assert events[0].payload["asset_ids"] == [payload["objects"][0]["id"]]
     assert {job.job_type for job in snapshot_jobs} >= {"thumbnail", "markdown", "pdf", "screenshot"}
     assert [job.job_type for job in tag_jobs] == ["suggest_content_tags"]
     assert [job.job_type for job in taxonomy_jobs] == ["classify_content"]
@@ -322,15 +319,15 @@ def test_upload_single_files_with_same_object_id_creates_collection(
 
     assert first_response.status_code == 201
     assert first_response.json()["id"] == object_id
-    assert first_response.json()["kind"] == "simple"
+    assert first_response.json()["type"] == "simple"
     assert second_response.status_code == 201
     payload = second_response.json()
     assert payload["id"] == object_id
-    assert payload["kind"] == "collection"
+    assert payload["type"] == "collection"
     assert payload["title"] == "Batch import"
-    assert payload["taxonomy_category"]["path"] == "imports"
-    assert [item["source_filename"] for item in payload["items"]] == ["alpha.txt", "cover.png"]
-    assert [item["media_type"] for item in payload["items"]] == ["text", "image"]
+    assert payload["taxonomyCategory"]["path"] == "imports"
+    assert [obj["filename"] for obj in payload["objects"]] == ["alpha.txt", "cover.png"]
+    assert [obj["type"] for obj in payload["objects"]] == ["text", "image"]
 
 
 def test_search_expands_collections_to_matching_child_objects(
@@ -357,8 +354,9 @@ def test_search_expands_collections_to_matching_child_objects(
     assert response.status_code == 200
     payload = response.json()
     assert len(payload["items"]) == 1
-    assert payload["items"][0]["source_filename"] == "alpha.txt"
-    assert payload["items"][0]["collection"]["slug"] == collection_slug
+    row = payload["items"][0]
+    assert row["objects"][0]["filename"] == "alpha.txt"
+    assert row["collection"]["slug"] == collection_slug
 
 
 def test_favorite_and_custom_order_are_exposed_in_note_list(
@@ -374,7 +372,7 @@ def test_favorite_and_custom_order_are_exposed_in_note_list(
         json={"is_favorite": True},
     )
     assert favorite_response.status_code == 200
-    assert favorite_response.json()["is_favorite"] is True
+    assert favorite_response.json()["isFavorite"] is True
 
     reorder_response = content_client.patch(
         "/api/v1/notes/order",
@@ -424,9 +422,9 @@ def test_upload_file_without_object_id_stays_temporary_until_note_creation(
     )
     assert create_response.status_code == 201
     payload = create_response.json()
-    assert payload["kind"] == "simple"
-    assert payload["source_filename"] == "draft.txt"
-    assert payload["taxonomy_category"]["path"] == "inbox"
+    assert payload["type"] == "simple"
+    assert payload["objects"][0]["filename"] == "draft.txt"
+    assert payload["taxonomyCategory"]["path"] == "inbox"
     assert list(content_client.app.state.content_storage_root.rglob("manifest.json"))
 
 
@@ -464,11 +462,11 @@ def test_upload_file_with_create_object_flag_uses_server_generated_object_id(
 
     assert first_response.status_code == 201
     assert second_response.status_code == 201
-    assert first_response.json()["kind"] == "simple"
-    assert second_response.json()["kind"] == "simple"
+    assert first_response.json()["type"] == "simple"
+    assert second_response.json()["type"] == "simple"
     assert first_response.json()["id"] != second_response.json()["id"]
-    assert first_response.json()["source_filename"] == "one.txt"
-    assert second_response.json()["source_filename"] == "two.txt"
+    assert first_response.json()["objects"][0]["filename"] == "one.txt"
+    assert second_response.json()["objects"][0]["filename"] == "two.txt"
 
 
 def test_repeated_upload_with_object_id_extends_same_object_as_collection(
@@ -492,12 +490,12 @@ def test_repeated_upload_with_object_id_extends_same_object_as_collection(
 
     assert first_response.status_code == 201
     assert first_response.json()["id"] == object_id
-    assert first_response.json()["kind"] == "simple"
+    assert first_response.json()["type"] == "simple"
     assert second_response.status_code == 201
     payload = second_response.json()
     assert payload["id"] == object_id
-    assert payload["kind"] == "collection"
-    assert [item["source_filename"] for item in payload["items"]] == ["one.txt", "two.txt"]
+    assert payload["type"] == "collection"
+    assert [obj["filename"] for obj in payload["objects"]] == ["one.txt", "two.txt"]
 
 
 def test_merge_moves_objects_and_collections_into_target_collection(
@@ -514,9 +512,9 @@ def test_merge_moves_objects_and_collections_into_target_collection(
     )
     assert merge_response.status_code == 200
     collection = merge_response.json()
-    assert collection["kind"] == "collection"
+    assert collection["type"] == "collection"
     assert collection["slug"] == first["slug"]
-    assert [item["source_filename"] for item in collection["items"]] == [
+    assert [obj["filename"] for obj in collection["objects"]] == [
         "content.md",
         "content.md",
     ]
@@ -547,15 +545,18 @@ def test_merge_moves_objects_and_collections_into_target_collection(
     )
 
     assert collection_merge_response.status_code == 200
-    merged_items = collection_merge_response.json()["items"]
-    assert [item["source_filename"] for item in merged_items] == [
-        "content.md",
-        "content.md",
-        None,
-    ]
-    nested_collection = merged_items[2]
-    assert nested_collection["title"] == "Other collection"
-    assert [item["source_filename"] for item in nested_collection["items"]] == [
+    merged = collection_merge_response.json()
+    objs = merged["objects"]
+    assert len(objs) == 3
+    assert objs[0]["filename"] == "content.md"
+    assert objs[1]["filename"] == "content.md"
+    assert any(o.get("slug") == other_collection["slug"] for o in objs)
+    nested_payload = content_client.get(
+        f"/api/v1/notes/{other_collection['slug']}",
+        headers=headers,
+    ).json()
+    assert nested_payload["title"] == "Other collection"
+    assert [obj["filename"] for obj in nested_payload["objects"]] == [
         "one.txt",
         "two.txt",
     ]
@@ -602,16 +603,13 @@ def test_merge_moves_collection_items_into_target_folder(
 
     assert merge_response.status_code == 200
     payload = merge_response.json()
-    assert payload["taxonomy_category"]["path"] == "work/target"
-    moved_collection = next(
-        item for item in payload["items"] if item["title"] == "Source collection"
-    )
-    assert moved_collection["taxonomy_category"]["path"] == "work/target"
-    assert [item["source_filename"] for item in moved_collection["items"]] == ["one.txt", "two.txt"]
-    assert [item["taxonomy_category"]["path"] for item in moved_collection["items"]] == [
-        "work/target",
-        "work/target",
-    ]
+    assert payload["taxonomyCategory"]["path"] == "work/target"
+    moved_payload = content_client.get(
+        f"/api/v1/notes/{source_collection['slug']}",
+        headers=headers,
+    ).json()
+    assert moved_payload["taxonomyCategory"]["path"] == "work/target"
+    assert [obj["filename"] for obj in moved_payload["objects"]] == ["one.txt", "two.txt"]
 
 
 def test_folder_tree_and_folder_tags_are_available(content_client: TestClient) -> None:
@@ -669,8 +667,8 @@ def test_folder_tree_and_folder_tags_are_available(content_client: TestClient) -
         "Folder note",
         "Nested folder note",
     ]
-    assert folder_response.json()["notes"][0]["taxonomy_category"]["path"] == "work/research"
-    assert folder_response.json()["notes"][1]["taxonomy_category"]["path"] == "work/research/llm"
+    assert folder_response.json()["notes"][0]["taxonomyCategory"]["path"] == "work/research"
+    assert folder_response.json()["notes"][1]["taxonomyCategory"]["path"] == "work/research/llm"
     assert notes_response.status_code == 200
     assert len(notes_response.json()["items"]) == 2
-    assert notes_response.json()["items"][0]["taxonomy_category"]["path"] == "work/research"
+    assert notes_response.json()["items"][0]["taxonomyCategory"]["path"] == "work/research"

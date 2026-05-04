@@ -20,6 +20,9 @@ RUN apt-get update \
         libreoffice \
     && rm -rf /var/lib/apt/lists/*
 
+# Install Playwright Chromium and its OS dependencies
+RUN pip install playwright && playwright install --with-deps chromium
+
 FROM base AS production-deps
 
 COPY api/pyproject.toml api/uv.lock ./

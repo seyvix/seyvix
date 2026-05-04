@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react'
+import type { ReactNode } from 'react'
 import PDFViewer from '../components/PDFViewer/PDFViewer'
+import { useFavicon } from '../hooks/useFavicon'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -14,7 +16,6 @@ import {
   Check,
   FolderTree,
   Plus,
-  RefreshCw,
   Search,
   Tag as TagIcon,
   Trash2,
@@ -24,6 +25,8 @@ import { useUpdateNote } from '../hooks/useUpdateNote'
 import { useRemoveCollectionItems } from '../hooks/useRemoveCollectionItems'
 import { getTagColor } from '../utils/tagColor'
 import AuthImage from '../components/AuthImage/AuthImage'
+import HtmlSnapshotViewer from '../components/HtmlSnapshotViewer/HtmlSnapshotViewer'
+import { LoaderSpinner } from '../components/LoaderSpinner'
 import { apiFetch } from '../lib/apiClient'
 import { deleteNotes } from '../api/notes'
 import {
@@ -36,7 +39,6 @@ import {
   fetchContentTagSuggestions,
   fetchContentTagJobs,
   fetchContentTags,
-  fetchSnapshotArtifacts,
   fetchSnapshotJobs,
   fetchTaxonomyAssignments,
   fetchTaxonomyClassificationJobs,
@@ -45,12 +47,11 @@ import {
   searchTaxonomyCategories,
   type ContentTagAssignment,
   type ContentTagJob,
-  type SnapshotArtifact,
   type SnapshotJob,
   type TaxonomyAssignment,
   type TaxonomyClassificationJob,
 } from '../api/enrichment'
-import type { Note, NoteObject, Tag } from '../types'
+import type { Note, NoteObject, SnapshotView, Tag } from '../types'
 import styles from './NotePage.module.css'
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
@@ -118,21 +119,6 @@ function formatBytes(bytes?: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function artifactLabel(artifact: SnapshotArtifact): string {
-  if (artifact.artifact_type === 'webpage_html') return 'HTML'
-  if (artifact.artifact_type === 'thumbnail') return 'Миниатюра'
-  if (artifact.artifact_type === 'markdown') return 'Markdown'
-  if (artifact.artifact_type === 'pdf') return 'PDF'
-  return artifact.artifact_type
-}
-
-function jobStatusLabel(job: SnapshotJob): string {
-  if (job.status === 'completed' || job.status === 'done') return 'Готово'
-  if (job.status === 'failed') return 'Ошибка'
-  if (job.status === 'processing') return 'Обработка'
-  return 'В очереди'
-}
-
 function enrichmentJobStatusLabel(job: ContentTagJob | TaxonomyClassificationJob): string {
   if (job.status === 'completed' || job.status === 'done') return 'Готово'
   if (job.status === 'failed') return 'Ошибка'
@@ -151,23 +137,61 @@ const SNAPSHOT_ICON: Record<string, React.ReactNode> = {
   html:     <Globe     size={12} />,
 }
 
-function SnapshotLinks({ obj }: { obj: NoteObject }) {
-  const views = (obj.snapshotViews ?? []).filter(v => v.kind !== 'thumbnail')
-  if (views.length === 0) return null
-  return (
-    <div className={styles.snapshotLinks}>
-      {views.map(view => (
-        <button
-          key={`${obj.id}-${view.kind}`}
-          className={styles.snapshotDownloadLink}
-          onClick={() => authDownload(view.url, `${view.kind}.${view.kind === 'html' ? 'html' : view.kind}`)}
-        >
-          {SNAPSHOT_ICON[view.kind] ?? <Download size={12} />}
-          {view.label}
-        </button>
-      ))}
-    </div>
-  )
+function MarkdownText({ text }: { text: string }) {
+  const pattern = /!\[favicon\]\(([^)]+)\)\s+\[([^\]]+)\]\(([^)]+)\)/g
+  const parts: ReactNode[] = []
+  let lastIndex = 0
+
+  for (const match of text.matchAll(pattern)) {
+    const index = match.index ?? 0
+    if (index > lastIndex) {
+      parts.push(text.slice(lastIndex, index))
+    }
+    const [, faviconUrl, label, href] = match
+    parts.push(
+      <a
+        key={`${href}-${index}`}
+        className={styles.inlineMarkdownLink}
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        <img src={faviconUrl} alt="" />
+        <span>{label}</span>
+      </a>
+    )
+    lastIndex = index + match[0].length
+  }
+
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex))
+  }
+
+  return <>{parts}</>
+}
+
+const LINK_SNAPSHOT_TYPES: Array<{ jobType: 'markdown' | 'pdf'; label: string }> = [
+  { jobType: 'markdown', label: 'MD' },
+  { jobType: 'pdf', label: 'PDF' },
+]
+
+function linkSnapshotJobBadge(
+  kind: 'markdown' | 'pdf',
+  views: SnapshotView[],
+  jobs: SnapshotJob[],
+): ReactNode {
+  const view = views.find(v => v.kind === kind)
+  const job = jobs.find(j => j.job_type === kind)
+  if (view && (!job || job.status === 'done' || job.status === 'completed')) return null
+  if (!view && !job) return null
+  if (job?.status === 'failed') {
+    return <span className={styles.assetTabJobFailed} title="Ошибка">!</span>
+  }
+  if (job) {
+    const pct = job.status === 'processing' ? '50%' : '0%'
+    return <span className={styles.assetTabJobPct} title="Готовится">{pct}</span>
+  }
+  return null
 }
 
 function EnrichmentPanel({ note }: { note: Note }) {
@@ -204,22 +228,6 @@ function EnrichmentPanel({ note }: { note: Note }) {
       return jobs.some(isActiveJob) ? 4000 : false
     },
   })
-  const snapshotArtifacts = useQuery({
-    queryKey: ['snapshot-artifacts', note.id],
-    queryFn: () => fetchSnapshotArtifacts(note.id),
-    refetchInterval: (query) => {
-      const jobs = queryClient.getQueryData<SnapshotJob[]>(['snapshot-jobs', note.id]) ?? []
-      return jobs.some(isActiveJob) ? 4000 : false
-    },
-  })
-  const snapshotJobs = useQuery({
-    queryKey: ['snapshot-jobs', note.id],
-    queryFn: () => fetchSnapshotJobs(note.id),
-    refetchInterval: (query) => {
-      const jobs = query.state.data ?? []
-      return jobs.some(isActiveJob) ? 4000 : false
-    },
-  })
   const categories = useQuery({
     queryKey: ['taxonomy-category-search', categorySearch],
     queryFn: () => searchTaxonomyCategories(categorySearch),
@@ -232,9 +240,8 @@ function EnrichmentPanel({ note }: { note: Note }) {
     queryClient.invalidateQueries({ queryKey: ['content-tag-jobs', note.id] })
     queryClient.invalidateQueries({ queryKey: ['taxonomy-assignments', note.id] })
     queryClient.invalidateQueries({ queryKey: ['taxonomy-classification-jobs', note.id] })
-    queryClient.invalidateQueries({ queryKey: ['snapshot-artifacts', note.id] })
     queryClient.invalidateQueries({ queryKey: ['snapshot-jobs', note.id] })
-    queryClient.invalidateQueries({ queryKey: ['note', note.slug] })
+    queryClient.invalidateQueries({ queryKey: ['note', note.id] })
     queryClient.invalidateQueries({ queryKey: ['notes'] })
   }
 
@@ -303,9 +310,6 @@ function EnrichmentPanel({ note }: { note: Note }) {
         path: currentAssignment.category_path_snapshot,
       }
     : null)
-  const artifacts = snapshotArtifacts.data ?? []
-  const jobs = snapshotJobs.data ?? []
-  const activeJobs = jobs.filter(isActiveJob)
   const error = addTag.error ?? assignCategory.error ?? createAndAssignCategory.error
 
   function submitTag() {
@@ -443,43 +447,6 @@ function EnrichmentPanel({ note }: { note: Note }) {
         )}
       </div>
 
-      <div className={styles.enrichmentColumn}>
-        <div className={styles.enrichmentHeader}>
-          <FileText size={14} />
-          <span>Снапшоты</span>
-          <button className={styles.iconTextBtn} onClick={refreshEnrichment}>
-            <RefreshCw size={13} />
-            Обновить
-          </button>
-        </div>
-        {artifacts.filter(a => a.artifact_type !== 'thumbnail').length > 0 ? (
-          <div className={styles.artifactList}>
-            {artifacts
-              .filter(a => a.artifact_type !== 'thumbnail')
-              .map(artifact => (
-                <button
-                  key={artifact.id}
-                  className={styles.artifactItem}
-                  onClick={() => authDownload(artifact.url, artifact.filename)}
-                >
-                  {artifact.artifact_type === 'webpage_html' ? <Globe size={14} />
-                    : artifact.artifact_type === 'pdf'       ? <FileDown size={14} />
-                    : <FileText size={14} />
-                  }
-                  <span>{artifactLabel(artifact)}</span>
-                  <small>{formatBytes(artifact.size_bytes)}</small>
-                </button>
-              ))
-            }
-          </div>
-        ) : (
-          <span className={styles.emptyText}>
-            {activeJobs.length > 0 ? 'Обработка' : 'Нет артефактов'}
-          </span>
-        )}
-
-      </div>
-
       {error instanceof Error && <div className={styles.enrichmentError}>{error.message}</div>}
     </section>
   )
@@ -523,64 +490,334 @@ function TextObj({
   }
   return (
     <>
-      <p className={styles.objText}>{obj.content}</p>
-      <SnapshotLinks obj={obj} />
+      <p className={styles.objText}><MarkdownText text={obj.content} /></p>
     </>
+  )
+}
+
+function assetViewIcon(kind: SnapshotView['kind']) {
+  if (kind === 'webpage_html') return <Globe size={13} />
+  if (kind === 'pdf') return <FileDown size={13} />
+  if (kind === 'markdown') return <FileText size={13} />
+  return <Download size={13} />
+}
+
+function isAssetMode(view: SnapshotView) {
+  return view.kind === 'webpage_html' || view.kind === 'pdf' || view.kind === 'markdown'
+}
+
+function assetDownloadName(obj: NoteObject, view: SnapshotView) {
+  const ext = view.kind === 'markdown' ? 'md' : view.kind === 'webpage_html' ? 'html' : 'pdf'
+  return `${getBaseName(obj.filename) || obj.id}.${ext}`
+}
+
+function PdfSnapshotView({ src }: { src: string }) {
+  const [blobUrl, setBlobUrl] = useState<string | null>(() => docBlobCache.get(src) ?? null)
+  const [loading, setLoading] = useState(() => !docBlobCache.has(src))
+
+  useEffect(() => {
+    if (docBlobCache.has(src)) {
+      setBlobUrl(docBlobCache.get(src)!)
+      setLoading(false)
+      return
+    }
+    let objectUrl: string | null = null
+    let cancelled = false
+    setLoading(true)
+    setBlobUrl(null)
+    apiFetch(src)
+      .then(r => r.blob())
+      .then(blob => {
+        if (cancelled) return
+        objectUrl = URL.createObjectURL(blob)
+        docBlobCache.set(src, objectUrl)
+        setBlobUrl(objectUrl)
+        setLoading(false)
+      })
+      .catch(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [src])
+
+  if (loading || !blobUrl) {
+    return (
+      <div className={styles.assetPanelLoader}>
+        <LoaderSpinner />
+      </div>
+    )
+  }
+  return <PDFViewer src={blobUrl} />
+}
+
+function MarkdownSnapshotView({ src }: { src: string }) {
+  const [text, setText] = useState<string | null>(null)
+  const [error, setError] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    setText(null)
+    setError(false)
+    apiFetch(src)
+      .then(r => {
+        if (!r.ok) throw new Error('markdown fetch failed')
+        return r.text()
+      })
+      .then(value => { if (!cancelled) setText(value) })
+      .catch(() => {
+        if (!cancelled) setError(true)
+      })
+    return () => { cancelled = true }
+  }, [src])
+
+  if (error) return <div className={styles.assetEmpty}>Не удалось загрузить Markdown</div>
+  if (text === null) {
+    return (
+      <div className={styles.assetPanelLoader}>
+        <LoaderSpinner />
+      </div>
+    )
+  }
+  return <pre className={styles.assetMarkdown}>{text}</pre>
+}
+
+function LinkSnapshotPending({ obj, favicon, domain }: { obj: NoteObject; favicon: string | null; domain: string }) {
+  return (
+    <div className={styles.objLinkSnapshotPending}>
+      {favicon && <img src={favicon} alt="" className={styles.objLinkSnapshotIcon} />}
+      <div className={styles.objLinkSnapshotDomain}>{domain}</div>
+      <div className={styles.objLinkSnapshotUrl}>{obj.content}</div>
+      <div className={styles.objLinkSnapshotBadge}>снимок страницы готовится</div>
+    </div>
+  )
+}
+
+function AssetViewer({
+  obj,
+  noteId,
+  isEditing,
+  isOpen,
+  onOpen,
+  onDelete,
+}: {
+  obj: NoteObject
+  noteId: string
+  isEditing: boolean
+  isOpen: boolean
+  onOpen: () => void
+  onDelete: () => void
+}) {
+  const queryClient = useQueryClient()
+  const { noteId: pageNoteId } = useParams<{ noteId: string }>()
+  const views = (obj.snapshotViews ?? []).filter(isAssetMode)
+  const viewKey = views.map(view => `${view.kind}:${view.url}`).join('|')
+  const [activeKind, setActiveKind] = useState<SnapshotView['kind'] | null>(() => views[0]?.kind ?? null)
+  const favicon = useFavicon(obj.type === 'link' ? obj.content : null)
+  let domain = obj.content
+  if (obj.type === 'link') {
+    try {
+      domain = new URL(obj.content).hostname.replace(/^www\./, '')
+    } catch { /* ignore */ }
+  }
+
+  const { data: snapshotJobsNote } = useQuery({
+    queryKey: ['snapshot-jobs', noteId],
+    queryFn: () => fetchSnapshotJobs(noteId),
+    enabled: obj.type === 'link',
+    refetchInterval: (query) => {
+      if (obj.type !== 'link') return false
+      const jobs = query.state.data ?? []
+      return jobs.some(isActiveJob) ? 3000 : false
+    },
+  })
+  const snapshotJobs = (snapshotJobsNote ?? []).filter(j => j.source_asset_id === obj.id)
+  const webpageHtmlJob = snapshotJobs.find(j => j.job_type === 'webpage_html')
+
+  useEffect(() => {
+    if (obj.type !== 'link') return
+    if (webpageHtmlJob?.status !== 'done') return
+    if ((obj.snapshotViews ?? []).some(v => v.kind === 'webpage_html')) return
+    if (pageNoteId) queryClient.invalidateQueries({ queryKey: ['note', pageNoteId] })
+    queryClient.invalidateQueries({ queryKey: ['notes'] })
+  }, [obj.type, obj.snapshotViews, pageNoteId, queryClient, webpageHtmlJob?.status])
+
+  const hasPendingOnlySlots =
+    obj.type === 'link' &&
+    LINK_SNAPSHOT_TYPES.some(({ jobType }) => {
+      if (views.some(v => v.kind === jobType)) return false
+      const job = snapshotJobs.find(j => j.job_type === jobType)
+      return !!(job && job.status !== 'done' && job.status !== 'completed')
+    })
+
+  const showTabStrip = views.length > 1 || hasPendingOnlySlots
+
+  useEffect(() => {
+    if (views.length === 0) {
+      setActiveKind(null)
+      return
+    }
+    if (!activeKind || !views.some(view => view.kind === activeKind)) {
+      setActiveKind(views[0].kind)
+    }
+  }, [activeKind, viewKey]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const activeView = views.find(view => view.kind === activeKind) ?? views[0] ?? null
+  const title = obj.type === 'link' ? domain : getBaseName(obj.filename)
+
+  return (
+    <div className={styles.objWrapper}>
+      <div className={`${styles.assetFrame} ${!isOpen ? styles.assetFrameCollapsed : ''}`}>
+        <div className={styles.assetChrome} onClick={onOpen}>
+          {obj.type === 'link' && favicon && <img src={favicon} alt="" className={styles.objLinkFavicon} />}
+          <span className={styles.assetTitle}>{title}</span>
+          {showTabStrip && (
+            <div className={styles.assetTabs}>
+              {views.map(view => (
+                <button
+                  key={`${obj.id}-${view.kind}`}
+                  type="button"
+                  className={`${styles.assetTab} ${activeView?.kind === view.kind ? styles.assetTabActive : ''}`}
+                  onClick={event => {
+                    event.stopPropagation()
+                    setActiveKind(view.kind)
+                    onOpen()
+                  }}
+                >
+                  {assetViewIcon(view.kind)}
+                  {view.label}
+                  {obj.type === 'link' && (view.kind === 'pdf' || view.kind === 'markdown')
+                    ? linkSnapshotJobBadge(view.kind, views, snapshotJobs)
+                    : null}
+                </button>
+              ))}
+              {obj.type === 'link' &&
+                LINK_SNAPSHOT_TYPES.map(({ jobType, label }) => {
+                  if (views.some(v => v.kind === jobType)) return null
+                  const job = snapshotJobs.find(j => j.job_type === jobType)
+                  if (!job || job.status === 'done' || job.status === 'completed') return null
+                  const failed = job.status === 'failed'
+                  const pct = job.status === 'processing' ? '50%' : '0%'
+                  return (
+                    <span
+                      key={`${obj.id}-job-${jobType}`}
+                      className={styles.assetTabPending}
+                      aria-label={failed ? `${label}: ошибка` : `${label}: готовится`}
+                    >
+                      {SNAPSHOT_ICON[jobType] ?? <Download size={12} />}
+                      {label}
+                      <span className={failed ? styles.assetTabJobFailed : styles.assetTabJobPct}>
+                        {failed ? '!' : pct}
+                      </span>
+                    </span>
+                  )
+                })}
+            </div>
+          )}
+          {activeView && (
+            <button
+              type="button"
+              className={styles.assetAction}
+              onClick={event => {
+                event.stopPropagation()
+                authDownload(activeView.url, assetDownloadName(obj, activeView))
+              }}
+              title="Скачать текущий режим"
+            >
+              <Download size={13} />
+            </button>
+          )}
+          {obj.type === 'link' && (
+            <a
+              className={styles.assetAction}
+              href={obj.content}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Открыть оригинал"
+              onClick={event => event.stopPropagation()}
+            >
+              <ExternalLink size={13} />
+            </a>
+          )}
+        </div>
+        {isOpen && (
+          <div className={styles.assetBody}>
+            <div
+              className={styles.assetBodyInner}
+              key={activeView ? `${activeKind}:${activeView.url}` : 'asset-view'}
+            >
+              {activeView?.kind === 'webpage_html' ? (
+                <HtmlSnapshotViewer src={activeView.url} className={styles.assetWebsiteFrame} />
+              ) : activeView?.kind === 'pdf' ? (
+                <PdfSnapshotView src={activeView.url} />
+              ) : activeView?.kind === 'markdown' ? (
+                <MarkdownSnapshotView src={activeView.url} />
+              ) : obj.type === 'link' ? (
+                <LinkSnapshotPending obj={obj} favicon={favicon} domain={domain} />
+              ) : (
+                <div className={styles.assetEmpty}>Нет доступных режимов просмотра</div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+      {isEditing && <button type="button" className={styles.objDeleteBtn} onClick={onDelete}><X size={12} /></button>}
+    </div>
   )
 }
 
 // ─── Link ──────────────────────────────────────────────────────────────────────
 
-function makeLinkSrcdoc(url: string, domain: string): string {
-  const escaped = url.replace(/"/g, '&quot;')
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:#0f0f0f;color:#f5f5f5;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;user-select:none}img{width:48px;height:48px;border-radius:10px}.domain{font-size:22px;font-weight:600;color:#e5e5e5}.url{font-size:12px;color:#555;max-width:320px;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.badge{font-size:10px;color:#444;border:1px solid #2a2a2a;border-radius:20px;padding:3px 10px;margin-top:8px}</style></head><body><img src="https://www.google.com/s2/favicons?domain=${domain}&sz=96" onerror="this.style.display='none'"/><div class="domain">${domain}</div><div class="url">${escaped}</div><div class="badge">снапшот</div></body></html>`
-}
-
-function LinkObj({ obj, isEditing, onDelete }: { obj: NoteObject; isEditing: boolean; onDelete: () => void }) {
-  let domain = obj.content
-  let favicon = ''
-  try {
-    const u = new URL(obj.content)
-    domain  = u.hostname.replace(/^www\./, '')
-    favicon = `https://www.google.com/s2/favicons?domain=${u.hostname}&sz=32`
-  } catch { /* ignore */ }
-
-  return (
-    <div className={styles.objWrapper}>
-      <div className={styles.objLinkFrame}>
-        <div className={styles.objLinkChrome}>
-          {favicon && <img src={favicon} alt="" className={styles.objLinkFavicon} />}
-          <span className={styles.objLinkChromeDomain}>{domain}</span>
-          <a className={styles.objLinkChromeOpen} href={obj.content} target="_blank" rel="noopener noreferrer">
-            <ExternalLink size={13} />
-          </a>
-        </div>
-        <iframe
-          className={styles.objLinkIframe}
-          srcDoc={makeLinkSrcdoc(obj.content, domain)}
-          sandbox="allow-same-origin"
-          title={domain}
-        />
-      </div>
-      {isEditing && <button className={styles.objDeleteBtn} onClick={onDelete}><X size={12} /></button>}
-    </div>
-  )
+function LinkObj({
+  obj,
+  noteId,
+  isEditing,
+  isOpen,
+  onOpen,
+  onDelete,
+}: {
+  obj: NoteObject
+  noteId: string
+  isEditing: boolean
+  isOpen: boolean
+  onOpen: () => void
+  onDelete: () => void
+}) {
+  return <AssetViewer obj={obj} noteId={noteId} isEditing={isEditing} isOpen={isOpen} onOpen={onOpen} onDelete={onDelete} />
 }
 
 function MediaObj({ obj, isEditing, onDelete }: { obj: NoteObject; isEditing: boolean; onDelete: () => void }) {
+  const [mediaReady, setMediaReady] = useState(false)
+  useEffect(() => {
+    setMediaReady(false)
+  }, [obj.content, obj.type])
+
   return (
     <div className={styles.objWrapper}>
       <div className={styles.mediaBox}>
-        {obj.type === 'audio' ? (
-          <audio controls src={obj.content} />
-        ) : (
-          <video controls src={obj.content} />
-        )}
+        <div className={styles.mediaPlayerWrap}>
+          {!mediaReady && (
+            <div className="appLoaderOverlay" aria-hidden>
+              <LoaderSpinner />
+            </div>
+          )}
+          {obj.type === 'audio' ? (
+            <audio
+              controls
+              src={obj.content}
+              onLoadedData={() => setMediaReady(true)}
+              onError={() => setMediaReady(true)}
+            />
+          ) : (
+            <video
+              controls
+              src={obj.content}
+              onLoadedData={() => setMediaReady(true)}
+              onError={() => setMediaReady(true)}
+            />
+          )}
+        </div>
         <div className={styles.mediaMeta}>
           <span>{obj.filename ?? (obj.type === 'audio' ? 'Аудио' : 'Видео')}</span>
           {obj.sizeBytes !== undefined && <small>{formatBytes(obj.sizeBytes)}</small>}
         </div>
-        <SnapshotLinks obj={obj} />
       </div>
       {isEditing && <button className={styles.objDeleteBtn} onClick={onDelete}><X size={12} /></button>}
     </div>
@@ -589,46 +826,22 @@ function MediaObj({ obj, isEditing, onDelete }: { obj: NoteObject; isEditing: bo
 
 // ─── Document viewer ───────────────────────────────────────────────────────────
 
-function DocViewer({ obj, isEditing, onDelete }: { obj: NoteObject; isEditing: boolean; onDelete: () => void }) {
-  const pdfUrl = obj.snapshotViews?.find(v => v.kind === 'pdf')?.url ?? null
-
-  const [blobUrl, setBlobUrl] = useState<string | null>(() => pdfUrl ? (docBlobCache.get(pdfUrl) ?? null) : null)
-  const [loading, setLoading] = useState(() => pdfUrl ? !docBlobCache.has(pdfUrl) : false)
-
-  useEffect(() => {
-    if (!pdfUrl) return
-    if (docBlobCache.has(pdfUrl)) {
-      setBlobUrl(docBlobCache.get(pdfUrl)!)
-      setLoading(false)
-      return
-    }
-    let objectUrl: string | null = null
-    let cancelled = false
-    setLoading(true)
-    setBlobUrl(null)
-    apiFetch(pdfUrl)
-      .then(r => r.blob())
-      .then(blob => {
-        if (cancelled) return
-        objectUrl = URL.createObjectURL(blob)
-        docBlobCache.set(pdfUrl, objectUrl)
-        setBlobUrl(objectUrl)
-        setLoading(false)
-      })
-      .catch(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
-  }, [pdfUrl])
-
-  return (
-    <div className={`${styles.objWrapper} ${styles.docViewer}`}>
-      {loading || !blobUrl ? (
-        <div className={styles.docLoader}><div className={styles.docLoaderSpinner} /></div>
-      ) : (
-        <PDFViewer src={blobUrl} />
-      )}
-      {isEditing && <button className={styles.objDeleteBtn} onClick={onDelete}><X size={12} /></button>}
-    </div>
-  )
+function DocViewer({
+  obj,
+  noteId,
+  isEditing,
+  isOpen,
+  onOpen,
+  onDelete,
+}: {
+  obj: NoteObject
+  noteId: string
+  isEditing: boolean
+  isOpen: boolean
+  onOpen: () => void
+  onDelete: () => void
+}) {
+  return <AssetViewer obj={obj} noteId={noteId} isEditing={isEditing} isOpen={isOpen} onOpen={onOpen} onDelete={onDelete} />
 }
 
 // ─── Collection stream ─────────────────────────────────────────────────────────
@@ -636,10 +849,14 @@ function DocViewer({ obj, isEditing, onDelete }: { obj: NoteObject; isEditing: b
 function CollectionStream({
   objects,
   isEditing,
+  openViewerId,
+  onOpenViewer,
   onRemove,
 }: {
   objects: NoteObject[]
   isEditing: boolean
+  openViewerId: string | null
+  onOpenViewer: (id: string) => void
   onRemove: (id: string, slug?: string) => void
 }) {
   const navigate = useNavigate()
@@ -647,12 +864,12 @@ function CollectionStream({
   return (
     <div className={styles.stream}>
       {objects.map(obj => {
-        const canNavigate = Boolean(obj.slug)
+        const canNavigate = Boolean(obj.id)
         const hint = canNavigate && !isEditing
           ? (
             <button
               className={styles.collOpenBtn}
-              onClick={() => navigate(`/notes/${obj.slug}`)}
+              onClick={() => navigate(`/notes/${obj.id}`)}
               title="Открыть заметку"
             >
               <ChevronRight size={13} />
@@ -676,7 +893,7 @@ function CollectionStream({
               src={obj.content}
               alt=""
               style={{ cursor: canNavigate && !isEditing ? 'pointer' : 'zoom-in' }}
-              onClick={() => !isEditing && canNavigate ? navigate(`/notes/${obj.slug}`) : window.open(obj.content, '_blank')}
+              onClick={() => !isEditing && canNavigate ? navigate(`/notes/${obj.id}`) : window.open(obj.content, '_blank')}
             />
             {hint}
             {removeBtn}
@@ -685,15 +902,35 @@ function CollectionStream({
 
         if (obj.type === 'document') return (
           <div key={obj.id} className={styles.objWrapper}>
-            <DocViewer obj={obj} isEditing={isEditing} onDelete={() => onRemove(obj.id, obj.slug)} />
+            <DocViewer
+              obj={obj}
+              noteId={obj.id}
+              isEditing={isEditing}
+              isOpen={openViewerId === obj.id}
+              onOpen={() => onOpenViewer(obj.id)}
+              onDelete={() => onRemove(obj.id, obj.slug)}
+            />
+            {hint}
+          </div>
+        )
+
+        if (obj.type === 'link') return (
+          <div key={obj.id} className={styles.objWrapper}>
+            <LinkObj
+              obj={obj}
+              noteId={obj.id}
+              isEditing={isEditing}
+              isOpen={openViewerId === obj.id}
+              onOpen={() => onOpenViewer(obj.id)}
+              onDelete={() => onRemove(obj.id, obj.slug)}
+            />
             {hint}
           </div>
         )
 
         if (obj.type === 'text') return (
           <div key={obj.id} className={styles.objWrapper}>
-            <p className={styles.objText}>{obj.content}</p>
-            <SnapshotLinks obj={obj} />
+            <p className={styles.objText}><MarkdownText text={obj.content} /></p>
             {hint}
             {removeBtn}
           </div>
@@ -715,10 +952,10 @@ function CollectionStream({
 // ─── Page ──────────────────────────────────────────────────────────────────────
 
 export default function NotePage() {
-  const { noteSlug } = useParams<{ noteSlug: string }>()
+  const { noteId: routeNoteId } = useParams<{ noteId: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const { data: note, isLoading } = useNote(noteSlug!)
+  const { data: note, isLoading } = useNote(routeNoteId!)
   const { mutate: updateNote } = useUpdateNote()
   const { mutate: removeItems } = useRemoveCollectionItems()
 
@@ -736,6 +973,7 @@ export default function NotePage() {
   const [deletedObjs,    setDeletedObjs]    = useState<Set<string>>(new Set())
   const [removedSlugs,   setRemovedSlugs]   = useState<Set<string>>(new Set())
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
+  const [openViewerId,   setOpenViewerId]   = useState<string | null>(null)
 
   const deleteNote = useMutation({
     mutationFn: () => deleteNotes(note ? [note.slug] : []),
@@ -745,6 +983,22 @@ export default function NotePage() {
       navigate('/notes')
     },
   })
+
+  useEffect(() => {
+    const firstViewer = note?.objects.find(obj =>
+      !deletedObjs.has(obj.id) && (obj.type === 'link' || obj.type === 'document')
+    )
+    if (!firstViewer) {
+      if (openViewerId !== null) setOpenViewerId(null)
+      return
+    }
+    const stillVisible = note?.objects.some(obj =>
+      obj.id === openViewerId &&
+      !deletedObjs.has(obj.id) &&
+      (obj.type === 'link' || obj.type === 'document')
+    )
+    if (!stillVisible) setOpenViewerId(firstViewer.id)
+  }, [deletedObjs, note, openViewerId])
 
   function enterEdit() {
     if (!note) return
@@ -765,12 +1019,12 @@ export default function NotePage() {
       if (removedSlugs.size > 0) {
         removeItems({ collectionSlug: note.slug, itemSlugs: [...removedSlugs] })
       }
-      updateNote({ slug: note.slug, data: { title: editTitle || note.title } })
+      updateNote({ noteRef: note.id, data: { title: editTitle || note.title } })
     } else {
       const objects = note.objects
         .filter(o => !deletedObjs.has(o.id))
         .map(o => o.type === 'text' ? { ...o, content: editTexts[o.id] ?? o.content } : o)
-      updateNote({ slug: note.slug, data: { title: editTitle || note.title, objects } })
+      updateNote({ noteRef: note.id, data: { title: editTitle || note.title, objects } })
     }
     setIsEditing(false)
   }
@@ -837,7 +1091,6 @@ export default function NotePage() {
 
       {/* Content */}
       <div className={styles.content}>
-
         {/* Meta */}
         <div className={styles.meta}>
           {isEditing
@@ -866,6 +1119,8 @@ export default function NotePage() {
           <CollectionStream
             objects={visibleObjects}
             isEditing={isEditing}
+            openViewerId={openViewerId}
+            onOpenViewer={setOpenViewerId}
             onRemove={(id, slug) => {
               setDeletedObjs(p => new Set([...p, id]))
               if (slug) setRemovedSlugs(p => new Set([...p, slug]))
@@ -885,13 +1140,20 @@ export default function NotePage() {
               )
               if (obj.type === 'link') return (
                 <LinkObj
-                  key={obj.id} obj={obj} isEditing={isEditing}
+                  key={obj.id} obj={obj} noteId={note.id} isEditing={isEditing}
+                  isOpen={openViewerId === obj.id}
+                  onOpen={() => setOpenViewerId(obj.id)}
                   onDelete={() => setDeletedObjs(p => new Set([...p, obj.id]))}
                 />
               )
               if (obj.type === 'document') return (
                 <DocViewer
-                  key={obj.id} obj={obj} isEditing={isEditing}
+                  key={obj.id}
+                  obj={obj}
+                  noteId={note.id}
+                  isEditing={isEditing}
+                  isOpen={openViewerId === obj.id}
+                  onOpen={() => setOpenViewerId(obj.id)}
                   onDelete={() => setDeletedObjs(p => new Set([...p, obj.id]))}
                 />
               )

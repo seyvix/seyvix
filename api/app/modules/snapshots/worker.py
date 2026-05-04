@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import copy
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from uuid import uuid4
 
 from app.contracts.events import EventEnvelope
 from app.core.config import get_settings
@@ -115,14 +117,51 @@ class SnapshotWorker:
         if content_object is None:
             self._fail_job(job, "Content object not found.")
             return
+        logger.info(
+            "snapshot.job.loaded",
+            job_id=job.id,
+            job_type=job.job_type,
+            content_object_id=job.content_object_id,
+            source_asset_id=job.source_asset_id,
+            asset_found=asset is not None,
+            asset_media_type=asset.media_type if asset is not None else None,
+            asset_mime_type=asset.mime_type if asset is not None else None,
+        )
+
+        pregenerated_artifact_id: str | None = None
+        if job.job_type == "webpage_html" and asset is not None and asset.media_type == "link":
+            pregenerated_artifact_id = str(uuid4())
+            logger.info(
+                "snapshot.job.webpage_html_artifact_id_pregenerated",
+                job_id=job.id,
+                source_asset_id=asset.id,
+                artifact_id=pregenerated_artifact_id,
+            )
 
         try:
             generated = self._generate_with_storage(
                 content_object=content_object,
                 asset=asset,
                 job=job,
+                artifact_id=pregenerated_artifact_id,
+            )
+            logger.info(
+                "snapshot.job.generated",
+                job_id=job.id,
+                job_type=job.job_type,
+                filename=generated.filename,
+                mime_type=generated.mime_type,
+                size_bytes=generated.path.stat().st_size if generated.path.exists() else None,
+                has_resources=generated.resources_dir is not None,
+                resources_dir=str(generated.resources_dir) if generated.resources_dir is not None else None,
             )
         except UnsupportedSnapshotError as exc:
+            logger.warning(
+                "snapshot.job.unsupported",
+                job_id=job.id,
+                job_type=job.job_type,
+                error=str(exc),
+            )
             self._fail_job(job, str(exc))
             return
         except Exception as exc:  # noqa: BLE001
@@ -136,6 +175,7 @@ class SnapshotWorker:
             self._fail_job(job, str(exc))
             return
 
+        artifact_id = pregenerated_artifact_id or str(uuid4())
         stored = self.storage_backend.put_bytes(
             storage_key=StorageKeyBuilder.snapshot_artifact(
                 content_object_id=job.content_object_id,
@@ -148,10 +188,41 @@ class SnapshotWorker:
         self.storage_objects.add(
             stored,
             owner_entity_type="snapshot_artifact",
-            owner_entity_id=job.id,
+            owner_entity_id=artifact_id,
             metadata={"job_type": job.job_type, "source_asset_id": job.source_asset_id},
         )
+        if generated.resources_dir is not None and generated.resources_dir.exists():
+            manifest_file = generated.resources_dir.parent / "manifest.json"
+            if manifest_file.exists():
+                self.storage_backend.put_bytes(
+                    storage_key=StorageKeyBuilder.snapshot_artifact_manifest(
+                        content_object_id=job.content_object_id,
+                        snapshot_id=job.id,
+                    ),
+                    data=manifest_file.read_bytes(),
+                    content_type="application/json",
+                )
+            for resource_file in sorted(generated.resources_dir.iterdir()):
+                if not resource_file.is_file():
+                    continue
+                self.storage_backend.put_bytes(
+                    storage_key=StorageKeyBuilder.snapshot_artifact_resource(
+                        content_object_id=job.content_object_id,
+                        snapshot_id=job.id,
+                        filename=resource_file.name,
+                    ),
+                    data=resource_file.read_bytes(),
+                    content_type=None,
+                )
+            logger.info(
+                "snapshot.job.resources_stored",
+                job_id=job.id,
+                artifact_id=artifact_id,
+                resource_count=len([p for p in generated.resources_dir.iterdir() if p.is_file()]),
+                manifest_exists=manifest_file.exists(),
+            )
         artifact = SnapshotArtifact(
+            id=artifact_id,
             owner_user_id=job.owner_user_id,
             content_object_id=job.content_object_id,
             source_asset_id=job.source_asset_id,
@@ -168,6 +239,15 @@ class SnapshotWorker:
             status="ready",
         )
         self.artifacts.add(artifact)
+        logger.info(
+            "snapshot.job.artifact_record_created",
+            job_id=job.id,
+            artifact_id=artifact.id,
+            artifact_type=artifact.artifact_type,
+            source_asset_id=artifact.source_asset_id,
+            storage_key=artifact.storage_key,
+            status=artifact.status,
+        )
 
         if (
             job.job_type == "thumbnail"
@@ -189,11 +269,15 @@ class SnapshotWorker:
         content_object: ContentObject,
         asset: ContentAsset | None,
         job: SnapshotJob,
+        artifact_id: str | None = None,
     ) -> GeneratedArtifact:
         if asset is None:
             generator = SnapshotArtifactGenerator(self.storage_root)
             return generator.generate(
-                content_object=content_object, asset=asset, job_type=job.job_type
+                content_object=content_object,
+                asset=asset,
+                job_type=job.job_type,
+                artifact_id=artifact_id,
             )
 
         with TemporaryDirectory() as temp_dir:
@@ -213,16 +297,25 @@ class SnapshotWorker:
                 content_object=local_content_object,
                 asset=local_asset,
                 job_type=job.job_type,
+                artifact_id=artifact_id,
             )
             stable_path = self.storage_root / ".snapshot-worker" / job.id / generated.filename
             stable_path.parent.mkdir(parents=True, exist_ok=True)
             stable_path.write_bytes(generated.path.read_bytes())
+            stable_resources_dir: Path | None = None
+            if generated.resources_dir is not None and generated.resources_dir.exists():
+                stable_resources_dir = stable_path.parent / "resources"
+                shutil.copytree(generated.resources_dir, stable_resources_dir)
+                manifest_src = generated.resources_dir.parent / "manifest.json"
+                if manifest_src.exists():
+                    shutil.copy2(manifest_src, stable_path.parent / "manifest.json")
             return type(generated)(
                 filename=generated.filename,
                 mime_type=generated.mime_type,
                 path=stable_path,
                 width=generated.width,
                 height=generated.height,
+                resources_dir=stable_resources_dir,
             )
 
     @staticmethod

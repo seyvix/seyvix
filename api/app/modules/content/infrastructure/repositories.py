@@ -78,6 +78,23 @@ class ContentRepository:
             query = query.where(ContentObject.deleted_at.is_(None))
         return cast(ContentObject | None, await self.session.scalar(query))
 
+    async def get_by_asset_id(
+        self,
+        *,
+        owner_user_id: str,
+        asset_id: str,
+    ) -> ContentObject | None:
+        query = (
+            select(ContentObject)
+            .options(*content_object_load_options())
+            .join(ContentAsset, ContentAsset.content_object_id == ContentObject.id)
+            .where(
+                ContentObject.owner_user_id == owner_user_id,
+                ContentAsset.id == asset_id,
+            )
+        )
+        return cast(ContentObject | None, await self.session.scalar(query))
+
     async def list_by_slugs(
         self,
         *,

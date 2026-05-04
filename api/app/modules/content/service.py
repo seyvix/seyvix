@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import importlib
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
 from urllib.parse import urlparse
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from app.contracts.events import ContentObjectChangedPayload, EventEnvelope
 from app.core.config import get_settings
@@ -18,6 +19,7 @@ from app.modules.content.infrastructure.repositories import (
     FileUploadRepository,
     TagRepository,
 )
+
 from app.modules.content.models import (
     ContentAsset,
     ContentCollectionItem,
@@ -37,11 +39,12 @@ from app.modules.content.schemas import (
     NoteAssetResponse,
     NoteCardResponse,
     NoteListResponse,
+    SnapshotViewResponse,
     TagResponse,
     UploadedFileResponse,
 )
 from app.modules.content.storage import ContentStorage, StoredFile, slugify
-from app.modules.snapshots.service import SnapshotService
+from app.modules.snapshots.service import SnapshotArtifactReference, SnapshotService
 from app.modules.tags.models import Tag
 from app.modules.tags.service import TagsService
 from app.modules.taxonomy.models import TaxonomyCategory, TaxonomyContentAssignment
@@ -52,6 +55,15 @@ from app.platform.storage.service import StorageBackend, StoredObject
 from sqlalchemy import delete as sql_delete
 from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
+
+
+def _note_path_ref_as_uuid(ref: str) -> str | None:
+    """Return normalized UUID string if `ref` looks like a UUID, else None (treat as slug)."""
+    try:
+        return str(UUID(ref.strip()))
+    except (ValueError, AttributeError):
+        return None
+
 
 logger = get_logger(__name__)
 
@@ -159,11 +171,28 @@ class ContentService:
             return card
 
         if media_type in (None, "text", "link") and text is not None:
-            plain_url = self._plain_url(text)
-            if plain_url is not None:
-                return await self._create_link_note(
+            links, text_with_markdown_links = self._extract_links_from_text(text)
+            logger.info(
+                "content.note.link_extraction",
+                owner_user_id=owner_user_id,
+                media_type=media_type,
+                link_count=len(links),
+                has_remaining_text=bool(text_with_markdown_links),
+                links=links,
+            )
+            if links:
+                if self._plain_url(text) is not None and len(links) == 1:
+                    return await self._create_link_note(
+                        owner_user_id=owner_user_id,
+                        url=links[0],
+                        title=title,
+                        folder_path=folder_path,
+                        tag_names=tag_names,
+                    )
+                return await self._create_note_from_text_and_links(
                     owner_user_id=owner_user_id,
-                    url=plain_url,
+                    text=text_with_markdown_links,
+                    links=links,
                     title=title,
                     folder_path=folder_path,
                     tag_names=tag_names,
@@ -826,6 +855,13 @@ class ContentService:
         sort_order = await self.content.get_max_sort_order(owner_user_id=owner_user_id) + 10
         content_object_id = str(uuid4())
         asset_id = str(uuid4())
+        logger.info(
+            "content.note.create_link.started",
+            owner_user_id=owner_user_id,
+            content_object_id=content_object_id,
+            asset_id=asset_id,
+            url=url,
+        )
         stored_file = self.storage.write_binary_object(
             content_object_id=content_object_id,
             asset_id=asset_id,
@@ -838,7 +874,7 @@ class ContentService:
             owner_user_id=owner_user_id,
             slug=slug,
             title=normalized_title,
-            kind="simple",
+            kind="complex",
             media_type="link",
             source_filename=url,
             mime_type="text/uri-list",
@@ -891,6 +927,148 @@ class ContentService:
             commit=False,
         )
         await self.session.commit()
+        logger.info(
+            "content.note.create_link.committed",
+            owner_user_id=owner_user_id,
+            content_object_id=content_object.id,
+            asset_ids=[asset.id for asset in content_object.assets],
+        )
+        return await self._reload_write_manifest_and_card(owner_user_id=owner_user_id, slug=slug)
+
+    async def _create_note_from_text_and_links(
+        self,
+        *,
+        owner_user_id: str,
+        text: str,
+        links: list[str],
+        title: str | None,
+        folder_path: str | None,
+        tag_names: list[str],
+    ) -> NoteCardResponse:
+        has_text = bool(text.strip())
+        normalized_title = title or self._link_title(links[0])
+        slug = await self._unique_slug(owner_user_id, normalized_title)
+        sort_order = await self.content.get_max_sort_order(owner_user_id=owner_user_id) + 10
+        content_object_id = str(uuid4())
+        logger.info(
+            "content.note.create_text_links.started",
+            owner_user_id=owner_user_id,
+            content_object_id=content_object_id,
+            link_count=len(links),
+            has_text=has_text,
+            links=links,
+        )
+
+        first_link_data = f"{links[0]}\n".encode()
+        content_object = ContentObject(
+            id=content_object_id,
+            owner_user_id=owner_user_id,
+            slug=slug,
+            title=normalized_title,
+            kind="complex",
+            media_type="link",
+            source_filename=links[0],
+            mime_type="text/uri-list",
+            size_bytes=len(first_link_data),
+            storage_path=f"content-assets/{content_object_id}",
+            sort_order=sort_order,
+        )
+
+        for i, url in enumerate(links, start=1):
+            asset_id = str(uuid4())
+            filename = f"link-{i}.url"
+            stored_file = self.storage.write_binary_object(
+                content_object_id=content_object_id,
+                asset_id=asset_id,
+                filename=filename,
+                data=f"{url}\n".encode(),
+                content_type="text/uri-list",
+            )
+            self.storage_objects.add(
+                self._stored_object_from_file(stored_file),
+                owner_entity_type="content_asset",
+                owner_entity_id=asset_id,
+                metadata={"role": "original", "source_url": url},
+            )
+            content_object.assets.append(
+                ContentAsset(
+                    id=asset_id,
+                    role="original",
+                    media_type="link",
+                    filename=filename,
+                    mime_type="text/uri-list",
+                    size_bytes=stored_file.size_bytes,
+                    storage_path=stored_file.relative_path,
+                    storage_backend=stored_file.storage_backend,
+                    bucket=stored_file.bucket,
+                    storage_key=stored_file.storage_key,
+                    storage_ref=stored_file.storage_ref,
+                    checksum=stored_file.checksum,
+                    text_content=url,
+                ),
+            )
+
+        if has_text:
+            text_asset_id = str(uuid4())
+            stored_text = self.storage.write_text_object(
+                content_object_id=content_object_id,
+                asset_id=text_asset_id,
+                title=normalized_title,
+                text=text,
+            )
+            self.storage_objects.add(
+                self._stored_object_from_file(stored_text),
+                owner_entity_type="content_asset",
+                owner_entity_id=text_asset_id,
+                metadata={"role": "text", "source_filename": stored_text.filename},
+            )
+            content_object.assets.append(
+                ContentAsset(
+                    id=text_asset_id,
+                    role="text",
+                    media_type="text",
+                    filename=stored_text.filename,
+                    mime_type="text/markdown",
+                    size_bytes=stored_text.size_bytes,
+                    storage_path=stored_text.relative_path,
+                    storage_backend=stored_text.storage_backend,
+                    bucket=stored_text.bucket,
+                    storage_key=stored_text.storage_key,
+                    storage_ref=stored_text.storage_ref,
+                    checksum=stored_text.checksum,
+                    text_content=text,
+                ),
+            )
+
+        self.content.add(content_object)
+        await self.session.flush()
+        await self.tag_service.replace_manual_tags_for_content(
+            owner_user_id=owner_user_id,
+            content_object_id=content_object.id,
+            tag_names=tag_names,
+            assigned_by_user_id=owner_user_id,
+            commit=False,
+        )
+        await self._sync_legacy_tags_for_content(
+            owner_user_id=owner_user_id,
+            content_object=content_object,
+            tag_names=tag_names,
+        )
+        await self.taxonomy.assign_content_to_path(
+            owner_user_id=owner_user_id,
+            content_object_id=content_object.id,
+            raw_path=folder_path,
+            reasoning="Assigned from note folder path.",
+            commit=False,
+        )
+        await self.session.commit()
+        logger.info(
+            "content.note.create_text_links.committed",
+            owner_user_id=owner_user_id,
+            content_object_id=content_object.id,
+            asset_ids=[asset.id for asset in content_object.assets],
+            asset_media_types=[asset.media_type for asset in content_object.assets],
+        )
         return await self._reload_write_manifest_and_card(owner_user_id=owner_user_id, slug=slug)
 
     async def _create_composite_note(
@@ -1412,6 +1590,16 @@ class ContentService:
                 obj,
                 event_name="content.object.created",
             )
+            logger.info(
+                "content.note.enqueue_automatic_processing",
+                owner_user_id=owner_user_id,
+                content_object_id=obj.id,
+                kind=obj.kind,
+                media_type=obj.media_type,
+                asset_ids=[asset.id for asset in obj.assets],
+                asset_media_types=[asset.media_type for asset in obj.assets],
+                event_id=envelope.event_id,
+            )
             await self._enqueue_automatic_processing(obj, envelope=envelope)
         await self.session.commit()
         return await self._to_card(loaded)
@@ -1562,7 +1750,24 @@ class ContentService:
         return candidate
 
     async def _load_note(self, *, owner_user_id: str, slug: str) -> ContentObject:
-        content_object = await self.content.get_by_slug(owner_user_id=owner_user_id, slug=slug)
+        ref = slug.strip()
+        object_id = _note_path_ref_as_uuid(ref)
+        content_object: ContentObject | None = None
+        if object_id is not None:
+            content_object = await self.content.get_by_id(
+                owner_user_id=owner_user_id,
+                object_id=object_id,
+            )
+            if content_object is None:
+                content_object = await self.content.get_by_asset_id(
+                    owner_user_id=owner_user_id,
+                    asset_id=object_id,
+                )
+        if content_object is None:
+            content_object = await self.content.get_by_slug(
+                owner_user_id=owner_user_id,
+                slug=ref,
+            )
         if content_object is None:
             raise NoteNotFoundError
         return content_object
@@ -1611,6 +1816,30 @@ class ContentService:
             markdown = artifact_refs.get("markdown")
             pdf = artifact_refs.get("pdf")
             html = artifact_refs.get("webpage_html")
+            is_text_asset = asset.media_type == "text"
+            snapshot_views = self._snapshot_views_for_asset(
+                asset=asset,
+                asset_url=asset_url,
+                markdown=markdown,
+                pdf=pdf,
+                html=html,
+            )
+            logger.info(
+                "content.note.asset_artifact_refs",
+                content_object_id=content_object.id,
+                slug=content_object.slug,
+                asset_id=asset.id,
+                asset_media_type=asset.media_type,
+                artifact_types=sorted(artifact_refs.keys()),
+                has_html_url=html is not None,
+                html_url=html.url if html is not None else None,
+                snapshot_view_kinds=[view.kind for view in snapshot_views],
+            )
+            text_body = asset.text_content
+            if asset.media_type == "text":
+                from_file = self._read_text_asset_user_body(asset)
+                if from_file is not None:
+                    text_body = from_file
             asset_responses.append(
                 NoteAssetResponse(
                     id=asset.id,
@@ -1620,17 +1849,17 @@ class ContentService:
                     mime_type=asset.mime_type,
                     size_bytes=asset.size_bytes,
                     url=asset_url,
-                    text_content=asset.text_content,
+                    text_content=text_body,
                     thumbnail_url=(
                         f"{self.api_prefix}/notes/{content_object.slug}/asset/{asset.id}/thumbnail"
-                        if thumbnail is not None
+                        if thumbnail is not None and not is_text_asset
                         else None
                     ),
-                    thumbnail_text=thumbnail_text,
+                    thumbnail_text=thumbnail_text if not is_text_asset else None,
                     markdown_url=(
                         markdown.url
                         if markdown is not None
-                        else asset_url if self._is_markdown_asset(asset) else None
+                        else asset_url if self._is_markdown_asset(asset) and not is_text_asset else None
                     ),
                     pdf_url=(
                         pdf.url
@@ -1638,6 +1867,7 @@ class ContentService:
                         else asset_url if self._is_pdf_asset(asset) else None
                     ),
                     html_url=html.url if html is not None else None,
+                    snapshot_views=snapshot_views,
                     image_width=asset.image_width,
                     image_height=asset.image_height,
                 )
@@ -1660,6 +1890,45 @@ class ContentService:
             assets=asset_responses,
             items=items,
         )
+
+    @staticmethod
+    def _snapshot_views_for_asset(
+        *,
+        asset: ContentAsset,
+        asset_url: str,
+        markdown: SnapshotArtifactReference | None,
+        pdf: SnapshotArtifactReference | None,
+        html: SnapshotArtifactReference | None,
+    ) -> list[SnapshotViewResponse]:
+        if asset.media_type == "text":
+            return []
+
+        views: list[SnapshotViewResponse] = []
+        if markdown is not None or ContentService._is_markdown_asset(asset):
+            views.append(
+                SnapshotViewResponse(
+                    kind="markdown",
+                    label="MD",
+                    url=markdown.url if markdown is not None else asset_url,
+                )
+            )
+        if pdf is not None or ContentService._is_pdf_asset(asset):
+            views.append(
+                SnapshotViewResponse(
+                    kind="pdf",
+                    label="PDF",
+                    url=pdf.url if pdf is not None else asset_url,
+                )
+            )
+        if html is not None:
+            views.append(
+                SnapshotViewResponse(
+                    kind="webpage_html",
+                    label="Website",
+                    url=html.url,
+                )
+            )
+        return list(reversed(views))
 
     def _manifest(
         self,
@@ -1829,6 +2098,37 @@ class ContentService:
         return asset.mime_type == "application/pdf" or Path(asset.filename).suffix.lower() == ".pdf"
 
     @staticmethod
+    def _extract_links_from_text(text: str) -> tuple[list[str], str]:
+        """Extract HTTP/HTTPS URLs and preserve text with markdown link previews."""
+        url_re = re.compile(r"https?://\S+")
+        links: list[str] = []
+        seen: set[str] = set()
+        formatted_parts: list[str] = []
+        last_end = 0
+        for match in url_re.finditer(text):
+            raw = match.group(0)
+            url = raw.rstrip(".,;:!?)]\\'\">`")
+            parsed = urlparse(url)
+            if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                formatted_parts.append(text[last_end : match.end()])
+                last_end = match.end()
+                continue
+            formatted_parts.append(text[last_end : match.start()])
+            formatted_parts.append(ContentService._markdown_link_with_favicon(url))
+            if url not in seen:
+                seen.add(url)
+                links.append(url)
+            last_end = match.start() + len(url)
+        formatted_parts.append(text[last_end:])
+        return links, "".join(formatted_parts)
+
+    @staticmethod
+    def _markdown_link_with_favicon(url: str) -> str:
+        parsed = urlparse(url)
+        favicon_url = f"https://favicon.yandex.net/favicon/{parsed.hostname or url}"
+        return f"![favicon]({favicon_url}) [{url}]({url})"
+
+    @staticmethod
     def _plain_url(value: str) -> str | None:
         candidate = value.strip()
         if not candidate or any(character.isspace() for character in candidate):
@@ -1849,3 +2149,28 @@ class ContentService:
             return data.decode("utf-8")
         except UnicodeDecodeError:
             return None
+
+    @staticmethod
+    def _user_text_from_stored_markdown(file_text: str) -> str | None:
+        """Invert `ContentStorage.write_text_object` (# title, blank line, body, trailing newline)."""
+        if not file_text.startswith("# "):
+            return None
+        sep = file_text.find("\n\n", 2)
+        if sep == -1:
+            return None
+        body = file_text[sep + 2 :]
+        if body.endswith("\n"):
+            body = body[:-1]
+        return body
+
+    def _read_text_asset_user_body(self, asset: ContentAsset) -> str | None:
+        if asset.media_type != "text" or not asset.storage_path:
+            return None
+        try:
+            data = self.storage.read_relative_file(asset.storage_path)
+        except Exception:  # noqa: BLE001
+            return None
+        decoded = self._decode_text(data)
+        if decoded is None:
+            return None
+        return self._user_text_from_stored_markdown(decoded)

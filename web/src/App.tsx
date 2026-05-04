@@ -64,11 +64,11 @@ const router = createBrowserRouter([
             lazy: async () => ({ Component: (await import('./pages/NotesPage')).default }),
           },
           {
-            path: '/notes/:noteSlug',
+            path: '/notes/:noteId',
             lazy: async () => ({ Component: (await import('./pages/NotePage')).default }),
           },
           {
-            path: '/notes/:noteSlug/edit',
+            path: '/notes/:noteId/edit',
             lazy: async () => ({ Component: (await import('./pages/NoteEditPage')).default }),
           },
           {
