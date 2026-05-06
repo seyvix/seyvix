@@ -1,5 +1,5 @@
 [project]
-name = "api"
+name = "backend"
 version = "0.1.0"
 description = "Modular FastAPI backend for content processing, search, vectorization, and LLM integrations."
 requires-python = ">=3.13"

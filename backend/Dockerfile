@@ -25,12 +25,12 @@ RUN pip install playwright && playwright install --with-deps chromium
 
 FROM base AS production-deps
 
-COPY api/pyproject.toml api/uv.lock ./
+COPY backend/pyproject.toml backend/uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 FROM production-deps AS production
 
-COPY api/ ./
+COPY backend/ ./
 
 EXPOSE 8000
 
@@ -38,10 +38,10 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 FROM base AS development
 
-COPY api/pyproject.toml api/uv.lock ./
+COPY backend/pyproject.toml backend/uv.lock ./
 RUN uv sync --frozen --no-install-project
 
-COPY api/ ./
+COPY backend/ ./
 
 EXPOSE 8000
 

@@ -1,4 +1,4 @@
-# API
+# Backend
 
 Backend-модуль монорепозитория Seyvix.
 

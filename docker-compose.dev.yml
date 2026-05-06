@@ -2,7 +2,7 @@ services:
   proxy:
     environment:
       WEB_UPSTREAM: web:5173
-      API_UPSTREAM: api:8000
+      API_UPSTREAM: backend:8000
 
   web:
     build:
@@ -24,13 +24,13 @@ services:
       timeout: 5s
       retries: 10
 
-  api:
+  backend:
     build:
       target: development
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
-      - ./api:/app
+      - ./backend:/app
     command: >
       sh -c "uv sync --frozen &&
              alembic upgrade head &&
@@ -40,46 +40,46 @@ services:
     build:
       target: development
     volumes:
-      - ./api:/app
+      - ./backend:/app
     command: >
       sh -c "uv sync --frozen &&
-             python -m app.workers.main outbox-publisher"
+             python -m app.workers.run.outbox"
 
   snapshot-worker:
     build:
       target: development
     volumes:
-      - ./api:/app
+      - ./backend:/app
     command: >
       sh -c "uv sync --frozen &&
-             python -m app.workers.main snapshot-worker"
+             python -m app.workers.run.snapshot"
 
   vectorization-worker:
     build:
       target: development
     volumes:
-      - ./api:/app
+      - ./backend:/app
     command: >
       sh -c "uv sync --frozen &&
-             python -m app.workers.main vectorization-worker"
+             python -m app.workers.run.vectorization"
 
   taxonomy-worker:
     build:
       target: development
     volumes:
-      - ./api:/app
+      - ./backend:/app
     command: >
       sh -c "uv sync --frozen &&
-             python -m app.workers.main taxonomy-worker"
+             python -m app.workers.run.taxonomy"
 
   tags-worker:
     build:
       target: development
     volumes:
-      - ./api:/app
+      - ./backend:/app
     command: >
       sh -c "uv sync --frozen &&
-             python -m app.workers.main tags-worker"
+             python -m app.workers.run.tags"
 
   postgres:
     ports:
