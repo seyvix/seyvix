@@ -1,11 +1,11 @@
 # Seyvix
 
-Seyvix - монорепозиторий с FastAPI backend в `api/` и Vite/React frontend в
+Seyvix - монорепозиторий с FastAPI backend в `backend/` и Vite/React frontend в
 `web/`. Docker и Compose управляются из корня репозитория.
 
 ## Структура
 
-- `api/` - backend, workers, migrations, tests.
+- `backend/` - backend, workers, migrations, tests.
 - `web/` - frontend-приложение.
 - `docker/nginx/` - шаблон reverse proxy.
 - `docker-compose.yml` - production-like стек.
@@ -31,7 +31,7 @@ cp .env.example .env
 - `CORS_ALLOWED_ORIGINS`
 - `APP_SERVER_NAME`, `WEB_SERVER_NAME`, `API_SERVER_NAME`, если используются реальные домены
 
-Для Docker Compose не нужны отдельные `api/.env` или `web/.env`.
+Для Docker Compose не нужны отдельные `backend/.env` или `web/.env`.
 
 ## Разработка
 
@@ -50,7 +50,7 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 - MinIO console: `http://localhost:9001`
 - RabbitMQ management: `http://localhost:15672`
 
-Dev override монтирует `api/` и `web/` внутрь контейнеров. Backend запускается с
+Dev override монтирует `backend/` и `web/` внутрь контейнеров. Backend запускается с
 Uvicorn reload, frontend - с Vite HMR.
 
 Остановить стек:
@@ -80,22 +80,22 @@ Redis, RabbitMQ, MinIO, API, frontend и workers остаются во внут�
 
 ```bash
 docker compose ps
-docker compose logs -f proxy api web
+docker compose logs -f proxy backend web
 ```
 
 Миграции backend при необходимости можно запустить вручную:
 
 ```bash
-docker compose run --rm api alembic upgrade head
+docker compose run --rm backend alembic upgrade head
 ```
 
-Сервис `api` также запускает миграции при старте.
+Сервис `backend` также запускает миграции при старте.
 
 ## Маршрутизация
 
 Дефолтный режим использует один внешний порт:
 
-- `/api/*` -> FastAPI `api:8000`
+- `/api/*` -> FastAPI `backend:8000`
 - `/*` -> frontend `web`
 
 Пример для одного домена:
@@ -130,7 +130,7 @@ CORS_ALLOWED_ORIGINS=["https://example.com","https://app.example.com","https://a
 Backend:
 
 ```bash
-cd api
+cd backend
 uv run pytest
 uv run ruff check app tests
 uv run mypy app

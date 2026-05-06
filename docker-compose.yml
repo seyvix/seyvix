@@ -1,9 +1,9 @@
-x-api-build: &api-build
+x-backend-build: &backend-build
   context: .
-  dockerfile: api/Dockerfile
+  dockerfile: backend/Dockerfile
   target: production
 
-x-api-env: &api-env
+x-backend-env: &backend-env
   env_file:
     - .env
   extra_hosts:
@@ -15,7 +15,7 @@ x-api-env: &api-env
     STORAGE_BACKEND: s3
     S3_ENDPOINT_URL: http://minio:9000
 
-x-api-depends: &api-depends
+x-backend-depends: &backend-depends
   postgres:
     condition: service_healthy
   redis:
@@ -38,12 +38,12 @@ services:
       WEB_SERVER_NAME: ${WEB_SERVER_NAME:-web.localhost}
       API_SERVER_NAME: ${API_SERVER_NAME:-api.localhost}
       WEB_UPSTREAM: ${WEB_UPSTREAM:-web:80}
-      API_UPSTREAM: ${API_UPSTREAM:-api:8000}
+      API_UPSTREAM: ${API_UPSTREAM:-backend:8000}
       CLIENT_MAX_BODY_SIZE: ${CLIENT_MAX_BODY_SIZE:-100m}
     volumes:
       - ./docker/nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
     depends_on:
-      api:
+      backend:
         condition: service_healthy
       web:
         condition: service_started
@@ -60,11 +60,11 @@ services:
       timeout: 5s
       retries: 10
 
-  api:
-    <<: *api-env
-    build: *api-build
+  backend:
+    <<: *backend-env
+    build: *backend-build
     restart: unless-stopped
-    depends_on: *api-depends
+    depends_on: *backend-depends
     command: >
       sh -c "alembic upgrade head &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000"
@@ -81,55 +81,55 @@ services:
       retries: 10
 
   outbox-publisher:
-    <<: *api-env
-    build: *api-build
+    <<: *backend-env
+    build: *backend-build
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    command: python -m app.workers.main outbox-publisher
+    command: python -m app.workers.run.outbox
 
   snapshot-worker:
-    <<: *api-env
-    build: *api-build
+    <<: *backend-env
+    build: *backend-build
     restart: unless-stopped
-    depends_on: *api-depends
-    command: python -m app.workers.main snapshot-worker
+    depends_on: *backend-depends
+    command: python -m app.workers.run.snapshot
 
   vectorization-worker:
-    <<: *api-env
-    build: *api-build
+    <<: *backend-env
+    build: *backend-build
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    command: python -m app.workers.main vectorization-worker
+    command: python -m app.workers.run.vectorization
 
   taxonomy-worker:
-    <<: *api-env
-    build: *api-build
+    <<: *backend-env
+    build: *backend-build
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    command: python -m app.workers.main taxonomy-worker
+    command: python -m app.workers.run.taxonomy
 
   tags-worker:
-    <<: *api-env
-    build: *api-build
+    <<: *backend-env
+    build: *backend-build
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    command: python -m app.workers.main tags-worker
+    command: python -m app.workers.run.tags
 
   postgres:
     image: pgvector/pgvector:pg16
