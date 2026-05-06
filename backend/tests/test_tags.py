@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
+
 from app.core.config import Settings, get_settings
 from app.core.database import Base, build_session_factory
 from app.main import app
@@ -18,9 +22,7 @@ from app.modules.tags.infrastructure.llm_tagger import LLMContentTagger
 from app.modules.tags.models import ContentTagAssignment, Tag, TaggingJob
 from app.modules.tags.service import TagsService
 from app.modules.tags.worker import TagsWorker
-from fastapi.testclient import TestClient
-from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
+from app.modules.taxonomy.models import ClassificationFeedback
 
 TELEGRAM_BOT_TOKEN = "123456:test-bot-token"
 
@@ -578,6 +580,8 @@ def test_service_llm_suggestions_store_metadata_thresholds_and_history(tmp_path:
             )
             history = list(await session.scalars(select(ContentTagAssignment)))
             assert {assignment.status for assignment in history} == {"accepted", "removed"}
+            feedback = list(await session.scalars(select(ClassificationFeedback)))
+            assert {item.action for item in feedback} >= {"accepted", "removed"}
 
     asyncio.run(scenario())
 
@@ -741,3 +745,73 @@ def test_worker_processes_jobs_idempotently_and_fails_when_llm_disabled(tmp_path
             assert disabled_job.last_error == "LLM tag suggestions are disabled."
 
     asyncio.run(scenario())
+
+
+def test_tag_jobs_trace_source_event_coalesce_and_skip_stale_content(tmp_path: Path) -> None:
+    async def scenario() -> dict[str, object]:
+        session_factory = await _prepare_database(_test_database_url())
+        async with session_factory() as session:
+            user = User(telegram_id="100720", display_name="User")
+            session.add(user)
+            await session.commit()
+            await session.refresh(user)
+
+            note = await ContentService(session, tmp_path / "content-storage").create_note(
+                owner_user_id=user.id,
+                media_type="text",
+                text="Initial tag text.",
+                title="Traceable tag job",
+                folder_path=None,
+                tag_names=[],
+                file_upload_ids=[],
+            )
+            content_object = await session.get(ContentObject, note.id)
+            assert content_object is not None
+            service = TagsService(
+                session,
+                settings=Settings(tags_llm_enabled=True, tags_llm_model="fake-tags"),
+                llm_generator=FakeStructuredGenerator(),
+            )
+            first = await service.repository.enqueue_job(
+                owner_user_id=user.id,
+                content_object_id=note.id,
+                job_type="suggest_content_tags",
+                priority=10,
+                source_event_id="event-1",
+                correlation_id="correlation-1",
+                content_updated_at_snapshot=content_object.updated_at,
+            )
+            first_snapshot = first.content_updated_at_snapshot
+            second = await service.repository.enqueue_job(
+                owner_user_id=user.id,
+                content_object_id=note.id,
+                job_type="suggest_content_tags",
+                priority=90,
+                source_event_id="event-2",
+                correlation_id="correlation-2",
+                content_updated_at_snapshot=content_object.updated_at,
+            )
+            content_object.title = "Updated after tag enqueue"
+            await session.flush()
+            first.content_updated_at_snapshot = first_snapshot
+            first.status = "processing"
+            first.attempts = 1
+            await service.process_job(first)
+            await session.commit()
+            return {
+                "same_job": first.id == second.id,
+                "priority": first.priority,
+                "source_event_id": first.source_event_id,
+                "correlation_id": first.correlation_id,
+                "status": first.status,
+            }
+
+    result = asyncio.run(scenario())
+
+    assert result == {
+        "same_job": True,
+        "priority": 90,
+        "source_event_id": "event-2",
+        "correlation_id": "correlation-2",
+        "status": "stale",
+    }

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import StrEnum
 from typing import Literal
 
-from app.shared.module_definitions import ModuleDefinition
 from pydantic import BaseModel, Field
+
+from app.shared.module_definitions import ModuleDefinition
 
 MODULE = ModuleDefinition(
     name="tags",
@@ -34,7 +36,23 @@ AssignmentSource = Literal[
     "system",
 ]
 TaggingJobType = Literal["suggest_content_tags", "refresh_content_tags"]
-TaggingJobStatus = Literal["pending", "processing", "succeeded", "failed", "cancelled"]
+TaggingJobStatus = Literal["pending", "processing", "succeeded", "failed", "cancelled", "stale"]
+
+
+class TagAssignmentStatus(StrEnum):
+    SUGGESTED = "suggested"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    REMOVED = "removed"
+
+
+class TaggingJobStatusValue(StrEnum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    STALE = "stale"
 
 
 class TagRef(BaseModel):
@@ -44,6 +62,7 @@ class TagRef(BaseModel):
     slug: str
     description: str | None = None
     tag_kind: str | None = None
+    aliases: list[str] = Field(default_factory=list)
     created_by_type: TagCreatedByType
     created_by_user_id: str | None = None
     source: TagSource

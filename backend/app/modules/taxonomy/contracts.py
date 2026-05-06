@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import StrEnum
+
+from pydantic import BaseModel
 
 from app.shared.module_definitions import ModuleDefinition
-from pydantic import BaseModel
 
 MODULE = ModuleDefinition(
     name="taxonomy",
@@ -35,3 +37,25 @@ class TaxonomyAssignmentRef(BaseModel):
     status: str
     is_current: bool
     created_at: datetime
+
+
+class TaxonomyAssignmentStatus(StrEnum):
+    PROPOSED = "proposed"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    OVERRIDDEN = "overridden"
+
+
+class TaxonomyJobStatus(StrEnum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    STALE = "stale"
+
+
+class AutomaticApplyMode(StrEnum):
+    DISABLED = "disabled"
+    MANUAL_REVIEW_ONLY = "manual_review_only"
+    AUTO_APPLY_HIGH_CONFIDENCE = "auto_apply_high_confidence"

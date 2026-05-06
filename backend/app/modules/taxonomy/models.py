@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from app.core.database import Base
 from sqlalchemy import (
     JSON,
     Boolean,
@@ -19,6 +18,8 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.core.database import Base
 
 
 def utcnow() -> datetime:
@@ -97,6 +98,7 @@ class TaxonomyCategoryProfile(Base):
     keywords: Mapped[list[str]] = mapped_column(JSON(), default=list)
     positive_examples: Mapped[list[str]] = mapped_column(JSON(), default=list)
     negative_examples: Mapped[list[str]] = mapped_column(JSON(), default=list)
+    profile_source: Mapped[str] = mapped_column(String(32), default="user_edited", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -117,6 +119,14 @@ class TaxonomyUserSettings(Base):
     category_profile_editing_enabled: Mapped[bool] = mapped_column(Boolean(), default=False)
     trash_enabled: Mapped[bool] = mapped_column(Boolean(), default=True)
     trash_retention_days: Mapped[int] = mapped_column(Integer(), default=30)
+    tags_auto_apply_mode: Mapped[str] = mapped_column(
+        String(32),
+        default="auto_apply_high_confidence",
+    )
+    taxonomy_auto_apply_mode: Mapped[str] = mapped_column(
+        String(32),
+        default="auto_apply_high_confidence",
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -130,6 +140,10 @@ class TaxonomyContentAssignment(Base):
     __table_args__ = (
         Index("ix_taxonomy_assignments_owner_content", "owner_user_id", "content_object_id"),
         Index("ix_taxonomy_assignments_owner_category", "owner_user_id", "category_id"),
+        CheckConstraint(
+            "status in ('proposed', 'accepted', 'rejected', 'overridden')",
+            name="ck_taxonomy_assignments_status",
+        ),
         Index(
             "uq_taxonomy_assignments_current_content",
             "owner_user_id",
@@ -184,6 +198,10 @@ class TaxonomyClassificationJob(Base):
             "content_object_id",
         ),
         UniqueConstraint("source_event_id", name="uq_taxonomy_classification_jobs_source_event_id"),
+        CheckConstraint(
+            "status in ('pending', 'processing', 'succeeded', 'failed', 'cancelled', 'stale')",
+            name="ck_taxonomy_classification_jobs_status",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
@@ -204,6 +222,10 @@ class TaxonomyClassificationJob(Base):
     locked_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     source_event_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     correlation_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    content_updated_at_snapshot: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     assignment_id: Mapped[str | None] = mapped_column(
         ForeignKey("taxonomy_content_assignments.id", ondelete="SET NULL"),
         nullable=True,
@@ -216,6 +238,40 @@ class TaxonomyClassificationJob(Base):
         default=utcnow,
         onupdate=utcnow,
     )
+
+
+class ClassificationFeedback(Base):
+    __tablename__ = "classification_feedback"
+    __table_args__ = (
+        Index("ix_classification_feedback_owner_target", "owner_user_id", "target_type"),
+        Index("ix_classification_feedback_owner_content", "owner_user_id", "content_object_id"),
+        CheckConstraint(
+            "target_type in ('tag', 'taxonomy')",
+            name="ck_classification_feedback_target_type",
+        ),
+        CheckConstraint(
+            "action in ('accepted', 'rejected', 'changed', 'manually_assigned', 'removed')",
+            name="ck_classification_feedback_action",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    owner_user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+    )
+    content_object_id: Mapped[str] = mapped_column(
+        ForeignKey("content_objects.id", ondelete="CASCADE"),
+        index=True,
+    )
+    target_type: Mapped[str] = mapped_column(String(32))
+    target_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    action: Mapped[str] = mapped_column(String(32))
+    previous_target_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    new_target_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    source: Mapped[str] = mapped_column(String(32), default="user")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class TaxonomyTemplate(Base):

@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from typing import Annotated
 
+from fastapi import APIRouter, Depends, Query, status
+from fastapi.responses import Response
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.api.dependencies import get_db_session
 from app.api.errors import AppError
 from app.api.schemas import ErrorResponse
@@ -18,7 +22,10 @@ from app.modules.tags.schemas import (
     TaggingJobDetailResponse,
     TaggingJobListResponse,
     TaggingJobResponse,
+    TagMergeRequest,
     TagResponse,
+    TagReviewQueueResponse,
+    TagsJobMetricsResponse,
     TagUpdateRequest,
 )
 from app.modules.tags.service import (
@@ -28,9 +35,6 @@ from app.modules.tags.service import (
     TagsService,
     TagValidationError,
 )
-from fastapi import APIRouter, Depends, Query, status
-from fastapi.responses import Response
-from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(tags=["tags"])
 
@@ -48,6 +52,7 @@ def _tag_response(tag: Tag) -> TagResponse:
         slug=tag.slug,
         description=tag.description,
         tag_kind=tag.tag_kind,
+        aliases=tag.aliases,
         created_by_type=tag.created_by_type,  # type: ignore[arg-type]
         created_by_user_id=tag.created_by_user_id,
         source=tag.source,  # type: ignore[arg-type]
@@ -84,6 +89,8 @@ def _job_response(job: TaggingJob) -> TaggingJobDetailResponse:
         status=job.status,
         attempts=job.attempts,
         max_attempts=job.max_attempts,
+        source_event_id=job.source_event_id,
+        correlation_id=job.correlation_id,
         last_error=job.last_error,
         created_at=job.created_at,
         updated_at=job.updated_at,
@@ -121,6 +128,7 @@ async def create_tag(
             name=payload.name,
             description=payload.description,
             tag_kind=payload.tag_kind,
+            aliases=payload.aliases,
             created_by_user_id=context.user.id,
         )
         return _tag_response(tag)
@@ -183,6 +191,7 @@ async def update_tag(
             name=payload.name,
             description=payload.description,
             tag_kind=payload.tag_kind,
+            aliases=payload.aliases,
             is_archived=payload.is_archived,
         )
         return _tag_response(tag)
@@ -207,6 +216,62 @@ async def archive_tag(
     except TagNotFoundError as exc:
         raise _raise_not_found(exc) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/tags/{tag_id}/merge", response_model=TagResponse, summary="Merge tag")
+async def merge_tag(
+    tag_id: str,
+    payload: TagMergeRequest,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[TagsService, Depends(get_tags_service)],
+) -> TagResponse:
+    try:
+        tag = await service.merge_tags(
+            owner_user_id=context.user.id,
+            source_tag_id=tag_id,
+            target_tag_id=payload.target_tag_id,
+            assigned_by_user_id=context.user.id,
+        )
+        return _tag_response(tag)
+    except TagNotFoundError as exc:
+        raise _raise_not_found(exc) from exc
+    except TagConflictError as exc:
+        raise AppError(
+            status_code=status.HTTP_409_CONFLICT,
+            code="tag_merge_conflict",
+            message="Tags cannot be merged.",
+        ) from exc
+
+
+@router.get(
+    "/tag-suggestions/review-queue",
+    response_model=TagReviewQueueResponse,
+    summary="List pending tag suggestions",
+)
+async def list_tag_review_queue(
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[TagsService, Depends(get_tags_service)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> TagReviewQueueResponse:
+    assignments = await service.list_review_suggestions(
+        owner_user_id=context.user.id,
+        limit=limit,
+        offset=offset,
+    )
+    return TagReviewQueueResponse(items=[_assignment_response(item) for item in assignments])
+
+
+@router.get(
+    "/tag-jobs/metrics",
+    response_model=TagsJobMetricsResponse,
+    summary="Get tag job metrics",
+)
+async def tag_job_metrics(
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[TagsService, Depends(get_tags_service)],
+) -> TagsJobMetricsResponse:
+    return await service.job_metrics(owner_user_id=context.user.id)
 
 
 @router.post(

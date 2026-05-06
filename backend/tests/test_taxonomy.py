@@ -1,9 +1,14 @@
 import asyncio
 import hashlib
 import hmac
+import json
 import os
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
+
+from fastapi.testclient import TestClient
+from sqlalchemy import func, select
 
 from app.core.config import Settings, get_settings
 from app.core.database import build_session_factory
@@ -12,13 +17,15 @@ from app.modules.content.models import ContentObject
 from app.modules.content.service import ContentService
 from app.modules.llm.contracts import LLMGenerationError
 from app.modules.search.schemas import SemanticSearchResult
-from app.modules.taxonomy.models import TaxonomyClassificationJob
+from app.modules.taxonomy.models import (
+    ClassificationFeedback,
+    TaxonomyCategory,
+    TaxonomyClassificationJob,
+)
 from app.modules.taxonomy.service import TaxonomyLLMClassificationError, TaxonomyService
 from app.modules.vectorization.contracts import build_taxonomy_category_profile_vector_subject
 from app.modules.vectorization.models import VectorizationJob
 from app.modules.vectorization.worker import VectorizationWorker
-from fastapi.testclient import TestClient
-from sqlalchemy import func, select
 
 TELEGRAM_BOT_TOKEN = "123456:test-bot-token"
 
@@ -106,6 +113,42 @@ def _template_paths(items: list[dict[str, object]]) -> set[str]:
     return paths
 
 
+def test_full_taxonomy_template_specs_are_deprecated() -> None:
+    template_dir = Path(__file__).parents[1] / "app/modules/taxonomy/templates"
+
+    for slug in ("default", "developer"):
+        assert not (template_dir / f"{slug}.json").exists()
+        assert (template_dir / f"{slug}.json.deprecated").exists()
+    route_paths = {route.path for route in app.routes}
+    assert "/api/v1/taxonomy/templates" not in route_paths
+    assert "/api/v1/taxonomy/templates/{template_slug}" not in route_paths
+    assert "/api/v1/taxonomy/initialize" not in route_paths
+
+
+def test_taxonomy_interest_specs_live_in_domain_files() -> None:
+    interest_dir = Path(__file__).parents[1] / "app/modules/taxonomy/templates/interests"
+
+    loaded_specs: dict[str, dict[str, object]] = {}
+    for slug in ("programming", "ai", "design", "business", "science", "personal"):
+        interest_path = interest_dir / f"{slug}.json"
+        assert interest_path.exists()
+        loaded_specs[slug] = json.loads(interest_path.read_text(encoding="utf-8"))
+
+    assert loaded_specs["programming"]["name"] == "Programming"
+    assert "software" in loaded_specs["programming"]["aliases"]
+    assert (
+        TaxonomyService._interest_specs_by_slug()["software"]["slug"]  # noqa: SLF001
+        == "programming"
+    )
+
+    programming_tree = loaded_specs["programming"]["tree"]
+    flattened = TaxonomyService._flatten_template_tree(programming_tree)  # type: ignore[arg-type]  # noqa: SLF001
+    python_profile = next(item for item in flattened if item["path"] == "programming/python")
+    assert "FastAPI" in python_profile["description"]
+    assert "pytest" in python_profile["profile_keywords"]
+    assert "Python" in python_profile["profile_summary"]
+
+
 def test_taxonomy_classification_jobs_endpoint_lists_jobs_for_current_user(
     content_client: TestClient,
 ) -> None:
@@ -186,6 +229,60 @@ def test_unclassified_content_goes_to_inbox_and_can_be_requeued(
             )
 
     assert content_client.portal.call(count_jobs) >= 2
+
+
+def test_taxonomy_jobs_coalesce_trace_and_skip_stale_content(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client)
+    note = _create_note(content_client, headers, "Taxonomy job trace")
+
+    async def scenario() -> dict[str, object]:
+        async with content_client.app.state.session_factory() as session:
+            content_object = await session.get(ContentObject, note["id"])
+            assert content_object is not None
+            service = TaxonomyService(session)
+            first = await service.enqueue_classification_job(
+                owner_user_id=content_object.owner_user_id,
+                content_object_id=content_object.id,
+                priority=10,
+                source_event_id="event-1",
+                correlation_id="correlation-1",
+            )
+            first_snapshot = first.content_updated_at_snapshot
+            second = await service.enqueue_classification_job(
+                owner_user_id=content_object.owner_user_id,
+                content_object_id=content_object.id,
+                priority=90,
+                source_event_id="event-2",
+                correlation_id="correlation-2",
+            )
+            content_object.title = "Updated after enqueue"
+            await session.flush()
+            first.content_updated_at_snapshot = first_snapshot
+            first.status = "processing"
+            first.attempts = 1
+            await service.process_classification_job(first)
+            await session.commit()
+            return {
+                "same_job": first.id == second.id,
+                "priority": first.priority,
+                "source_event_id": first.source_event_id,
+                "correlation_id": first.correlation_id,
+                "status": first.status,
+                "result_status": first.result_status,
+            }
+
+    result = content_client.portal.call(scenario)
+
+    assert result == {
+        "same_job": True,
+        "priority": 90,
+        "source_event_id": "event-2",
+        "correlation_id": "correlation-2",
+        "status": "stale",
+        "result_status": "stale",
+    }
 
 
 def test_category_tree_validation_and_archive_behavior(content_client: TestClient) -> None:
@@ -353,6 +450,55 @@ def test_profile_manual_assignment_history_and_ownership(content_client: TestCli
     )
     assert cross_owner_response.status_code == 404
 
+    async def feedback_actions() -> list[str]:
+        async with content_client.app.state.session_factory() as session:
+            rows = list(
+                await session.scalars(
+                    select(ClassificationFeedback).where(
+                        ClassificationFeedback.content_object_id == note["id"],
+                    )
+                )
+            )
+            return [row.action for row in rows]
+
+    feedback_actions_result = content_client.portal.call(feedback_actions)
+    assert feedback_actions_result
+    assert {"manually_assigned", "rejected", "accepted"}.issubset(
+        set(feedback_actions_result)
+    )
+
+
+def test_taxonomy_review_queue_lists_pending_proposals(content_client: TestClient) -> None:
+    headers = _auth_headers(content_client)
+    category = _create_category(content_client, headers, slug="research", name="Research")
+    note = _create_note(content_client, headers, "Review taxonomy proposal")
+
+    async def seed_proposal() -> None:
+        async with content_client.app.state.session_factory() as session:
+            service = TaxonomyService(session)
+            loaded_category = await session.get(TaxonomyCategory, category["id"])
+            assert loaded_category is not None
+            await service._create_current_assignment(
+                owner_user_id=str(category["owner_user_id"]),
+                content_object_id=str(note["id"]),
+                category=loaded_category,
+                status="proposed",
+                assigned_by="llm",
+                confidence=0.71,
+                reasoning="Review before applying.",
+                commit=True,
+            )
+
+    content_client.portal.call(seed_proposal)
+
+    response = content_client.get("/api/v1/taxonomy/review-queue", headers=headers)
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["items"][0]["content_object_id"] == note["id"]
+    assert payload["items"][0]["status"] == "proposed"
+    assert payload["items"][0]["category_id"] == category["id"]
+
 
 def test_category_profile_editing_setting_and_llm_draft(content_client: TestClient) -> None:
     headers = _auth_headers(content_client)
@@ -387,6 +533,7 @@ def test_category_profile_editing_setting_and_llm_draft(content_client: TestClie
         },
     )
     assert saved_profile.status_code == 200, saved_profile.text
+    assert saved_profile.json()["profile_source"] == "user_edited"
 
     llm = _FakeLLMStructuredGenerator(
         {
@@ -510,45 +657,24 @@ def test_delete_category_with_notes_requires_danger_confirmation(
     assert note_response.status_code == 404
 
 
-def test_templates_initialize_user_taxonomy_and_module_registration(
+def test_full_template_endpoints_are_removed(
     content_client: TestClient,
 ) -> None:
     headers = _auth_headers(content_client)
 
     templates_response = content_client.get("/api/v1/taxonomy/templates", headers=headers)
-    assert templates_response.status_code == 200
-    assert {"default", "developer"}.issubset(
-        {template["slug"] for template in templates_response.json()}
-    )
-
     developer_response = content_client.get(
         "/api/v1/taxonomy/templates/developer",
         headers=headers,
     )
-    assert developer_response.status_code == 200
-    assert "programming/python" in _template_paths(developer_response.json()["tree"])
-
     initialize_response = content_client.post(
         "/api/v1/taxonomy/initialize",
         headers=headers,
         json={"template_slug": "developer"},
     )
-    assert initialize_response.status_code == 201, initialize_response.text
-    payload = initialize_response.json()
-    assert payload["template_slug"] == "developer"
-    assert payload["created_categories_count"] >= 20
-    assert payload["created_profiles_count"] == payload["created_categories_count"]
-
-    tree_response = content_client.get("/api/v1/taxonomy/categories/tree", headers=headers)
-    assert tree_response.status_code == 200
-    assert any(item["path"] == "inbox" and item["is_system"] for item in tree_response.json())
-
-    second_initialize = content_client.post(
-        "/api/v1/taxonomy/initialize",
-        headers=headers,
-        json={"template_slug": "default"},
-    )
-    assert second_initialize.status_code == 409
+    assert templates_response.status_code == 404
+    assert developer_response.status_code == 404
+    assert initialize_response.status_code == 404
 
     modules_response = content_client.get("/api/v1/modules", headers=headers)
     assert modules_response.status_code == 200
@@ -564,7 +690,7 @@ def test_interest_onboarding_initializes_taxonomy_and_profile_index_jobs(
         "/api/v1/taxonomy/initialize/interests",
         headers=headers,
         json={
-            "interest_slugs": ["software", "ai"],
+            "interest_slugs": ["programming", "ai"],
             "custom_description": "Интересуют FastAPI, векторный поиск и pet-проекты.",
         },
     )
@@ -577,6 +703,13 @@ def test_interest_onboarding_initializes_taxonomy_and_profile_index_jobs(
     assert tree_response.status_code == 200
     paths = _template_paths(tree_response.json())
     assert {"programming/python", "ai/llm", "custom-interests"}.issubset(paths)
+
+    profile_response = content_client.get(
+        f"/api/v1/taxonomy/categories/{next(iter(tree_response.json()))['id']}/profile",
+        headers=headers,
+    )
+    assert profile_response.status_code == 200
+    assert profile_response.json()["profile_source"] in {"template", "llm_generated"}
 
     async def count_profile_index_jobs() -> int:
         async with content_client.app.state.session_factory() as session:
@@ -636,9 +769,9 @@ def test_end_to_end_taxonomy_cutover_flow(content_client: TestClient) -> None:
     _enable_profile_editing(content_client, headers)
 
     initialize_response = content_client.post(
-        "/api/v1/taxonomy/initialize",
+        "/api/v1/taxonomy/initialize/interests",
         headers=headers,
-        json={"template_slug": "developer"},
+        json={"interest_slugs": ["programming", "ai"]},
     )
     assert initialize_response.status_code == 201, initialize_response.text
 

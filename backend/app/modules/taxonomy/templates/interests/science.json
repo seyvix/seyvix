@@ -1,0 +1,64 @@
+{
+  "slug": "science",
+  "aliases": [],
+  "name": "Science",
+  "description": "Исследования, статьи, эксперименты, данные и научно-технические заметки.",
+  "tree": [
+    {
+      "name": "Science",
+      "description": "Научные материалы, research papers, эксперименты, данные и технические домены.",
+      "profile": {
+        "summary": "Материалы про научные и исследовательские темы: papers, experiments, datasets, hypotheses, technical domains и проверяемые выводы.",
+        "keywords": ["science", "research", "papers", "experiments", "data", "hypotheses"],
+        "positive_examples": ["Конспект research paper.", "План эксперимента.", "Набор данных для проверки гипотезы."],
+        "negative_examples": ["Бизнес-стратегия без исследования.", "Обычная задача разработки.", "Сохраненная статья без научного содержания."]
+      },
+      "children": [
+        {
+          "name": "Papers",
+          "description": "Научные статьи, arXiv, обзоры литературы и paper notes.",
+          "profile": {
+            "summary": "Материалы про научные публикации: papers, arXiv, literature review, citations, paper summaries и критический разбор методов.",
+            "keywords": ["papers", "arxiv", "literature-review", "citations", "methods", "summary"],
+            "positive_examples": ["Конспект статьи про embeddings.", "Сравнение методов из двух papers.", "Список цитат для дальнейшего чтения."],
+            "negative_examples": ["Технический tutorial без paper.", "Блог-пост без научной методологии.", "Продуктовая идея без исследования."]
+          },
+          "children": []
+        },
+        {
+          "name": "Experiments",
+          "description": "Эксперименты, протоколы, результаты, метрики и reproducibility.",
+          "profile": {
+            "summary": "Материалы про эксперименты: hypotheses, protocols, results, metrics, controls, reproducibility и выводы по проверке предположений.",
+            "keywords": ["experiments", "hypothesis", "protocol", "results", "metrics", "reproducibility"],
+            "positive_examples": ["План A/B эксперимента.", "Результаты сравнения classifiers.", "Протокол проверки retrieval quality."],
+            "negative_examples": ["Теоретическая статья без эксперимента.", "Dashboard без hypothesis.", "Задача разработки без измерений."]
+          },
+          "children": []
+        },
+        {
+          "name": "Data",
+          "description": "Датасеты, измерения, источники данных и подготовка к анализу.",
+          "profile": {
+            "summary": "Материалы про научные данные: datasets, measurements, sources, preprocessing, annotation и ограничения данных для исследования.",
+            "keywords": ["data", "datasets", "measurements", "preprocessing", "annotation", "sources"],
+            "positive_examples": ["Описание датасета.", "План разметки данных.", "Ограничения источника измерений."],
+            "negative_examples": ["База данных приложения без исследовательского набора.", "Business metrics без научной задачи.", "UI notes без данных."]
+          },
+          "children": []
+        },
+        {
+          "name": "Notes",
+          "description": "Исследовательские заметки, вопросы, выводы и промежуточные наблюдения.",
+          "profile": {
+            "summary": "Свободные исследовательские заметки: вопросы, промежуточные выводы, observations, open problems и идеи для дальнейшей проверки.",
+            "keywords": ["research-notes", "questions", "observations", "open-problems", "findings"],
+            "positive_examples": ["Вопрос после чтения paper.", "Наблюдение по результатам эксперимента.", "Идея следующей проверки."],
+            "negative_examples": ["Личная todo-задача.", "Сохраненная статья без собственных выводов.", "Кодовый bug report."]
+          },
+          "children": []
+        }
+      ]
+    }
+  ]
+}

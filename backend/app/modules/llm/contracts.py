@@ -4,9 +4,10 @@ import json
 from typing import Any, Protocol
 
 import httpx
+from pydantic import BaseModel, Field
+
 from app.core.config import get_settings
 from app.shared.module_definitions import ModuleDefinition
-from pydantic import BaseModel, Field
 
 MODULE = ModuleDefinition(
     name="llm",
@@ -84,7 +85,8 @@ class HttpStructuredLLMGenerator:
                     "role": "system",
                     "content": (
                         "Return only valid JSON. The JSON must match the supplied schema. "
-                        "Do not include hidden reasoning, prose, markdown, or code fences. /no_think"
+                        "Do not include hidden reasoning, prose, markdown, or code fences. "
+                        "/no_think"
                     ),
                 },
                 {

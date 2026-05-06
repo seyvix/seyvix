@@ -1,0 +1,64 @@
+{
+  "slug": "business",
+  "aliases": [],
+  "name": "Business",
+  "description": "Продукт, стратегия, маркетинг, продажи и операционные решения.",
+  "tree": [
+    {
+      "name": "Business",
+      "description": "Бизнес-контекст, рынок, продуктовые решения, продажи, маркетинг и стратегия.",
+      "profile": {
+        "summary": "Материалы про бизнес-контекст: продуктовые решения, рынок, продажи, маркетинг, стратегия, операции и коммерческие выводы.",
+        "keywords": ["business", "product", "marketing", "sales", "strategy", "operations"],
+        "positive_examples": ["Продуктовая гипотеза.", "План go-to-market.", "Разбор стратегии конкурента."],
+        "negative_examples": ["Чисто техническая реализация без бизнес-вывода.", "Личная заметка без продукта или рынка.", "ML-конспект без коммерческого контекста."]
+      },
+      "children": [
+        {
+          "name": "Product",
+          "description": "Продуктовые решения, пользователи, фичи, roadmap и discovery.",
+          "profile": {
+            "summary": "Материалы про продуктовую работу: потребности пользователей, feature discovery, roadmap, UX-влияние, приоритизация и продуктовые метрики.",
+            "keywords": ["product", "roadmap", "users", "features", "discovery", "prioritization"],
+            "positive_examples": ["Идея review queue для классификаций.", "Проблема пользователя в onboarding.", "Приоритизация улучшений taxonomy."],
+            "negative_examples": ["Backend refactor без пользовательского эффекта.", "Маркетинговый текст без product discovery.", "Личная задача без продукта."]
+          },
+          "children": []
+        },
+        {
+          "name": "Strategy",
+          "description": "Долгосрочные решения, рынок, конкуренты, позиция и приоритеты.",
+          "profile": {
+            "summary": "Материалы про стратегические решения: рынок, конкуренты, ставки, долгосрочные приоритеты, бизнес-модель и выбор направления.",
+            "keywords": ["strategy", "market", "competition", "priorities", "business-model"],
+            "positive_examples": ["Анализ конкурентного преимущества.", "Решение о целевом сегменте.", "Стратегический trade-off для продукта."],
+            "negative_examples": ["Тактическая задача без долгосрочного вывода.", "Кодовая правка без бизнес-выбора.", "Продажный follow-up без стратегии."]
+          },
+          "children": []
+        },
+        {
+          "name": "Marketing",
+          "description": "Позиционирование, каналы, контент, аудитория и коммуникации.",
+          "profile": {
+            "summary": "Материалы про маркетинг: позиционирование, контент, каналы привлечения, аудитории, messaging и коммуникационные эксперименты.",
+            "keywords": ["marketing", "positioning", "content", "channels", "audience", "messaging"],
+            "positive_examples": ["Черновик позиционирования продукта.", "Идея контент-кампании.", "Анализ канала привлечения."],
+            "negative_examples": ["Продажная сделка без маркетингового канала.", "Техническая документация без аудитории.", "Продуктовая фича без коммуникации."]
+          },
+          "children": []
+        },
+        {
+          "name": "Sales",
+          "description": "Продажи, CRM, сделки, переговоры, скрипты и customer development.",
+          "profile": {
+            "summary": "Материалы про продажи: сделки, CRM, коммуникации с клиентами, objections, discovery calls, воронки и коммерческие follow-up.",
+            "keywords": ["sales", "crm", "deals", "pipeline", "customers", "objections"],
+            "positive_examples": ["Заметки с customer call.", "Список возражений клиента.", "План follow-up по сделке."],
+            "negative_examples": ["Маркетинговая кампания без конкретных продаж.", "Продуктовый roadmap без клиента.", "Техническая задача без коммерческого контакта."]
+          },
+          "children": []
+        }
+      ]
+    }
+  ]
+}

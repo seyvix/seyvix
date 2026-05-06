@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Annotated
 
+from fastapi import APIRouter, Depends, Query, Response, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.api.dependencies import get_db_session
 from app.api.errors import AppError
 from app.api.schemas import ErrorResponse
@@ -12,9 +15,9 @@ from app.modules.taxonomy.schemas import (
     TaxonomyAssignmentCreateRequest,
     TaxonomyAssignmentResponse,
     TaxonomyBreadcrumbResponse,
+    TaxonomyCategoryCreateRequest,
     TaxonomyCategoryDeleteRequest,
     TaxonomyCategoryDeleteResponse,
-    TaxonomyCategoryCreateRequest,
     TaxonomyCategoryResponse,
     TaxonomyCategoryTreeItem,
     TaxonomyCategoryUpdateRequest,
@@ -23,18 +26,17 @@ from app.modules.taxonomy.schemas import (
     TaxonomyClassificationRequest,
     TaxonomyClassificationResponse,
     TaxonomyInboxReclassifyResponse,
-    TaxonomyInitializeRequest,
     TaxonomyInitializeResponse,
     TaxonomyInterestInitializeRequest,
     TaxonomyInterestOptionResponse,
+    TaxonomyJobMetricsResponse,
     TaxonomyProfileDraftResponse,
     TaxonomyProfileImproveRequest,
     TaxonomyProfilePutRequest,
     TaxonomyProfileResponse,
+    TaxonomyReviewQueueResponse,
     TaxonomySettingsPatchRequest,
     TaxonomySettingsResponse,
-    TaxonomyTemplateDetailResponse,
-    TaxonomyTemplateSummaryResponse,
 )
 from app.modules.taxonomy.service import (
     TaxonomyConflictError,
@@ -44,8 +46,6 @@ from app.modules.taxonomy.service import (
     TaxonomyService,
     TaxonomyValidationError,
 )
-from fastapi import APIRouter, Depends, Query, Response, status
-from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/taxonomy", tags=["taxonomy"])
 
@@ -132,8 +132,45 @@ async def update_settings(
         category_profile_editing_enabled=payload.category_profile_editing_enabled,
         trash_enabled=payload.trash_enabled,
         trash_retention_days=payload.trash_retention_days,
+        tags_auto_apply_mode=payload.tags_auto_apply_mode,
+        taxonomy_auto_apply_mode=payload.taxonomy_auto_apply_mode,
     )
     return service.settings_response(settings_model)
+
+
+@router.get(
+    "/review-queue",
+    response_model=TaxonomyReviewQueueResponse,
+    summary="List pending taxonomy assignment proposals",
+    responses={401: {"model": ErrorResponse}},
+)
+async def list_review_queue(
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[TaxonomyService, Depends(get_taxonomy_service)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> TaxonomyReviewQueueResponse:
+    assignments = await service.list_review_assignments(
+        owner_user_id=context.user.id,
+        limit=limit,
+        offset=offset,
+    )
+    return TaxonomyReviewQueueResponse(
+        items=[service.assignment_response(assignment) for assignment in assignments],
+    )
+
+
+@router.get(
+    "/classification-jobs/metrics",
+    response_model=TaxonomyJobMetricsResponse,
+    summary="Get taxonomy classification job metrics",
+    responses={401: {"model": ErrorResponse}},
+)
+async def classification_job_metrics(
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[TaxonomyService, Depends(get_taxonomy_service)],
+) -> TaxonomyJobMetricsResponse:
+    return await service.job_metrics(owner_user_id=context.user.id)
 
 
 @router.get(
@@ -695,71 +732,6 @@ async def initialize_taxonomy_from_interests(
         raise _validation_error(
             "Select at least one known interest or describe your interests."
         ) from exc
-    return TaxonomyInitializeResponse(
-        owner_user_id=result.owner_user_id,
-        template_slug=result.template_slug,
-        created_categories_count=result.created_categories_count,
-        created_profiles_count=result.created_profiles_count,
-    )
-
-
-@router.get(
-    "/templates",
-    response_model=list[TaxonomyTemplateSummaryResponse],
-    summary="List taxonomy templates",
-    responses={401: {"model": ErrorResponse}},
-)
-async def list_templates(
-    _: Annotated[AuthContext, Depends(get_auth_context)],
-    service: Annotated[TaxonomyService, Depends(get_taxonomy_service)],
-) -> list[TaxonomyTemplateSummaryResponse]:
-    return [service.template_summary(template) for template in await service.list_templates()]
-
-
-@router.get(
-    "/templates/{template_slug}",
-    response_model=TaxonomyTemplateDetailResponse,
-    summary="Get taxonomy template",
-    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
-)
-async def get_template(
-    template_slug: str,
-    _: Annotated[AuthContext, Depends(get_auth_context)],
-    service: Annotated[TaxonomyService, Depends(get_taxonomy_service)],
-) -> TaxonomyTemplateDetailResponse:
-    try:
-        template = await service.get_template(template_slug=template_slug)
-    except TaxonomyNotFoundError as exc:
-        raise _not_found("Template not found.") from exc
-    categories = await service.repository.list_template_categories(template_id=template.id)
-    return service.template_detail(template, categories)
-
-
-@router.post(
-    "/initialize",
-    response_model=TaxonomyInitializeResponse,
-    status_code=status.HTTP_201_CREATED,
-    summary="Initialize current user's taxonomy from a template",
-    responses={
-        401: {"model": ErrorResponse},
-        404: {"model": ErrorResponse},
-        409: {"model": ErrorResponse},
-    },
-)
-async def initialize_taxonomy(
-    payload: TaxonomyInitializeRequest,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
-    service: Annotated[TaxonomyService, Depends(get_taxonomy_service)],
-) -> TaxonomyInitializeResponse:
-    try:
-        result = await service.initialize_from_template(
-            owner_user_id=context.user.id,
-            template_slug=payload.template_slug,
-        )
-    except TaxonomyNotFoundError as exc:
-        raise _not_found("Template not found.") from exc
-    except TaxonomyConflictError as exc:
-        raise _conflict("Taxonomy already exists for this user.") from exc
     return TaxonomyInitializeResponse(
         owner_user_id=result.owner_user_id,
         template_slug=result.template_slug,

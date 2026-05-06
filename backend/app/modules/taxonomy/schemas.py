@@ -17,6 +17,7 @@ AssignmentStatus = Literal["proposed", "accepted", "rejected", "overridden"]
 AssignedBy = Literal["user", "system", "llm", "migration"]
 TaxonomyClassificationMode = Literal["semantic_only", "llm_judge"]
 TaxonomyClassificationDecisionStatus = Literal["accepted", "proposed", "no_assignment"]
+AutomaticApplyMode = Literal["disabled", "manual_review_only", "auto_apply_high_confidence"]
 
 
 class TaxonomyCategoryCreateRequest(BaseModel):
@@ -91,6 +92,8 @@ class TaxonomySettingsPatchRequest(BaseModel):
     category_profile_editing_enabled: bool | None = None
     trash_enabled: bool | None = None
     trash_retention_days: int | None = Field(default=None, gt=0, le=365)
+    tags_auto_apply_mode: AutomaticApplyMode | None = None
+    taxonomy_auto_apply_mode: AutomaticApplyMode | None = None
 
 
 class TaxonomySettingsResponse(BaseModel):
@@ -98,6 +101,8 @@ class TaxonomySettingsResponse(BaseModel):
     category_profile_editing_enabled: bool
     trash_enabled: bool
     trash_retention_days: int
+    tags_auto_apply_mode: AutomaticApplyMode
+    taxonomy_auto_apply_mode: AutomaticApplyMode
     created_at: datetime
     updated_at: datetime
 
@@ -109,6 +114,7 @@ class TaxonomyProfileResponse(BaseModel):
     keywords: list[str]
     positive_examples: list[str]
     negative_examples: list[str]
+    profile_source: str
     created_at: datetime
     updated_at: datetime
 
@@ -225,45 +231,28 @@ class TaxonomyClassificationJobListResponse(BaseModel):
     items: list[TaxonomyClassificationJobResponse]
 
 
+class TaxonomyReviewQueueResponse(BaseModel):
+    items: list[TaxonomyAssignmentResponse]
+
+
+class TaxonomyJobStatusCountResponse(BaseModel):
+    status: str
+    count: int
+
+
+class TaxonomyJobMetricsResponse(BaseModel):
+    jobs_by_status: list[TaxonomyJobStatusCountResponse]
+    proposals_pending: int
+
+
 class TaxonomyInboxReclassifyResponse(BaseModel):
     enqueued_count: int
-
-
-class TaxonomyTemplateSummaryResponse(BaseModel):
-    id: str
-    slug: str
-    name: str
-    description: str | None
-    is_active: bool
 
 
 class TaxonomyInterestOptionResponse(BaseModel):
     slug: str
     name: str
     description: str
-
-
-class TaxonomyTemplateTreeItem(BaseModel):
-    id: str
-    slug: str
-    name: str
-    description: str | None
-    path: str
-    depth: int
-    sort_order: int
-    profile_summary: str | None
-    profile_keywords: list[str]
-    profile_positive_examples: list[str]
-    profile_negative_examples: list[str]
-    children: list[TaxonomyTemplateTreeItem] = Field(default_factory=list)
-
-
-class TaxonomyTemplateDetailResponse(TaxonomyTemplateSummaryResponse):
-    tree: list[TaxonomyTemplateTreeItem]
-
-
-class TaxonomyInitializeRequest(BaseModel):
-    template_slug: str = Field(min_length=1, max_length=255)
 
 
 class TaxonomyInterestInitializeRequest(BaseModel):

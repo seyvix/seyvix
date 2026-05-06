@@ -1,13 +1,20 @@
 import json
+from typing import cast
 
 import httpx
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import Settings
 from app.modules.llm.contracts import (
     HttpStructuredLLMGenerator,
     LLMGenerationError,
+    OllamaStructuredLLMGenerator,
     UnavailableStructuredLLMGenerator,
     build_structured_llm_generator,
 )
+from app.modules.tags.service import TagsService
+from app.modules.taxonomy.service import TaxonomyService
 
 
 @pytest.mark.asyncio
@@ -92,3 +99,37 @@ async def test_unavailable_structured_generator_fails_explicitly() -> None:
             schema={"type": "object"},
             model_config={"model": "model"},
         )
+
+
+def test_tags_service_uses_tag_specific_structured_llm_settings() -> None:
+    settings = Settings(
+        llm_structured_provider="disabled",
+        tags_llm_provider="http",
+        tags_llm_base_url="http://tags-llm.local/v1",
+        tags_llm_api_key="tags-secret",
+        tags_llm_timeout_seconds=17,
+    )
+
+    service = TagsService(cast(AsyncSession, object()), settings=settings)
+
+    assert isinstance(service.llm_generator, HttpStructuredLLMGenerator)
+    assert service.llm_generator.base_url == "http://tags-llm.local/v1"
+    assert service.llm_generator.api_key == "tags-secret"
+    assert service.llm_generator.timeout_seconds == 17
+
+
+def test_taxonomy_service_uses_taxonomy_specific_structured_llm_settings() -> None:
+    settings = Settings(
+        llm_structured_provider="disabled",
+        taxonomy_llm_provider="ollama",
+        taxonomy_llm_base_url="http://taxonomy-ollama.local/v1",
+        taxonomy_llm_api_key="ignored",
+        taxonomy_llm_timeout_seconds=31,
+    )
+
+    service = TaxonomyService(cast(AsyncSession, object()), settings=settings)
+
+    assert isinstance(service.llm_generator, OllamaStructuredLLMGenerator)
+    assert service.llm_generator.base_url == "http://taxonomy-ollama.local"
+    assert service.llm_generator.api_key is None
+    assert service.llm_generator.timeout_seconds == 31

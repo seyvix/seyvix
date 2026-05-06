@@ -3,10 +3,12 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
-from app.modules.tags.models import ContentTagAssignment, Tag, TaggingJob
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+
+from app.modules.content.models import ContentObject
+from app.modules.tags.models import ContentTagAssignment, Tag, TaggingJob
 
 
 class TagsRepository:
@@ -29,6 +31,13 @@ class TagsRepository:
     async def get_tag_by_slug(self, *, owner_user_id: str, slug: str) -> Tag | None:
         query = select(Tag).where(Tag.owner_user_id == owner_user_id, Tag.slug == slug)
         return cast(Tag | None, await self.session.scalar(query))
+
+    async def get_tag_by_slug_or_alias(self, *, owner_user_id: str, slug: str) -> Tag | None:
+        direct = await self.get_tag_by_slug(owner_user_id=owner_user_id, slug=slug)
+        if direct is not None:
+            return direct
+        tags = await self.list_tags(owner_user_id=owner_user_id, include_archived=True)
+        return next((tag for tag in tags if slug in set(tag.aliases)), None)
 
     async def list_tags(self, *, owner_user_id: str, include_archived: bool) -> list[Tag]:
         query = select(Tag).where(Tag.owner_user_id == owner_user_id)
@@ -81,6 +90,26 @@ class TagsRepository:
         )
         return list(await self.session.scalars(query))
 
+    async def list_review_suggestions(
+        self,
+        *,
+        owner_user_id: str,
+        limit: int,
+        offset: int,
+    ) -> list[ContentTagAssignment]:
+        query = (
+            select(ContentTagAssignment)
+            .options(selectinload(ContentTagAssignment.tag))
+            .where(
+                ContentTagAssignment.owner_user_id == owner_user_id,
+                ContentTagAssignment.status == "suggested",
+            )
+            .order_by(ContentTagAssignment.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        return list(await self.session.scalars(query))
+
     async def get_assignment(
         self,
         *,
@@ -123,7 +152,28 @@ class TagsRepository:
         content_object_id: str,
         job_type: str,
         priority: int,
+        source_event_id: str | None = None,
+        correlation_id: str | None = None,
+        content_updated_at_snapshot: datetime | None = None,
     ) -> TaggingJob:
+        if source_event_id is not None:
+            existing_by_event = cast(
+                TaggingJob | None,
+                await self.session.scalar(
+                    select(TaggingJob).where(TaggingJob.source_event_id == source_event_id)
+                ),
+            )
+            if existing_by_event is not None:
+                return existing_by_event
+
+        if content_updated_at_snapshot is None:
+            content_updated_at_snapshot = await self.session.scalar(
+                select(ContentObject.updated_at).where(
+                    ContentObject.owner_user_id == owner_user_id,
+                    ContentObject.id == content_object_id,
+                )
+            )
+
         existing_query = select(TaggingJob).where(
             TaggingJob.owner_user_id == owner_user_id,
             TaggingJob.content_object_id == content_object_id,
@@ -134,7 +184,20 @@ class TagsRepository:
         if existing is not None:
             if priority > existing.priority:
                 existing.priority = priority
-                await self.session.flush()
+            if source_event_id is not None:
+                existing.source_event_id = source_event_id
+            if correlation_id is not None:
+                existing.correlation_id = correlation_id
+            if content_updated_at_snapshot is not None:
+                existing.content_updated_at_snapshot = content_updated_at_snapshot
+            existing.last_error = None
+            existing.run_after = datetime.now(UTC)
+            if existing.status == "processing":
+                existing.status = "pending"
+                existing.locked_at = None
+                existing.locked_by = None
+                existing.attempts = 0
+            await self.session.flush()
             return existing
 
         job = TaggingJob(
@@ -143,6 +206,9 @@ class TagsRepository:
             job_type=job_type,
             status="pending",
             priority=priority,
+            source_event_id=source_event_id,
+            correlation_id=correlation_id,
+            content_updated_at_snapshot=content_updated_at_snapshot,
         )
         self.session.add(job)
         await self.session.flush()

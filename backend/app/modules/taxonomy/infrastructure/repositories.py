@@ -3,19 +3,19 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
 from app.modules.content.models import ContentObject
 from app.modules.taxonomy.models import (
+    ClassificationFeedback,
     TaxonomyCategory,
     TaxonomyCategoryProfile,
     TaxonomyClassificationJob,
     TaxonomyContentAssignment,
-    TaxonomyTemplate,
-    TaxonomyTemplateCategory,
     TaxonomyUserSettings,
 )
-from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 
 class TaxonomyRepository:
@@ -33,6 +33,9 @@ class TaxonomyRepository:
 
     def add_assignment(self, assignment: TaxonomyContentAssignment) -> None:
         self.session.add(assignment)
+
+    def add_feedback(self, feedback: ClassificationFeedback) -> None:
+        self.session.add(feedback)
 
     def add_classification_job(self, job: TaxonomyClassificationJob) -> None:
         self.session.add(job)
@@ -230,6 +233,26 @@ class TaxonomyRepository:
         )
         return list(await self.session.scalars(query))
 
+    async def list_review_assignments(
+        self,
+        *,
+        owner_user_id: str,
+        limit: int,
+        offset: int,
+    ) -> list[TaxonomyContentAssignment]:
+        query = (
+            select(TaxonomyContentAssignment)
+            .where(
+                TaxonomyContentAssignment.owner_user_id == owner_user_id,
+                TaxonomyContentAssignment.status == "proposed",
+                TaxonomyContentAssignment.is_current.is_(True),
+            )
+            .order_by(TaxonomyContentAssignment.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        return list(await self.session.scalars(query))
+
     async def get_assignment(
         self,
         *,
@@ -277,6 +300,7 @@ class TaxonomyRepository:
         priority: int,
         source_event_id: str | None,
         correlation_id: str | None,
+        content_updated_at_snapshot: datetime | None = None,
     ) -> TaxonomyClassificationJob:
         if source_event_id is not None:
             existing = await self.session.scalar(
@@ -286,6 +310,42 @@ class TaxonomyRepository:
             )
             if existing is not None:
                 return existing
+        if content_updated_at_snapshot is None:
+            content_updated_at_snapshot = await self.session.scalar(
+                select(ContentObject.updated_at).where(
+                    ContentObject.owner_user_id == owner_user_id,
+                    ContentObject.id == content_object_id,
+                )
+            )
+        existing = cast(
+            TaxonomyClassificationJob | None,
+            await self.session.scalar(
+                select(TaxonomyClassificationJob).where(
+                    TaxonomyClassificationJob.owner_user_id == owner_user_id,
+                    TaxonomyClassificationJob.content_object_id == content_object_id,
+                    TaxonomyClassificationJob.job_type == job_type,
+                    TaxonomyClassificationJob.status.in_(("pending", "processing")),
+                )
+            ),
+        )
+        if existing is not None:
+            if priority > existing.priority:
+                existing.priority = priority
+            if source_event_id is not None:
+                existing.source_event_id = source_event_id
+            if correlation_id is not None:
+                existing.correlation_id = correlation_id
+            if content_updated_at_snapshot is not None:
+                existing.content_updated_at_snapshot = content_updated_at_snapshot
+            existing.last_error = None
+            existing.run_after = datetime.now(UTC)
+            if existing.status == "processing":
+                existing.status = "pending"
+                existing.locked_at = None
+                existing.locked_by = None
+                existing.attempts = 0
+            await self.session.flush()
+            return existing
         job = TaxonomyClassificationJob(
             owner_user_id=owner_user_id,
             content_object_id=content_object_id,
@@ -294,6 +354,7 @@ class TaxonomyRepository:
             priority=priority,
             source_event_id=source_event_id,
             correlation_id=correlation_id,
+            content_updated_at_snapshot=content_updated_at_snapshot,
         )
         self.session.add(job)
         await self.session.flush()
@@ -371,42 +432,3 @@ class TaxonomyRepository:
         if except_assignment_id is not None:
             statement = statement.where(TaxonomyContentAssignment.id != except_assignment_id)
         await self.session.execute(statement)
-
-    async def list_templates(self) -> list[TaxonomyTemplate]:
-        query = (
-            select(TaxonomyTemplate)
-            .where(TaxonomyTemplate.is_active.is_(True))
-            .order_by(TaxonomyTemplate.slug.asc())
-        )
-        return list(await self.session.scalars(query))
-
-    async def has_templates(self) -> bool:
-        query = select(TaxonomyTemplate.id)
-        return await self.session.scalar(query) is not None
-
-    def add_template(self, template: TaxonomyTemplate) -> None:
-        self.session.add(template)
-
-    async def get_template_by_slug(self, *, slug: str) -> TaxonomyTemplate | None:
-        query = (
-            select(TaxonomyTemplate)
-            .options(selectinload(TaxonomyTemplate.categories))
-            .where(TaxonomyTemplate.slug == slug, TaxonomyTemplate.is_active.is_(True))
-        )
-        return cast(TaxonomyTemplate | None, await self.session.scalar(query))
-
-    async def list_template_categories(
-        self,
-        *,
-        template_id: str,
-    ) -> list[TaxonomyTemplateCategory]:
-        query = (
-            select(TaxonomyTemplateCategory)
-            .where(TaxonomyTemplateCategory.template_id == template_id)
-            .order_by(
-                TaxonomyTemplateCategory.depth.asc(),
-                TaxonomyTemplateCategory.sort_order.asc(),
-                TaxonomyTemplateCategory.name.asc(),
-            )
-        )
-        return list(await self.session.scalars(query))

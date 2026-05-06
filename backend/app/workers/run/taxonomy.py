@@ -6,7 +6,8 @@ from faststream import FastStream
 
 from app.contracts.events import EventEnvelope
 from app.core.logging import get_logger
-from app.modules.taxonomy.worker import TaxonomyEventConsumer, TaxonomyWorker
+from app.modules.taxonomy.event_consumer import TaxonomyEventConsumer
+from app.modules.taxonomy.job_processor import TaxonomyWorker
 from app.workers.polling import poll_worker_forever
 from app.workers.rabbit import build_worker_rabbit, declare_worker_rabbit_topology
 from app.workers.runtime import build_worker_runtime

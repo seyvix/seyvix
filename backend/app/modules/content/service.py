@@ -1660,27 +1660,6 @@ class ContentService:
             correlation_id=envelope.correlation_id,
             source_event_id=envelope.event_id,
         )
-        await self.tag_service.repository.enqueue_job(
-            owner_user_id=content_object.owner_user_id,
-            content_object_id=content_object.id,
-            job_type="suggest_content_tags",
-            priority=100,
-        )
-        try:
-            await self.taxonomy.enqueue_classification_job(
-                owner_user_id=content_object.owner_user_id,
-                content_object_id=content_object.id,
-                priority=100,
-                source_event_id=envelope.event_id,
-                correlation_id=envelope.correlation_id,
-            )
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "content.automatic_taxonomy_enqueue_failed",
-                content_object_id=content_object.id,
-                event_id=envelope.event_id,
-                exc_info=True,
-            )
 
     @staticmethod
     def _stored_object_from_file(stored_file: StoredFile) -> StoredObject:

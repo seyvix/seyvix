@@ -1,0 +1,333 @@
+#todo delete
+{
+  "slug": "developer",
+  "name": "Developer",
+  "description": "Базовое дерево для разработчика: входящие материалы, AI, программирование, базы данных, DevOps, продукт и технические ресурсы.",
+  "tree": [
+    {
+      "name": "Inbox",
+      "description": "Временная зона для новых материалов, которым еще не выбрана точная техническая категория.",
+      "profile": {
+        "summary": "Новые или неоднозначные материалы разработчика, которые нужно сохранить до классификации. Используется как буфер для разбора, а не как постоянный технический архив.",
+        "keywords": ["inbox", "unsorted", "triage", "incoming", "разобрать"],
+        "positive_examples": ["Ссылка на статью, которую нужно оценить позже.", "Фрагмент идеи без понятной области.", "Файл без выбранной технической темы."],
+        "negative_examples": ["Материал про Python, Docker или PostgreSQL с очевидной темой.", "Завершенный конспект по архитектуре.", "Инструмент, который лучше положить в Resources/Tools."]
+      },
+      "children": []
+    },
+    {
+      "name": "AI",
+      "description": "AI-инженерия, LLM, агенты, RAG и AI-инструменты для разработки.",
+      "profile": {
+        "summary": "Материалы про AI в инженерном контексте: LLM-интеграции, агенты, RAG, embeddings, eval, промпты и инструменты для разработки AI-фич.",
+        "keywords": ["ai", "llm", "agents", "rag", "embeddings", "eval"],
+        "positive_examples": ["Архитектура RAG-пайплайна.", "Промпт для taxonomy classification.", "Оценка качества LLM-решений."],
+        "negative_examples": ["Обычная backend-задача без AI.", "DevOps-настройка без ML/LLM.", "Продуктовая идея без AI-технологии."]
+      },
+      "children": [
+        {
+          "name": "LLM",
+          "description": "Большие языковые модели, prompts, structured output, tool calling и eval.",
+          "profile": {
+            "summary": "Материалы, где LLM является основной технологией: prompts, structured output, tool calling, function calling, hallucination control, eval и интеграция в backend.",
+            "keywords": ["llm", "prompting", "structured-output", "tool-calling", "function-calling", "eval"],
+            "positive_examples": ["JSON schema для LLM classification.", "Промпт улучшения category profile.", "Тестовый набор для оценки LLM решений."],
+            "negative_examples": ["RAG storage без LLM-логики.", "Обычный ML classifier без языковой модели.", "Frontend UI без LLM-поведения."]
+          },
+          "children": []
+        },
+        {
+          "name": "Agents",
+          "description": "AI-агенты, планирование, tools, memory, retries и контроль автономных действий.",
+          "profile": {
+            "summary": "Материалы про агентные AI-системы: planner/executor циклы, tool calls, память, task decomposition, retries, permissions и безопасное выполнение действий.",
+            "keywords": ["agents", "planner", "executor", "tools", "memory", "permissions"],
+            "positive_examples": ["Дизайн worker-agent для фоновой обработки.", "Паттерн approval перед destructive action.", "Логика памяти агента."],
+            "negative_examples": ["Один LLM prompt без цикла действий.", "Очередь jobs без AI-решателя.", "Простая API-интеграция без автономности."]
+          },
+          "children": []
+        },
+        {
+          "name": "RAG",
+          "description": "Retrieval augmented generation, embeddings, chunking, ranking и контекстная выдача.",
+          "profile": {
+            "summary": "Материалы про RAG и retrieval: embeddings, chunking, vector search, reranking, grounding, context assembly и качество ответов по базе знаний.",
+            "keywords": ["rag", "retrieval", "embeddings", "chunking", "reranking", "vector-search"],
+            "positive_examples": ["Схема индекса category profiles.", "Настройка vector search для заметок.", "Стратегия chunking для документов."],
+            "negative_examples": ["LLM prompt без retrieval.", "Обычный SQL search без embeddings.", "ML обучение без генеративного retrieval."]
+          },
+          "children": []
+        },
+        {
+          "name": "Tools",
+          "description": "AI SDK, сервисы, библиотеки, платформы и developer tooling для AI-фич.",
+          "profile": {
+            "summary": "Материалы про конкретные AI-инструменты для разработчика: SDK, inference APIs, vector DB clients, prompt tooling, observability и eval tools.",
+            "keywords": ["ai-tools", "sdk", "inference-api", "vector-db", "prompt-tools", "observability"],
+            "positive_examples": ["Сравнение SDK для structured generation.", "Документация vector database client.", "Инструмент для prompt regression tests."],
+            "negative_examples": ["Теория RAG без инструмента.", "Обычная DevOps утилита без AI.", "Бизнес-статья про AI без developer tooling."]
+          },
+          "children": []
+        }
+      ]
+    },
+    {
+      "name": "Programming",
+      "description": "Код, языки, backend, API, архитектура и тестирование.",
+      "profile": {
+        "summary": "Материалы про практическую разработку ПО: языки, кодовые паттерны, backend, API, архитектура, тестирование, refactoring и качество реализации.",
+        "keywords": ["programming", "software-engineering", "code", "backend", "api", "testing"],
+        "positive_examples": ["План рефакторинга worker pipeline.", "Паттерн service/repository.", "Тесты для event-driven enqueue."],
+        "negative_examples": ["Чистая продуктовая стратегия.", "AI prompt без кодовой интеграции.", "Продажи или маркетинг без разработки."]
+      },
+      "children": [
+        {
+          "name": "Python",
+          "description": "Python backend, FastAPI, async, SQLAlchemy, Pydantic, pytest и packaging.",
+          "profile": {
+            "summary": "Материалы, где Python является основной технологией: backend-код, FastAPI, asyncio, SQLAlchemy, Pydantic, pytest, migrations, typing и tooling.",
+            "keywords": ["python", "fastapi", "asyncio", "pytest", "sqlalchemy", "pydantic", "typing"],
+            "positive_examples": ["pytest для TaxonomyService.", "FastAPI dependency injection.", "Async SQLAlchemy transaction pattern."],
+            "negative_examples": ["TypeScript UI без Python backend.", "Docker deployment без Python-деталей.", "SQL schema без Python-интеграции."]
+          },
+          "children": []
+        },
+        {
+          "name": "JavaScript",
+          "description": "JavaScript, TypeScript, Node.js, frontend runtime и package tooling.",
+          "profile": {
+            "summary": "Материалы про JavaScript/TypeScript: frontend или Node.js код, typing, package management, build tooling, browser APIs и runtime behavior.",
+            "keywords": ["javascript", "typescript", "node", "npm", "frontend", "browser"],
+            "positive_examples": ["TypeScript type narrowing.", "Node.js worker process.", "Настройка package script."],
+            "negative_examples": ["Python service без JS-клиента.", "SQL migration без JS.", "Product discovery без реализации."]
+          },
+          "children": []
+        },
+        {
+          "name": "Backend",
+          "description": "Серверная архитектура, API, сервисы, очереди, фоновые jobs и интеграции.",
+          "profile": {
+            "summary": "Материалы про backend как основную область: API contracts, domain services, repositories, workers, queues, auth, transactions, idempotency и надежность.",
+            "keywords": ["backend", "api", "services", "repositories", "workers", "queues", "idempotency"],
+            "positive_examples": ["Outbox -> Rabbit -> DB job pipeline.", "Idempotent job enqueue.", "REST endpoint для review queue."],
+            "negative_examples": ["Frontend-only component.", "AI evaluation без server pipeline.", "Product roadmap без backend implementation."]
+          },
+          "children": []
+        },
+        {
+          "name": "APIs",
+          "description": "HTTP API, REST contracts, schemas, OpenAPI, versioning и интеграционные границы.",
+          "profile": {
+            "summary": "Материалы про API как контракт: REST endpoints, request/response schemas, OpenAPI, auth, versioning, backward compatibility и integration boundaries.",
+            "keywords": ["api", "rest", "openapi", "schemas", "contracts", "versioning"],
+            "positive_examples": ["Schema для taxonomy metrics endpoint.", "Решение о статус-кодах.", "OpenAPI contract для category profile."],
+            "negative_examples": ["Внутренний SQL индекс без API-влияния.", "UI layout без backend contract.", "LLM prompt без внешнего интерфейса."]
+          },
+          "children": []
+        },
+        {
+          "name": "Architecture",
+          "description": "Системный дизайн, модульные границы, event-driven flow и технические trade-off.",
+          "profile": {
+            "summary": "Материалы про системную архитектуру: module boundaries, event-driven design, outbox, worker topology, consistency, observability и долгоживущие trade-off решения.",
+            "keywords": ["architecture", "system-design", "event-driven", "outbox", "workers", "consistency"],
+            "positive_examples": ["Выбор одного пути постановки jobs.", "Разделение consumer и job processor.", "Схема stale detection."],
+            "negative_examples": ["Локальная правка текста в UI.", "Единичный pytest без архитектурного решения.", "Список инструментов без design decision."]
+          },
+          "children": []
+        },
+        {
+          "name": "Testing",
+          "description": "Unit, integration, contract, regression и pipeline tests.",
+          "profile": {
+            "summary": "Материалы про тестирование: unit tests, integration tests, fixtures, fake dependencies, regression coverage, contract tests и verification commands.",
+            "keywords": ["testing", "pytest", "fixtures", "integration-tests", "regression", "coverage"],
+            "positive_examples": ["Failing test before refactor.", "Fake LLM response fixture.", "Regression test for coalescing jobs."],
+            "negative_examples": ["Production feature без тестового аспекта.", "Документация API без проверки.", "DevOps deploy без automated verification."]
+          },
+          "children": []
+        }
+      ]
+    },
+    {
+      "name": "Databases",
+      "description": "PostgreSQL, Redis, vector search, migrations, indexes и транзакции.",
+      "profile": {
+        "summary": "Материалы про storage и базы данных: relational schema, PostgreSQL, Redis, vector search, migrations, indexes, query design и consistency.",
+        "keywords": ["databases", "postgresql", "redis", "vector-search", "migrations", "indexes"],
+        "positive_examples": ["Миграция для source_event_id.", "Redis cache strategy.", "Vector index для category profiles."],
+        "negative_examples": ["Frontend state без persistence.", "AI prompt без storage.", "Product strategy без модели данных."]
+      },
+      "children": [
+        {
+          "name": "PostgreSQL",
+          "description": "PostgreSQL schema, SQL, indexes, constraints, locks и query planning.",
+          "profile": {
+            "summary": "Материалы про PostgreSQL: SQL-запросы, индексы, constraints, transactions, locks, migrations, query plans и надежность relational storage.",
+            "keywords": ["postgresql", "sql", "indexes", "constraints", "transactions", "alembic"],
+            "positive_examples": ["Partial unique index for pending jobs.", "Alembic migration.", "SELECT FOR UPDATE SKIP LOCKED."],
+            "negative_examples": ["Redis cache без Postgres.", "Vector search abstraction без SQL details.", "API schema без DB-изменений."]
+          },
+          "children": []
+        },
+        {
+          "name": "Redis",
+          "description": "Redis cache, queues, rate limiting, locks и ephemeral state.",
+          "profile": {
+            "summary": "Материалы про Redis: caching, rate limiting, locks, ephemeral state, queue-like patterns, TTL и operational trade-offs.",
+            "keywords": ["redis", "cache", "ttl", "rate-limiting", "locks", "ephemeral-state"],
+            "positive_examples": ["TTL cache для expensive lookup.", "Rate limit для endpoint.", "Redis lock для фоновой задачи."],
+            "negative_examples": ["PostgreSQL schema migration.", "Vector embedding storage.", "Frontend local state без Redis."]
+          },
+          "children": []
+        },
+        {
+          "name": "Vector Search",
+          "description": "Embeddings, vector indexes, semantic search, similarity и retrieval.",
+          "profile": {
+            "summary": "Материалы про vector search: embeddings, semantic search, similarity scoring, vector indexes, category profile vectors и retrieval quality.",
+            "keywords": ["vector-search", "embeddings", "semantic-search", "similarity", "pgvector", "retrieval"],
+            "positive_examples": ["Index category profile vectors.", "Similarity threshold для taxonomy assignment.", "Embedding subject для content object."],
+            "negative_examples": ["Обычный SQL filter без embeddings.", "LLM prompt без retrieval.", "Redis cache без vector similarity."]
+          },
+          "children": []
+        }
+      ]
+    },
+    {
+      "name": "DevOps",
+      "description": "Docker, CI/CD, observability, runtime configuration и deployment.",
+      "profile": {
+        "summary": "Материалы про delivery и эксплуатацию: Docker, compose, CI/CD, logs, metrics, deployment, runtime settings, secrets и production readiness.",
+        "keywords": ["devops", "docker", "ci-cd", "observability", "deployment", "runtime"],
+        "positive_examples": ["docker compose config для backend.", "CI pytest workflow.", "Метрики failed jobs."],
+        "negative_examples": ["Business strategy без deployment.", "Python code pattern без runtime.", "UI design без operational concern."]
+      },
+      "children": [
+        {
+          "name": "Docker",
+          "description": "Dockerfiles, compose, images, containers, volumes и local runtime.",
+          "profile": {
+            "summary": "Материалы про Docker: Dockerfile, docker compose, containers, images, volumes, networks, local dev runtime и troubleshooting.",
+            "keywords": ["docker", "docker-compose", "containers", "images", "volumes", "networks"],
+            "positive_examples": ["Переименование api service в backend.", "Compose override для workers.", "Dockerfile dependency layer."],
+            "negative_examples": ["CI config без containers.", "Backend code без runtime packaging.", "PostgreSQL query без Docker context."]
+          },
+          "children": []
+        },
+        {
+          "name": "CI/CD",
+          "description": "Pipelines, automated tests, build, deploy, release gates и checks.",
+          "profile": {
+            "summary": "Материалы про CI/CD: automated checks, test pipelines, build steps, deploy flow, release gates, branch policies и regression prevention.",
+            "keywords": ["ci-cd", "github-actions", "pipeline", "build", "deploy", "checks"],
+            "positive_examples": ["CI job для pytest + ruff.", "Release gate before migration.", "Build pipeline для Docker image."],
+            "negative_examples": ["Local-only command без automation.", "Runtime logs без pipeline.", "Product idea без delivery flow."]
+          },
+          "children": []
+        },
+        {
+          "name": "Observability",
+          "description": "Logs, metrics, traces, alerts, dashboards и debugging production flows.",
+          "profile": {
+            "summary": "Материалы про observability: structured logs, metrics, traces, alerts, dashboards, job health, latency и диагностика pipeline failures.",
+            "keywords": ["observability", "logs", "metrics", "traces", "alerts", "dashboards"],
+            "positive_examples": ["Metrics endpoint for taxonomy jobs.", "Логирование correlation_id.", "Alert на рост failed jobs."],
+            "negative_examples": ["Unit test без runtime visibility.", "Product roadmap без monitoring.", "Database migration без operational signal."]
+          },
+          "children": []
+        }
+      ]
+    },
+    {
+      "name": "Product",
+      "description": "Идеи, UX и стратегия продукта в инженерном контексте.",
+      "profile": {
+        "summary": "Материалы про продуктовые решения разработчика: идеи фич, UX, приоритизация, strategy, feedback loops и влияние технических решений на пользователя.",
+        "keywords": ["product", "ideas", "ux", "strategy", "feedback", "prioritization"],
+        "positive_examples": ["Идея настройки auto-apply policy.", "UX для review queue.", "Приоритеты улучшения taxonomy pipeline."],
+        "negative_examples": ["Чистая SQL-оптимизация без user impact.", "DevOps config без product concern.", "AI prompt без product behavior."]
+      },
+      "children": [
+        {
+          "name": "Ideas",
+          "description": "Идеи фич, улучшений, экспериментов и новых workflows.",
+          "profile": {
+            "summary": "Продуктовые идеи и гипотезы: фичи, workflow improvements, experiments, rough concepts и возможности для развития продукта.",
+            "keywords": ["ideas", "features", "experiments", "workflow", "hypotheses"],
+            "positive_examples": ["Идея пользовательской политики auto-apply.", "Гипотеза улучшить onboarding через presets.", "Набросок review queue."],
+            "negative_examples": ["Подтвержденная backend bugfix task.", "Документация библиотеки.", "Стратегия без конкретной идеи."]
+          },
+          "children": []
+        },
+        {
+          "name": "UX",
+          "description": "Пользовательский опыт, интерфейсные потоки, review states и onboarding.",
+          "profile": {
+            "summary": "Материалы про UX продукта: user flows, states, review queues, onboarding, error handling, empty states и практичность интерфейса.",
+            "keywords": ["ux", "user-flow", "review-queue", "onboarding", "states", "interface"],
+            "positive_examples": ["Поток принятия предложенной категории.", "Onboarding выбора template.", "Empty state для pending assignments."],
+            "negative_examples": ["Backend-only repository method.", "Docker config без UI.", "Database index без пользовательского сценария."]
+          },
+          "children": []
+        },
+        {
+          "name": "Strategy",
+          "description": "Продуктовая стратегия, позиционирование, сегменты и долгосрочные ставки.",
+          "profile": {
+            "summary": "Материалы про продуктовую стратегию: target users, positioning, differentiation, roadmap trade-offs, long-term bets и market choices.",
+            "keywords": ["strategy", "positioning", "roadmap", "target-users", "differentiation"],
+            "positive_examples": ["Выбор сегмента power users.", "Стратегия автоматической категоризации.", "Trade-off между ручным review и auto-apply."],
+            "negative_examples": ["Тактическая implementation detail.", "CI pipeline без product decision.", "Список API fields без стратегии."]
+          },
+          "children": []
+        }
+      ]
+    },
+    {
+      "name": "Resources",
+      "description": "Технические статьи, видео, инструменты, документация и reference materials.",
+      "profile": {
+        "summary": "Сохраненные технические ресурсы, где важен сам внешний источник: articles, videos, tools, docs, references и материалы для последующего чтения.",
+        "keywords": ["resources", "articles", "videos", "tools", "documentation", "references"],
+        "positive_examples": ["Ссылка на документацию библиотеки.", "Техническая статья для чтения позже.", "Подборка developer tools."],
+        "negative_examples": ["Собственная архитектурная заметка.", "Рабочий bugfix.", "Продуктовая гипотеза без внешнего источника."]
+      },
+      "children": [
+        {
+          "name": "Articles",
+          "description": "Технические статьи, блоги, RFC, tutorials и reference posts.",
+          "profile": {
+            "summary": "Технические статьи и публикации: engineering blogs, RFC, tutorials, deep dives, changelogs и reference posts для чтения или цитирования.",
+            "keywords": ["articles", "blog", "tutorial", "rfc", "deep-dive", "read-later"],
+            "positive_examples": ["Engineering blog post про outbox.", "Tutorial по FastAPI testing.", "RFC про API versioning."],
+            "negative_examples": ["Видео-доклад.", "Документация инструмента.", "Собственный task note."]
+          },
+          "children": []
+        },
+        {
+          "name": "Videos",
+          "description": "Доклады, screencasts, courses, demos и технические записи.",
+          "profile": {
+            "summary": "Видео-ресурсы для разработчика: conference talks, screencasts, courses, demos, interviews и записи технических объяснений.",
+            "keywords": ["videos", "talks", "screencast", "course", "demo", "conference"],
+            "positive_examples": ["Доклад про PostgreSQL locks.", "Screencast по Docker compose.", "Видео-курс по TypeScript."],
+            "negative_examples": ["Текстовая статья.", "Кодовый diff без видео.", "Product idea без media source."]
+          },
+          "children": []
+        },
+        {
+          "name": "Tools",
+          "description": "Developer tools, CLIs, libraries, SaaS, extensions и рабочие утилиты.",
+          "profile": {
+            "summary": "Материалы про инструменты разработчика: CLI, libraries, SaaS, IDE extensions, debugging tools, monitoring products и сравнения tooling.",
+            "keywords": ["tools", "developer-tools", "cli", "libraries", "saas", "extensions"],
+            "positive_examples": ["Новый CLI для migrations.", "Сравнение observability tools.", "Библиотека для structured LLM output."],
+            "negative_examples": ["Теория архитектуры без инструмента.", "Видео без конкретного tool.", "Backend bugfix внутри проекта."]
+          },
+          "children": []
+        }
+      ]
+    }
+  ]
+}

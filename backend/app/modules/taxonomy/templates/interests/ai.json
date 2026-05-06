@@ -1,0 +1,75 @@
+{
+  "slug": "ai",
+  "aliases": [],
+  "name": "AI",
+  "description": "Искусственный интеллект, LLM, агенты, RAG, machine learning и AI-инструменты.",
+  "tree": [
+    {
+      "name": "AI",
+      "description": "AI-инженерия, модели, промпты, retrieval, агенты и практические AI-продукты.",
+      "profile": {
+        "summary": "Материалы про AI как основную тему: модели, промпты, агенты, ML-подходы, RAG, embeddings, продукты и практические сценарии применения.",
+        "keywords": ["ai", "llm", "agents", "rag", "machine-learning", "prompting"],
+        "positive_examples": ["Архитектура RAG-пайплайна.", "Промпт для классификации заметок.", "Сравнение инструментов для AI-пайплайна."],
+        "negative_examples": ["Обычная backend-задача без AI-логики.", "Маркетинговая заметка, где AI упомянут вскользь.", "Данные или аналитика без ML/AI-компонента."]
+      },
+      "children": [
+        {
+          "name": "LLM",
+          "description": "Большие языковые модели, prompts, structured output, tool calling и eval.",
+          "profile": {
+            "summary": "Материалы, где LLM является основной технологией: prompts, structured output, tool calling, function calling, hallucination control, eval и интеграция в backend.",
+            "keywords": ["llm", "prompting", "structured-output", "tool-calling", "function-calling", "eval"],
+            "positive_examples": ["JSON schema для LLM classification.", "Промпт улучшения category profile.", "Тестовый набор для оценки LLM решений."],
+            "negative_examples": ["RAG storage без LLM-логики.", "Обычный ML classifier без языковой модели.", "Frontend UI без LLM-поведения."]
+          },
+          "children": []
+        },
+        {
+          "name": "Agents",
+          "description": "AI-агенты, планирование, tools, memory, retries и контроль автономных действий.",
+          "profile": {
+            "summary": "Материалы про агентные AI-системы: planner/executor циклы, tool calls, память, task decomposition, retries, permissions и безопасное выполнение действий.",
+            "keywords": ["agents", "planner", "executor", "tools", "memory", "permissions"],
+            "positive_examples": ["Дизайн worker-agent для фоновой обработки.", "Паттерн approval перед destructive action.", "Логика памяти агента."],
+            "negative_examples": ["Один LLM prompt без цикла действий.", "Очередь jobs без AI-решателя.", "Простая API-интеграция без автономности."]
+          },
+          "children": []
+        },
+        {
+          "name": "RAG",
+          "description": "Retrieval augmented generation, embeddings, chunking, ranking и контекстная выдача.",
+          "profile": {
+            "summary": "Материалы про RAG и retrieval: embeddings, chunking, vector search, reranking, grounding, context assembly и качество ответов по базе знаний.",
+            "keywords": ["rag", "retrieval", "embeddings", "chunking", "reranking", "vector-search"],
+            "positive_examples": ["Схема индекса category profiles.", "Настройка vector search для заметок.", "Стратегия chunking для документов."],
+            "negative_examples": ["LLM prompt без retrieval.", "Обычный SQL search без embeddings.", "ML обучение без генеративного retrieval."]
+          },
+          "children": []
+        },
+        {
+          "name": "Machine Learning",
+          "description": "ML-модели, обучение, признаки, метрики и эксперименты.",
+          "profile": {
+            "summary": "Материалы про машинное обучение как инженерную или исследовательскую область: модели, датасеты, признаки, обучение, eval и production ML.",
+            "keywords": ["machine-learning", "ml", "training", "dataset", "features", "evaluation"],
+            "positive_examples": ["Заметка о метриках классификации.", "Конспект статьи про embedding-модель.", "План эксперимента с датасетом."],
+            "negative_examples": ["LLM-интеграция без обучения модели.", "Обычная аналитика без ML.", "Продуктовая идея с упоминанием AI без технических деталей."]
+          },
+          "children": []
+        },
+        {
+          "name": "Tools",
+          "description": "AI SDK, сервисы, библиотеки, платформы и developer tooling для AI-фич.",
+          "profile": {
+            "summary": "Материалы про конкретные AI-инструменты для разработчика: SDK, inference APIs, vector DB clients, prompt tooling, observability и eval tools.",
+            "keywords": ["ai-tools", "sdk", "inference-api", "vector-db", "prompt-tools", "observability"],
+            "positive_examples": ["Сравнение SDK для structured generation.", "Документация vector database client.", "Инструмент для prompt regression tests."],
+            "negative_examples": ["Теория RAG без инструмента.", "Обычная DevOps утилита без AI.", "Бизнес-статья про AI без developer tooling."]
+          },
+          "children": []
+        }
+      ]
+    }
+  ]
+}

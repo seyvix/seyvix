@@ -1,28 +1,38 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 from uuid import uuid4
 
+from pydantic import BaseModel, Field, ValidationError
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.contracts.events import EventEnvelope, TaxonomyClassificationCompletedPayload
 from app.core.config import Settings, get_settings
+from app.modules.content.models import ContentObject
 from app.modules.llm.contracts import (
     LLMGenerationError,
     StructuredLLMGenerator,
     build_structured_llm_generator,
 )
-from app.modules.content.models import ContentObject
 from app.modules.search.schemas import SemanticSearchResult
+from app.modules.taxonomy.contracts import (
+    AutomaticApplyMode,
+    TaxonomyAssignmentStatus,
+    TaxonomyJobStatus,
+)
 from app.modules.taxonomy.infrastructure.repositories import TaxonomyRepository
 from app.modules.taxonomy.models import (
+    ClassificationFeedback,
     TaxonomyCategory,
     TaxonomyCategoryProfile,
     TaxonomyClassificationJob,
     TaxonomyContentAssignment,
-    TaxonomyTemplate,
-    TaxonomyTemplateCategory,
     TaxonomyUserSettings,
 )
 from app.modules.taxonomy.schemas import (
@@ -35,13 +45,12 @@ from app.modules.taxonomy.schemas import (
     TaxonomyClassificationCategoryResponse,
     TaxonomyClassificationResponse,
     TaxonomyInboxReclassifyResponse,
+    TaxonomyJobMetricsResponse,
+    TaxonomyJobStatusCountResponse,
     TaxonomyLLMDecisionResponse,
     TaxonomyProfileDraftResponse,
     TaxonomyProfileResponse,
     TaxonomySettingsResponse,
-    TaxonomyTemplateDetailResponse,
-    TaxonomyTemplateSummaryResponse,
-    TaxonomyTemplateTreeItem,
 )
 from app.modules.vectorization.contracts import (
     VectorizationSubject,
@@ -49,12 +58,12 @@ from app.modules.vectorization.contracts import (
 )
 from app.modules.vectorization.models import VectorizationJob
 from app.platform.events.outbox import EventOutboxRepository
-from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 SLUG_PATTERN = re.compile(r"^[a-z0-9_-]+$")
 LLM_JUDGE_PROMPT_VERSION = "taxonomy_classification_llm_judge_v1"
+TAXONOMY_TEMPLATE_DIR = Path(__file__).with_name("templates")
+INTEREST_SPECS_DIR = TAXONOMY_TEMPLATE_DIR / "interests"
+INTEREST_SPEC_SLUGS = ("programming", "ai", "design", "business", "science", "personal")
 
 
 class TaxonomyNotFoundError(Exception):
@@ -136,7 +145,18 @@ class TaxonomyService:
     ) -> None:
         self.session = session
         self.settings = settings or get_settings()
-        self.llm_generator = llm_generator or build_structured_llm_generator()
+        self.llm_generator = llm_generator or build_structured_llm_generator(
+            provider_name=self.settings.taxonomy_llm_provider
+            or self.settings.llm_structured_provider,
+            base_url=self.settings.taxonomy_llm_base_url
+            if self.settings.taxonomy_llm_base_url is not None
+            else self.settings.llm_structured_base_url,
+            api_key=self.settings.taxonomy_llm_api_key
+            if self.settings.taxonomy_llm_api_key is not None
+            else self.settings.llm_structured_api_key,
+            timeout_seconds=self.settings.taxonomy_llm_timeout_seconds
+            or self.settings.llm_structured_timeout_seconds,
+        )
         self.repository = TaxonomyRepository(session)
         self.outbox = EventOutboxRepository(session)
 
@@ -188,6 +208,21 @@ class TaxonomyService:
         )
         self.repository.add_category(category)
         await self.session.flush()
+        if await self.repository.get_profile(category_id=category.id) is None:
+            profile_source = (
+                "template" if source in {"template", "system"} else "llm_generated"
+            )
+            self.repository.add_profile(
+                self._profile_for_category(
+                    category,
+                    profile_source=profile_source,
+                )
+            )
+            await self._enqueue_category_profile_index(
+                owner_user_id=owner_user_id,
+                category_id=category.id,
+                priority=50,
+            )
         if commit:
             await self.session.commit()
             await self.session.refresh(category)
@@ -523,6 +558,8 @@ class TaxonomyService:
         category_profile_editing_enabled: bool | None,
         trash_enabled: bool | None,
         trash_retention_days: int | None,
+        tags_auto_apply_mode: str | None = None,
+        taxonomy_auto_apply_mode: str | None = None,
     ) -> TaxonomyUserSettings:
         settings = await self.get_user_settings(owner_user_id=owner_user_id)
         if category_profile_editing_enabled is not None:
@@ -531,6 +568,10 @@ class TaxonomyService:
             settings.trash_enabled = trash_enabled
         if trash_retention_days is not None:
             settings.trash_retention_days = trash_retention_days
+        if tags_auto_apply_mode is not None:
+            settings.tags_auto_apply_mode = AutomaticApplyMode(tags_auto_apply_mode).value
+        if taxonomy_auto_apply_mode is not None:
+            settings.taxonomy_auto_apply_mode = AutomaticApplyMode(taxonomy_auto_apply_mode).value
         await self.session.commit()
         await self.session.refresh(settings)
         return settings
@@ -557,6 +598,7 @@ class TaxonomyService:
         profile.keywords = keywords
         profile.positive_examples = positive_examples
         profile.negative_examples = negative_examples
+        profile.profile_source = "user_edited"
         await self._enqueue_category_profile_index(
             owner_user_id=owner_user_id,
             category_id=category_id,
@@ -727,7 +769,7 @@ class TaxonomyService:
         source_event_id: str | None = None,
         correlation_id: str | None = None,
     ) -> TaxonomyClassificationJob:
-        await self._ensure_content_exists(owner_user_id, content_object_id)
+        content_object = await self._ensure_content_exists(owner_user_id, content_object_id)
         return await self.repository.enqueue_classification_job(
             owner_user_id=owner_user_id,
             content_object_id=content_object_id,
@@ -735,6 +777,7 @@ class TaxonomyService:
             priority=priority,
             source_event_id=source_event_id,
             correlation_id=correlation_id,
+            content_updated_at_snapshot=content_object.updated_at,
         )
 
     async def list_assignments(
@@ -771,6 +814,40 @@ class TaxonomyService:
         return await self.repository.list_classification_jobs_for_content(
             owner_user_id=owner_user_id,
             content_object_id=content_object_id,
+        )
+
+    async def list_review_assignments(
+        self,
+        *,
+        owner_user_id: str,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[TaxonomyContentAssignment]:
+        return await self.repository.list_review_assignments(
+            owner_user_id=owner_user_id,
+            limit=limit,
+            offset=offset,
+        )
+
+    async def job_metrics(self, *, owner_user_id: str) -> TaxonomyJobMetricsResponse:
+        job_rows = await self.session.execute(
+            select(TaxonomyClassificationJob.status, func.count(TaxonomyClassificationJob.id))
+            .where(TaxonomyClassificationJob.owner_user_id == owner_user_id)
+            .group_by(TaxonomyClassificationJob.status)
+        )
+        pending_proposals = await self.session.scalar(
+            select(func.count(TaxonomyContentAssignment.id)).where(
+                TaxonomyContentAssignment.owner_user_id == owner_user_id,
+                TaxonomyContentAssignment.status == TaxonomyAssignmentStatus.PROPOSED.value,
+                TaxonomyContentAssignment.is_current.is_(True),
+            )
+        )
+        return TaxonomyJobMetricsResponse(
+            jobs_by_status=[
+                TaxonomyJobStatusCountResponse(status=status, count=count)
+                for status, count in job_rows.all()
+            ],
+            proposals_pending=int(pending_proposals or 0),
         )
 
     async def enqueue_inbox_reclassification_jobs(
@@ -825,6 +902,13 @@ class TaxonomyService:
         assignment.is_current = True
         assignment.category_name_snapshot = category.name
         assignment.category_path_snapshot = category.path
+        self._record_feedback(
+            owner_user_id=owner_user_id,
+            content_object_id=content_object_id,
+            target_id=assignment.category_id,
+            action="accepted",
+            reason=assignment.reasoning,
+        )
         await self.session.commit()
         await self.session.refresh(assignment)
         return assignment
@@ -839,6 +923,13 @@ class TaxonomyService:
         assignment = await self._load_assignment(owner_user_id, content_object_id, assignment_id)
         assignment.status = "rejected"
         assignment.is_current = False
+        self._record_feedback(
+            owner_user_id=owner_user_id,
+            content_object_id=content_object_id,
+            target_id=assignment.category_id,
+            action="rejected",
+            reason=assignment.reasoning,
+        )
         await self.session.commit()
         await self.session.refresh(assignment)
         return assignment
@@ -981,6 +1072,13 @@ class TaxonomyService:
     async def process_classification_job(self, job: TaxonomyClassificationJob) -> None:
         if job.job_type != "classify_content":
             raise TaxonomyValidationError(f"Unsupported taxonomy job type: {job.job_type}")
+        if await self._classification_job_is_stale(job):
+            job.status = TaxonomyJobStatus.STALE.value
+            job.result_status = "stale"
+            job.last_error = "Content was updated after the taxonomy job was enqueued."
+            job.locked_at = None
+            job.locked_by = None
+            return
 
         response = await self.classify_content_object_with_response(
             owner_user_id=job.owner_user_id,
@@ -997,7 +1095,7 @@ class TaxonomyService:
                 assignment_id=response.assignment_id,
             )
 
-        job.status = "succeeded"
+        job.status = TaxonomyJobStatus.SUCCEEDED.value
         job.assignment_id = response.assignment_id
         job.result_status = response.status
         job.last_error = None
@@ -1019,9 +1117,9 @@ class TaxonomyService:
         job.locked_at = None
         job.locked_by = None
         if job.attempts >= job.max_attempts:
-            job.status = "failed"
+            job.status = TaxonomyJobStatus.FAILED.value
             return
-        job.status = "pending"
+        job.status = TaxonomyJobStatus.PENDING.value
         job.run_after = datetime.now(UTC) + timedelta(seconds=min(300, 2**job.attempts))
 
     async def _classify_from_semantic_candidates(
@@ -1049,13 +1147,13 @@ class TaxonomyService:
                 reasoning=reasoning,
             )
             if inbox_assignment is not None:
-                assignment, inbox = inbox_assignment
+                inbox_assignment_model, inbox = inbox_assignment
                 selected_category = self._classification_category(inbox)
                 return self._classification_response(
                     content_object_id=content_object_id,
                     mode=response_mode,
                     dry_run=dry_run,
-                    assignment=assignment,
+                    assignment=inbox_assignment_model,
                     selected_category=selected_category,
                     status="accepted",
                     confidence=best.result.score,
@@ -1084,15 +1182,33 @@ class TaxonomyService:
                 would_category=None,
             )
 
-        status: Literal["accepted", "proposed"] = (
-            "accepted"
-            if best.result.score >= self.settings.taxonomy_classification_high_threshold
-            else "proposed"
+        status = await self._taxonomy_assignment_status(
+            owner_user_id=owner_user_id,
+            confidence=best.result.score,
+            accept_threshold=self.settings.taxonomy_classification_high_threshold,
         )
+        if status is None:
+            selected_category = self._classification_category(best.category)
+            return self._classification_response(
+                content_object_id=content_object_id,
+                mode=response_mode,
+                dry_run=dry_run,
+                assignment=None,
+                selected_category=selected_category,
+                status="no_assignment",
+                confidence=best.result.score,
+                reasoning="Automatic taxonomy classification is disabled for this user.",
+                semantic_candidates=self._candidate_responses(candidates),
+                classification_text=classification_text,
+                llm_decision=None,
+                would_assign=False,
+                would_status="no_assignment",
+                would_category=selected_category,
+            )
         reasoning = (
             fallback_reason or "Selected by semantic similarity over taxonomy category profiles."
         )
-        assignment = None
+        assignment: TaxonomyContentAssignment | None = None
         if not dry_run:
             assignment = await self._create_current_assignment(
                 owner_user_id=owner_user_id,
@@ -1220,12 +1336,30 @@ class TaxonomyService:
                 would_category=None,
             )
 
-        status: Literal["accepted", "proposed"] = (
-            "accepted"
-            if llm_decision.confidence >= self.settings.taxonomy_llm_classification_accept_threshold
-            else "proposed"
+        status = await self._taxonomy_assignment_status(
+            owner_user_id=owner_user_id,
+            confidence=llm_decision.confidence,
+            accept_threshold=self.settings.taxonomy_llm_classification_accept_threshold,
         )
-        assignment = None
+        if status is None:
+            selected_category = self._classification_category(selected.category)
+            return self._classification_response(
+                content_object_id=content_object_id,
+                mode="llm_judge",
+                dry_run=dry_run,
+                assignment=None,
+                selected_category=selected_category,
+                status="no_assignment",
+                confidence=llm_decision.confidence,
+                reasoning="Automatic taxonomy classification is disabled for this user.",
+                semantic_candidates=self._candidate_responses(candidates),
+                classification_text=classification_text,
+                llm_decision=llm_decision,
+                would_assign=False,
+                would_status="no_assignment",
+                would_category=selected_category,
+            )
+        assignment: TaxonomyContentAssignment | None = None
         if not dry_run:
             assignment = await self._create_current_assignment(
                 owner_user_id=owner_user_id,
@@ -1573,7 +1707,8 @@ class TaxonomyService:
                 "User guidance:",
                 user_guidance,
                 "",
-                "Return JSON matching the schema. Make summary, keywords, positive examples and negative examples directly useful for future automatic classification.",
+                "Return JSON matching the schema. Make summary, keywords, positive examples "
+                "and negative examples directly useful for future automatic classification.",
             ]
         )
 
@@ -1599,10 +1734,6 @@ class TaxonomyService:
             },
         }
 
-    async def list_templates(self) -> list[TaxonomyTemplate]:
-        await self._ensure_templates_seeded()
-        return await self.repository.list_templates()
-
     def list_interest_options(self) -> list[InterestOption]:
         return [
             InterestOption(
@@ -1610,103 +1741,8 @@ class TaxonomyService:
                 name=str(config["name"]),
                 description=str(config["description"]),
             )
-            for slug, config in self._interest_presets().items()
+            for slug, config in self._interest_specs().items()
         ]
-
-    async def get_template(self, *, template_slug: str) -> TaxonomyTemplate:
-        await self._ensure_templates_seeded()
-        template = await self.repository.get_template_by_slug(slug=template_slug)
-        if template is None:
-            raise TaxonomyNotFoundError
-        return template
-
-    async def initialize_from_template(
-        self,
-        *,
-        owner_user_id: str,
-        template_slug: str,
-    ) -> InitializeTaxonomyResult:
-        if await self.repository.has_categories(owner_user_id=owner_user_id):
-            raise TaxonomyConflictError
-        template = await self.get_template(template_slug=template_slug)
-        template_categories = await self.repository.list_template_categories(
-            template_id=template.id,
-        )
-
-        created_by_template_id: dict[str, TaxonomyCategory] = {}
-        created_profiles = 0
-        for template_category in template_categories:
-            parent = (
-                created_by_template_id[template_category.parent_id]
-                if template_category.parent_id is not None
-                else None
-            )
-            category = TaxonomyCategory(
-                owner_user_id=owner_user_id,
-                parent_id=parent.id if parent is not None else None,
-                slug=template_category.slug,
-                name=template_category.name,
-                description=template_category.description,
-                path=template_category.path,
-                depth=template_category.depth,
-                sort_order=template_category.sort_order,
-                source="system" if template_category.path == "inbox" else "template",
-                is_system=template_category.path == "inbox",
-            )
-            self.repository.add_category(category)
-            await self.session.flush()
-            created_by_template_id[template_category.id] = category
-            profile = TaxonomyCategoryProfile(
-                category_id=category.id,
-                summary=template_category.profile_summary,
-                keywords=template_category.profile_keywords,
-                positive_examples=template_category.profile_positive_examples,
-                negative_examples=template_category.profile_negative_examples,
-            )
-            self.repository.add_profile(profile)
-            await self._enqueue_category_profile_index(
-                owner_user_id=owner_user_id,
-                category_id=category.id,
-                priority=100,
-            )
-            created_profiles += 1
-
-        if not any(category.path == "inbox" for category in created_by_template_id.values()):
-            inbox = TaxonomyCategory(
-                owner_user_id=owner_user_id,
-                slug="inbox",
-                name="Inbox",
-                description="Default category for uncategorized content.",
-                path="inbox",
-                depth=0,
-                sort_order=0,
-                source="system",
-                is_system=True,
-            )
-            self.repository.add_category(inbox)
-            await self.session.flush()
-            self.repository.add_profile(
-                TaxonomyCategoryProfile(
-                    category_id=inbox.id,
-                    summary="Default category for uncategorized content.",
-                    keywords=["inbox", "uncategorized"],
-                    positive_examples=["new item without a clear category"],
-                    negative_examples=["well-classified project material"],
-                )
-            )
-            await self._enqueue_category_profile_index(
-                owner_user_id=owner_user_id,
-                category_id=inbox.id,
-                priority=100,
-            )
-            created_profiles += 1
-        await self.session.commit()
-        return InitializeTaxonomyResult(
-            owner_user_id=owner_user_id,
-            template_slug=template.slug,
-            created_categories_count=len(created_by_template_id),
-            created_profiles_count=created_profiles,
-        )
 
     async def initialize_from_interests(
         self,
@@ -1725,7 +1761,7 @@ class TaxonomyService:
         if not selected_slugs and not custom_description:
             raise TaxonomyValidationError
 
-        presets = self._interest_presets()
+        presets = self._interest_specs_by_slug()
         unknown = [slug for slug in selected_slugs if slug not in presets]
         if unknown:
             raise TaxonomyValidationError
@@ -1766,6 +1802,9 @@ class TaxonomyService:
                     keywords=cast(list[str], item["profile_keywords"]),
                     positive_examples=cast(list[str], item["profile_positive_examples"]),
                     negative_examples=cast(list[str], item["profile_negative_examples"]),
+                    profile_source=(
+                        "llm_generated" if path.startswith("custom-interests") else "template"
+                    ),
                 )
             )
             await self._enqueue_category_profile_index(
@@ -1815,6 +1854,14 @@ class TaxonomyService:
         )
         assignment.category = category
         self.repository.add_assignment(assignment)
+        if assigned_by == "user":
+            self._record_feedback(
+                owner_user_id=owner_user_id,
+                content_object_id=content_object_id,
+                target_id=category.id,
+                action="manually_assigned",
+                reason=reasoning,
+            )
         await self.session.flush()
         if commit:
             await self.session.commit()
@@ -1981,13 +2028,70 @@ class TaxonomyService:
         ):
             raise TaxonomyConflictError
 
-    async def _ensure_content_exists(self, owner_user_id: str, content_object_id: str) -> None:
+    async def _ensure_content_exists(
+        self,
+        owner_user_id: str,
+        content_object_id: str,
+    ) -> ContentObject:
         content_object = await self.repository.get_content_object(
             owner_user_id=owner_user_id,
             content_object_id=content_object_id,
         )
         if content_object is None:
             raise TaxonomyNotFoundError
+        return content_object
+
+    async def _classification_job_is_stale(self, job: TaxonomyClassificationJob) -> bool:
+        if job.content_updated_at_snapshot is None:
+            return False
+        content_object = await self._ensure_content_exists(job.owner_user_id, job.content_object_id)
+        return content_object.updated_at > job.content_updated_at_snapshot
+
+    async def _taxonomy_assignment_status(
+        self,
+        *,
+        owner_user_id: str,
+        confidence: float,
+        accept_threshold: float,
+    ) -> Literal["accepted", "proposed"] | None:
+        settings = await self.get_user_settings(owner_user_id=owner_user_id)
+        try:
+            mode = AutomaticApplyMode(settings.taxonomy_auto_apply_mode)
+        except ValueError:
+            mode = AutomaticApplyMode.AUTO_APPLY_HIGH_CONFIDENCE
+        if mode == AutomaticApplyMode.DISABLED:
+            return None
+        if mode == AutomaticApplyMode.MANUAL_REVIEW_ONLY:
+            return TaxonomyAssignmentStatus.PROPOSED.value
+        if confidence >= accept_threshold:
+            return TaxonomyAssignmentStatus.ACCEPTED.value
+        return TaxonomyAssignmentStatus.PROPOSED.value
+
+    def _record_feedback(
+        self,
+        *,
+        owner_user_id: str,
+        content_object_id: str,
+        target_id: str | None,
+        action: str,
+        reason: str | None,
+        previous_target_id: str | None = None,
+        new_target_id: str | None = None,
+        source: str = "user",
+    ) -> None:
+        self.repository.add_feedback(
+            ClassificationFeedback(
+                owner_user_id=owner_user_id,
+                content_object_id=content_object_id,
+                target_type="taxonomy",
+                target_id=target_id,
+                action=action,
+                previous_target_id=previous_target_id,
+                new_target_id=new_target_id,
+                reason=reason,
+                source=source,
+            )
+        )
 
     async def _enqueue_category_profile_index(
         self,
@@ -2067,90 +2171,6 @@ class TaxonomyService:
         )
 
     @staticmethod
-    def template_summary(template: TaxonomyTemplate) -> TaxonomyTemplateSummaryResponse:
-        return TaxonomyTemplateSummaryResponse.model_validate(template, from_attributes=True)
-
-    @staticmethod
-    def template_detail(
-        template: TaxonomyTemplate,
-        categories: list[TaxonomyTemplateCategory],
-    ) -> TaxonomyTemplateDetailResponse:
-        by_parent: dict[str | None, list[TaxonomyTemplateCategory]] = {}
-        for category in categories:
-            by_parent.setdefault(category.parent_id, []).append(category)
-        for children in by_parent.values():
-            children.sort(key=lambda item: (item.sort_order, item.name.casefold()))
-
-        def build(category: TaxonomyTemplateCategory) -> TaxonomyTemplateTreeItem:
-            return TaxonomyTemplateTreeItem(
-                id=category.id,
-                slug=category.slug,
-                name=category.name,
-                description=category.description,
-                path=category.path,
-                depth=category.depth,
-                sort_order=category.sort_order,
-                profile_summary=category.profile_summary,
-                profile_keywords=category.profile_keywords,
-                profile_positive_examples=category.profile_positive_examples,
-                profile_negative_examples=category.profile_negative_examples,
-                children=[build(child) for child in by_parent.get(category.id, [])],
-            )
-
-        return TaxonomyTemplateDetailResponse(
-            id=template.id,
-            slug=template.slug,
-            name=template.name,
-            description=template.description,
-            is_active=template.is_active,
-            tree=[build(category) for category in by_parent.get(None, [])],
-        )
-
-    async def _ensure_templates_seeded(self) -> None:
-        if await self.repository.has_templates():
-            return
-        for slug, name, tree in (
-            ("default", "Default", self._default_template_tree()),
-            ("developer", "Developer", self._developer_template_tree()),
-        ):
-            template = TaxonomyTemplate(
-                slug=slug,
-                name=name,
-                description=f"{name} cold-start taxonomy template.",
-                is_active=True,
-            )
-            self.repository.add_template(template)
-            await self.session.flush()
-            by_path: dict[str, TaxonomyTemplateCategory] = {}
-            for item in self._flatten_template_tree(tree):
-                path = str(item["path"])
-                parent_path = path.rsplit("/", 1)[0] if "/" in path else None
-                category = TaxonomyTemplateCategory(
-                    template_id=template.id,
-                    parent_id=by_path[parent_path].id if parent_path else None,
-                    slug=str(item["slug"]),
-                    name=str(item["name"]),
-                    description=str(item["description"]),
-                    path=path,
-                    depth=cast(int, item["depth"]),
-                    sort_order=cast(int, item["sort_order"]),
-                    profile_summary=str(item["profile_summary"]),
-                    profile_keywords=cast(list[str], item["profile_keywords"]),
-                    profile_positive_examples=cast(
-                        list[str],
-                        item["profile_positive_examples"],
-                    ),
-                    profile_negative_examples=cast(
-                        list[str],
-                        item["profile_negative_examples"],
-                    ),
-                )
-                self.session.add(category)
-                await self.session.flush()
-                by_path[category.path] = category
-        await self.session.commit()
-
-    @staticmethod
     def _validate_slug(slug: str) -> str:
         value = slug.strip()
         if not value or not SLUG_PATTERN.fullmatch(value):
@@ -2176,19 +2196,144 @@ class TaxonomyService:
         keyword = TaxonomyService._slugify_path_segment(name)
         return {
             "profile_summary": (
-                f"Материалы, где основная тема - {name}. Используйте категорию для заметок, "
-                "ссылок и файлов, которые явно помогают найти или развить эту область знаний."
+                f"Материалы, где {name} является основной темой, задачей или областью "
+                "принятия решений. Категория подходит для заметок, ссылок и файлов, "
+                "которые помогут быстро восстановить контекст и применить знания."
             ),
             "profile_keywords": [keyword, name.strip().casefold()],
             "profile_positive_examples": [
-                f"Заметка, где {name} является центральной темой.",
-                f"Материал с практическими выводами, инструментами или источниками по теме {name}.",
+                f"Конспект, ссылка или файл, где {name} - главный предмет содержания.",
+                f"Материал с выводами, инструментами, примерами или источниками по теме {name}.",
+                f"Рабочая заметка, которую позже будут искать именно через {name}.",
             ],
             "profile_negative_examples": [
-                f"Упоминание {name} без полезного содержания по теме.",
+                f"Случайное упоминание {name} без полезного содержания по теме.",
                 "Общая заметка, которую точнее отнести к другой категории.",
+                "Материал, где категория является только форматом файла или источником.",
             ],
         }
+
+    @classmethod
+    def _interest_specs(cls) -> dict[str, dict[str, object]]:
+        return {slug: cls._load_interest_spec(slug) for slug in INTEREST_SPEC_SLUGS}
+
+    @classmethod
+    def _interest_specs_by_slug(cls) -> dict[str, dict[str, object]]:
+        specs: dict[str, dict[str, object]] = {}
+        for slug, spec in cls._interest_specs().items():
+            specs[slug] = spec
+            aliases = spec.get("aliases", [])
+            if isinstance(aliases, list):
+                for alias in aliases:
+                    if isinstance(alias, str) and alias.strip():
+                        specs[alias.strip()] = spec
+        return specs
+
+    @classmethod
+    def _load_interest_spec(cls, slug: str) -> dict[str, object]:
+        template_path = INTEREST_SPECS_DIR / f"{slug}.json"
+        try:
+            raw = json.loads(template_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise TaxonomyValidationError from exc
+        if not isinstance(raw, dict):
+            raise TaxonomyValidationError
+        spec = cast(dict[str, object], raw)
+        if spec.get("slug") != slug:
+            raise TaxonomyValidationError
+        for field_name in ("name", "description"):
+            if not isinstance(spec.get(field_name), str) or not str(spec[field_name]).strip():
+                raise TaxonomyValidationError
+        aliases = spec.get("aliases", [])
+        if not isinstance(aliases, list) or any(not isinstance(alias, str) for alias in aliases):
+            raise TaxonomyValidationError
+        tree = spec.get("tree")
+        if not isinstance(tree, list):
+            raise TaxonomyValidationError
+        cls._validate_template_nodes(cast(list[object], tree))
+        return spec
+
+    @classmethod
+    def _validate_template_nodes(cls, nodes: list[object]) -> None:
+        for node in nodes:
+            if not isinstance(node, dict):
+                raise TaxonomyValidationError
+            item = cast(dict[str, object], node)
+            if not isinstance(item.get("name"), str) or not str(item["name"]).strip():
+                raise TaxonomyValidationError
+            if "description" in item and not isinstance(item["description"], str):
+                raise TaxonomyValidationError
+            if "profile" in item and not isinstance(item["profile"], dict):
+                raise TaxonomyValidationError
+            children = item.get("children", [])
+            if not isinstance(children, list):
+                raise TaxonomyValidationError
+            cls._validate_template_nodes(cast(list[object], children))
+
+    @staticmethod
+    def _template_profile_list(value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+    @classmethod
+    def _profile_from_template_node(
+        cls,
+        name: str,
+        node: dict[str, object],
+    ) -> dict[str, object]:
+        profile = node.get("profile")
+        if not isinstance(profile, dict):
+            return cls._profile(name)
+        profile_data = cast(dict[str, object], profile)
+        summary = str(
+            profile_data.get("summary") or profile_data.get("profile_summary") or ""
+        ).strip()
+        keywords = cls._template_profile_list(
+            profile_data.get("keywords") or profile_data.get("profile_keywords")
+        )
+        positive_examples = cls._template_profile_list(
+            profile_data.get("positive_examples")
+            or profile_data.get("profile_positive_examples")
+        )
+        negative_examples = cls._template_profile_list(
+            profile_data.get("negative_examples")
+            or profile_data.get("profile_negative_examples")
+        )
+        if not summary or not keywords or not positive_examples or not negative_examples:
+            return cls._profile(name)
+        return {
+            "profile_summary": summary,
+            "profile_keywords": keywords,
+            "profile_positive_examples": positive_examples,
+            "profile_negative_examples": negative_examples,
+        }
+
+    @classmethod
+    def _profile_for_category(
+        cls,
+        category: TaxonomyCategory,
+        *,
+        profile_source: str,
+    ) -> TaxonomyCategoryProfile:
+        profile = cls._profile(category.name)
+        path_parts = category.path.split("/")
+        parent_hint = path_parts[-2].replace("-", " ") if len(path_parts) > 1 else None
+        keywords = list(dict.fromkeys([*cast(list[str], profile["profile_keywords"]), *path_parts]))
+        summary = str(profile["profile_summary"])
+        if parent_hint is not None:
+            summary = (
+                f"{summary} Граница категории: относите сюда материалы про {category.name} "
+                f"в контексте {parent_hint}, а не все общие материалы с похожими словами."
+            )
+        return TaxonomyCategoryProfile(
+            category_id=category.id,
+            summary=summary,
+            keywords=keywords,
+            positive_examples=cast(list[str], profile["profile_positive_examples"]),
+            negative_examples=cast(list[str], profile["profile_negative_examples"]),
+            profile_source=profile_source,
+        )
 
     @staticmethod
     def _node(
@@ -2219,10 +2364,13 @@ class TaxonomyService:
                         "path": path,
                         "depth": depth,
                         "sort_order": index * 10,
-                        **cls._profile(name),
+                        **cls._profile_from_template_node(name, node),
                     }
                 )
-                visit(node["children"], path, depth + 1)  # type: ignore[arg-type]
+                children = node.get("children", [])
+                if not isinstance(children, list):
+                    raise TaxonomyValidationError
+                visit(cast(list[dict[str, object]], children), path, depth + 1)
 
         visit(tree, "", 0)
         return flattened
@@ -2315,128 +2463,3 @@ class TaxonomyService:
                 }
             },
         }
-
-    @classmethod
-    def _interest_presets(cls) -> dict[str, dict[str, object]]:
-        node = cls._node
-        return {
-            "software": {
-                "name": "Programming",
-                "description": "Backend, frontend, languages, databases, and architecture.",
-                "tree": [
-                    node(
-                        "Programming",
-                        [
-                            node("Python"),
-                            node("JavaScript"),
-                            node("Backend"),
-                            node("Frontend"),
-                            node("Databases"),
-                            node("Architecture"),
-                        ],
-                    )
-                ],
-            },
-            "ai": {
-                "name": "AI",
-                "description": "LLMs, agents, RAG, machine learning, and AI tools.",
-                "tree": [
-                    node(
-                        "AI",
-                        [
-                            node("LLM"),
-                            node("Agents"),
-                            node("RAG"),
-                            node("Machine Learning"),
-                            node("Tools"),
-                        ],
-                    )
-                ],
-            },
-            "design": {
-                "name": "Design",
-                "description": "UX, interfaces, visual references, and product design.",
-                "tree": [
-                    node("Design", [node("UX"), node("UI"), node("Research"), node("References")])
-                ],
-            },
-            "business": {
-                "name": "Business",
-                "description": "Product, strategy, marketing, sales, and operations.",
-                "tree": [
-                    node(
-                        "Business",
-                        [node("Product"), node("Strategy"), node("Marketing"), node("Sales")],
-                    )
-                ],
-            },
-            "science": {
-                "name": "Science",
-                "description": "Research papers, experiments, data, and technical domains.",
-                "tree": [
-                    node(
-                        "Science",
-                        [node("Papers"), node("Experiments"), node("Data"), node("Notes")],
-                    )
-                ],
-            },
-            "life": {
-                "name": "Personal",
-                "description": "Learning, health, finance, travel, ideas, and personal notes.",
-                "tree": [
-                    node(
-                        "Personal",
-                        [node("Learning"), node("Health"), node("Finance"), node("Ideas")],
-                    )
-                ],
-            },
-        }
-
-    @classmethod
-    def _default_template_tree(cls) -> list[dict[str, object]]:
-        node = cls._node
-        return [
-            node("Inbox"),
-            node("AI", [node("LLM"), node("Agents"), node("Machine Learning"), node("Tools")]),
-            node(
-                "Programming",
-                [
-                    node("Python"),
-                    node("JavaScript"),
-                    node("Backend"),
-                    node("Frontend"),
-                    node("Databases"),
-                    node("Architecture"),
-                ],
-            ),
-            node("Data", [node("Analytics"), node("Data Engineering"), node("Visualization")]),
-            node(
-                "Business",
-                [node("Product"), node("Marketing"), node("Sales"), node("Strategy")],
-            ),
-            node("Resources", [node("Articles"), node("Books"), node("Videos"), node("Tools")]),
-            node("Personal", [node("Ideas"), node("Tasks"), node("Learning"), node("Notes")]),
-        ]
-
-    @classmethod
-    def _developer_template_tree(cls) -> list[dict[str, object]]:
-        node = cls._node
-        return [
-            node("Inbox"),
-            node("AI", [node("LLM"), node("Agents"), node("RAG"), node("Tools")]),
-            node(
-                "Programming",
-                [
-                    node("Python"),
-                    node("JavaScript"),
-                    node("Backend"),
-                    node("APIs"),
-                    node("Architecture"),
-                    node("Testing"),
-                ],
-            ),
-            node("Databases", [node("PostgreSQL"), node("Redis"), node("Vector Search")]),
-            node("DevOps", [node("Docker"), node("CI/CD"), node("Observability")]),
-            node("Product", [node("Ideas"), node("UX"), node("Strategy")]),
-            node("Resources", [node("Articles"), node("Videos"), node("Tools")]),
-        ]

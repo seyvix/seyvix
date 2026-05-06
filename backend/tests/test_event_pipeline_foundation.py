@@ -19,6 +19,7 @@ from app.contracts.events import (
 from app.core.database import Base, build_session_factory
 from app.modules.auth.models import User
 from app.modules.content.models import ContentAsset, ContentObject
+from app.modules.content.service import ContentService
 from app.modules.snapshots.infrastructure.repositories import (
     SnapshotJobRepository,
     SnapshotSettingsRepository,
@@ -469,6 +470,40 @@ def test_content_event_creates_module_jobs_idempotently() -> None:
         assert tagging_jobs[0].content_object_id == content_object_id
         assert tagging_jobs[0].job_type == "suggest_content_tags"
         assert tagging_jobs[0].status == "pending"
+        assert tagging_jobs[0].source_event_id == envelope.event_id
+        assert tagging_jobs[0].correlation_id == envelope.correlation_id
+        assert tagging_jobs[0].content_updated_at_snapshot is not None
+
+    try:
+        asyncio.run(scenario())
+    except OSError as exc:
+        pytest.skip(f"PostgreSQL is not available for event pipeline tests: {exc}")
+
+
+def test_content_service_only_enqueues_snapshot_jobs_directly(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        session_factory = await _prepare_database(_test_database_url())
+        async with session_factory() as session:
+            user = User(telegram_id="100510", display_name="User")
+            session.add(user)
+            await session.commit()
+            await session.refresh(user)
+
+            await ContentService(session, tmp_path / "content-storage").create_note(
+                owner_user_id=user.id,
+                media_type="text",
+                text="Event-driven jobs are created by Rabbit consumers.",
+                title="Event-driven note",
+                folder_path=None,
+                tag_names=[],
+                file_upload_ids=[],
+            )
+
+            taxonomy_jobs = list(await session.scalars(select(TaxonomyClassificationJob)))
+            tagging_jobs = list(await session.scalars(select(TaggingJob)))
+
+        assert taxonomy_jobs == []
+        assert tagging_jobs == []
 
     try:
         asyncio.run(scenario())

@@ -3,9 +3,22 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from app.core.database import Base
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.core.database import Base
 
 
 def utcnow() -> datetime:
@@ -27,6 +40,7 @@ class Tag(Base):
     slug: Mapped[str] = mapped_column(String(255))
     description: Mapped[str | None] = mapped_column(Text(), nullable=True)
     tag_kind: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    aliases: Mapped[list[str]] = mapped_column(JSON(), default=list)
     created_by_type: Mapped[str] = mapped_column(String(32))
     created_by_user_id: Mapped[str | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
@@ -51,6 +65,10 @@ class ContentTagAssignment(Base):
         Index("ix_content_tag_assignments_owner_content", "owner_user_id", "content_object_id"),
         Index("ix_content_tag_assignments_owner_tag", "owner_user_id", "tag_id"),
         Index("ix_content_tag_assignments_owner_status", "owner_user_id", "status"),
+        CheckConstraint(
+            "status in ('suggested', 'accepted', 'rejected', 'removed')",
+            name="ck_content_tag_assignments_status",
+        ),
         Index(
             "uq_content_tag_assignments_active",
             "owner_user_id",
@@ -93,6 +111,11 @@ class TaggingJob(Base):
     __table_args__ = (
         Index("ix_tagging_jobs_status_run_after_priority", "status", "run_after", "priority"),
         Index("ix_tagging_jobs_owner_content", "owner_user_id", "content_object_id"),
+        UniqueConstraint("source_event_id", name="uq_tagging_jobs_source_event_id"),
+        CheckConstraint(
+            "status in ('pending', 'processing', 'succeeded', 'failed', 'cancelled', 'stale')",
+            name="ck_tagging_jobs_status",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
@@ -110,6 +133,12 @@ class TaggingJob(Base):
     run_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     locked_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_event_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    correlation_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    content_updated_at_snapshot: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     last_error: Mapped[str | None] = mapped_column(Text(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(

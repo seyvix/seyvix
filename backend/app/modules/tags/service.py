@@ -4,16 +4,25 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.config import Settings, get_settings
 from app.modules.content.infrastructure.repositories import ContentRepository
 from app.modules.content.models import ContentObject
 from app.modules.content.storage import slugify
 from app.modules.llm.contracts import StructuredLLMGenerator, build_structured_llm_generator
-from app.modules.tags.contracts import ContentTagSuggestion
+from app.modules.tags.contracts import (
+    ContentTagSuggestion,
+    TagAssignmentStatus,
+    TaggingJobStatusValue,
+)
 from app.modules.tags.infrastructure.llm_tagger import LLMContentTagger
 from app.modules.tags.infrastructure.repositories import TagsRepository
 from app.modules.tags.models import ContentTagAssignment, Tag, TaggingJob
-from sqlalchemy.ext.asyncio import AsyncSession
+from app.modules.tags.schemas import JobStatusCountResponse, TagsJobMetricsResponse
+from app.modules.taxonomy.contracts import AutomaticApplyMode
+from app.modules.taxonomy.models import ClassificationFeedback, TaxonomyUserSettings
 
 
 class TagNotFoundError(Exception):
@@ -52,7 +61,18 @@ class TagsService:
         self.settings = settings or get_settings()
         self.repository = TagsRepository(session)
         self.content = ContentRepository(session)
-        self.llm_generator = llm_generator or build_structured_llm_generator()
+        self.llm_generator = llm_generator or build_structured_llm_generator(
+            provider_name=self.settings.tags_llm_provider
+            or self.settings.llm_structured_provider,
+            base_url=self.settings.tags_llm_base_url
+            if self.settings.tags_llm_base_url is not None
+            else self.settings.llm_structured_base_url,
+            api_key=self.settings.tags_llm_api_key
+            if self.settings.tags_llm_api_key is not None
+            else self.settings.llm_structured_api_key,
+            timeout_seconds=self.settings.tags_llm_timeout_seconds
+            or self.settings.llm_structured_timeout_seconds,
+        )
 
     async def create_tag(
         self,
@@ -62,6 +82,7 @@ class TagsService:
         description: str | None,
         tag_kind: str | None,
         created_by_user_id: str | None,
+        aliases: list[str] | None = None,
         created_by_type: str = "user",
         source: str = "manual",
         source_detail: dict[str, object] | None = None,
@@ -72,18 +93,24 @@ class TagsService:
         tag_slug = slugify(clean_name)
         if not tag_slug:
             raise TagValidationError("Tag name must produce a non-empty slug.")
-        existing = await self.repository.get_tag_by_slug(
+        normalized_aliases = self._normalize_aliases(aliases or [], primary_name=clean_name)
+        existing = await self.repository.get_tag_by_slug_or_alias(
             owner_user_id=owner_user_id,
             slug=tag_slug,
         )
         if existing is not None:
             raise TagConflictError
+        await self._ensure_aliases_available(
+            owner_user_id=owner_user_id,
+            aliases=normalized_aliases,
+        )
         tag = Tag(
             owner_user_id=owner_user_id,
             name=clean_name,
             slug=tag_slug,
             description=description,
             tag_kind=tag_kind,
+            aliases=normalized_aliases,
             created_by_type=created_by_type,
             created_by_user_id=created_by_user_id,
             source=source,
@@ -111,7 +138,7 @@ class TagsService:
     ) -> Tag:
         clean_name = self._validate_name(name)
         tag_slug = slugify(clean_name)
-        existing = await self.repository.get_tag_by_slug(
+        existing = await self.repository.get_tag_by_slug_or_alias(
             owner_user_id=owner_user_id,
             slug=tag_slug,
         )
@@ -138,6 +165,7 @@ class TagsService:
         name: str | None,
         description: str | None,
         tag_kind: str | None,
+        aliases: list[str] | None,
         is_archived: bool | None,
     ) -> Tag:
         tag = await self._get_tag(owner_user_id=owner_user_id, tag_id=tag_id)
@@ -156,6 +184,14 @@ class TagsService:
             tag.description = description
         if tag_kind is not None:
             tag.tag_kind = tag_kind
+        if aliases is not None:
+            normalized_aliases = self._normalize_aliases(aliases, primary_name=tag.name)
+            await self._ensure_aliases_available(
+                owner_user_id=owner_user_id,
+                aliases=normalized_aliases,
+                except_tag_id=tag.id,
+            )
+            tag.aliases = normalized_aliases
         if is_archived is not None:
             tag.is_archived = is_archived
         await self.session.commit()
@@ -202,9 +238,17 @@ class TagsService:
         )
         if existing is not None:
             if existing.status == "suggested" and status == "accepted":
-                existing.status = "accepted"
+                existing.status = TagAssignmentStatus.ACCEPTED.value
                 existing.assigned_by_user_id = assigned_by_user_id
                 existing.reasoning = reasoning or existing.reasoning
+                if assigned_by_type == "user":
+                    self._record_feedback(
+                        owner_user_id=owner_user_id,
+                        content_object_id=content_object_id,
+                        target_id=tag_id,
+                        action="accepted",
+                        reason=reasoning,
+                    )
             if commit:
                 await self.session.commit()
             return existing
@@ -222,6 +266,14 @@ class TagsService:
             reasoning=reasoning,
         )
         self.repository.add_assignment(assignment)
+        if assigned_by_type == "user" and status == "accepted":
+            self._record_feedback(
+                owner_user_id=owner_user_id,
+                content_object_id=content_object_id,
+                target_id=tag.id,
+                action="manually_assigned",
+                reason=reasoning,
+            )
         await self.session.flush()
         if commit:
             await self.session.commit()
@@ -296,6 +348,13 @@ class TagsService:
         assignment.assigned_by_type = "user"
         assignment.assigned_by_user_id = assigned_by_user_id
         assignment.source = "manual"
+        self._record_feedback(
+            owner_user_id=owner_user_id,
+            content_object_id=content_object_id,
+            target_id=tag_id,
+            action="removed",
+            reason=None,
+        )
         await self.session.commit()
 
     async def list_tags_for_content(
@@ -345,6 +404,39 @@ class TagsService:
         for assignment in assignments:
             result.setdefault(assignment.content_object_id, []).append(assignment.tag)
         return result
+
+    async def list_review_suggestions(
+        self,
+        *,
+        owner_user_id: str,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[ContentTagAssignment]:
+        return await self.repository.list_review_suggestions(
+            owner_user_id=owner_user_id,
+            limit=limit,
+            offset=offset,
+        )
+
+    async def job_metrics(self, *, owner_user_id: str) -> TagsJobMetricsResponse:
+        job_rows = await self.session.execute(
+            select(TaggingJob.status, func.count(TaggingJob.id))
+            .where(TaggingJob.owner_user_id == owner_user_id)
+            .group_by(TaggingJob.status)
+        )
+        pending_suggestions = await self.session.scalar(
+            select(func.count(ContentTagAssignment.id)).where(
+                ContentTagAssignment.owner_user_id == owner_user_id,
+                ContentTagAssignment.status == TagAssignmentStatus.SUGGESTED.value,
+            )
+        )
+        return TagsJobMetricsResponse(
+            jobs_by_status=[
+                JobStatusCountResponse(status=status, count=count)
+                for status, count in job_rows.all()
+            ],
+            suggestions_pending=int(pending_suggestions or 0),
+        )
 
     async def enqueue_content_tag_suggestions(
         self,
@@ -407,8 +499,11 @@ class TagsService:
             "model": self.settings.tags_llm_model,
             "prompt_version": self.settings.tags_llm_prompt_version,
         }
+        mode = await self._tags_auto_apply_mode(owner_user_id=owner_user_id)
+        if mode == AutomaticApplyMode.DISABLED:
+            return suggestions
         for suggestion in suggestions:
-            tag = await self.repository.get_tag_by_slug(
+            tag = await self.repository.get_tag_by_slug_or_alias(
                 owner_user_id=owner_user_id,
                 slug=suggestion.slug,
             )
@@ -430,9 +525,12 @@ class TagsService:
             if tag.is_archived:
                 continue
             assignment_status = (
-                "accepted"
-                if suggestion.confidence >= self.settings.tags_llm_auto_apply_threshold
-                else "suggested"
+                TagAssignmentStatus.ACCEPTED.value
+                if (
+                    mode == AutomaticApplyMode.AUTO_APPLY_HIGH_CONFIDENCE
+                    and suggestion.confidence >= self.settings.tags_llm_auto_apply_threshold
+                )
+                else TagAssignmentStatus.SUGGESTED.value
             )
             await self.assign_tag_to_content(
                 owner_user_id=owner_user_id,
@@ -470,9 +568,16 @@ class TagsService:
             raise TagNotFoundError
         if assignment.status != "suggested":
             raise TagConflictError
-        assignment.status = "accepted"
+        assignment.status = TagAssignmentStatus.ACCEPTED.value
         assignment.assigned_by_type = "user"
         assignment.assigned_by_user_id = assigned_by_user_id
+        self._record_feedback(
+            owner_user_id=owner_user_id,
+            content_object_id=content_object_id,
+            target_id=assignment.tag_id,
+            action="accepted",
+            reason=assignment.reasoning,
+        )
         await self.session.commit()
         return assignment
 
@@ -496,9 +601,16 @@ class TagsService:
             raise TagNotFoundError
         if assignment.status != "suggested":
             raise TagConflictError
-        assignment.status = "rejected"
+        assignment.status = TagAssignmentStatus.REJECTED.value
         assignment.assigned_by_type = "user"
         assignment.assigned_by_user_id = assigned_by_user_id
+        self._record_feedback(
+            owner_user_id=owner_user_id,
+            content_object_id=content_object_id,
+            target_id=assignment.tag_id,
+            action="rejected",
+            reason=assignment.reasoning,
+        )
         await self.session.commit()
         return assignment
 
@@ -507,13 +619,19 @@ class TagsService:
             raise TagLLMDisabledError("LLM tag suggestions are disabled.")
         if job.job_type not in {"suggest_content_tags", "refresh_content_tags"}:
             raise TagValidationError(f"Unsupported tagging job type: {job.job_type}")
+        if await self._job_is_stale(job):
+            job.status = TaggingJobStatusValue.STALE.value
+            job.last_error = "Content was updated after the tagging job was enqueued."
+            job.locked_at = None
+            job.locked_by = None
+            return
         await self.suggest_tags_for_content(
             owner_user_id=job.owner_user_id,
             content_object_id=job.content_object_id,
             max_tags=self.settings.tags_llm_max_tags,
             persist=True,
         )
-        job.status = "succeeded"
+        job.status = TaggingJobStatusValue.SUCCEEDED.value
         job.last_error = None
         job.locked_at = None
         job.locked_by = None
@@ -523,10 +641,62 @@ class TagsService:
         job.locked_at = None
         job.locked_by = None
         if error == "LLM tag suggestions are disabled." or job.attempts >= job.max_attempts:
-            job.status = "failed"
+            job.status = TaggingJobStatusValue.FAILED.value
             return
-        job.status = "pending"
+        job.status = TaggingJobStatusValue.PENDING.value
         job.run_after = datetime.now(UTC) + timedelta(seconds=min(300, 2**job.attempts))
+
+    async def merge_tags(
+        self,
+        *,
+        owner_user_id: str,
+        source_tag_id: str,
+        target_tag_id: str,
+        assigned_by_user_id: str,
+    ) -> Tag:
+        if source_tag_id == target_tag_id:
+            raise TagConflictError
+        source = await self._get_tag(owner_user_id=owner_user_id, tag_id=source_tag_id)
+        target = await self._get_tag(owner_user_id=owner_user_id, tag_id=target_tag_id)
+        if target.is_archived:
+            raise TagConflictError
+        assignments = await self.session.scalars(
+            select(ContentTagAssignment).where(
+                ContentTagAssignment.owner_user_id == owner_user_id,
+                ContentTagAssignment.tag_id == source.id,
+                ContentTagAssignment.status.in_(("suggested", "accepted")),
+            )
+        )
+        for assignment in assignments:
+            existing = await self.repository.get_active_assignment(
+                owner_user_id=owner_user_id,
+                content_object_id=assignment.content_object_id,
+                tag_id=target.id,
+            )
+            if existing is not None:
+                assignment.status = TagAssignmentStatus.REMOVED.value
+            else:
+                assignment.tag_id = target.id
+            self._record_feedback(
+                owner_user_id=owner_user_id,
+                content_object_id=assignment.content_object_id,
+                target_id=target.id,
+                action="changed",
+                previous_target_id=source.id,
+                new_target_id=target.id,
+                reason="Tag merge.",
+                source="system",
+            )
+        source.is_archived = True
+        target.aliases = self._normalize_aliases(
+            [*target.aliases, source.slug, source.name, *source.aliases],
+            primary_name=target.name,
+        )
+        source.updated_at = datetime.now(UTC)
+        target.updated_at = datetime.now(UTC)
+        await self.session.commit()
+        await self.session.refresh(target)
+        return target
 
     async def _build_tagging_input(
         self,
@@ -580,12 +750,84 @@ class TagsService:
             raise TagNotFoundError
         return content_object
 
+    async def _job_is_stale(self, job: TaggingJob) -> bool:
+        if job.content_updated_at_snapshot is None:
+            return False
+        content_object = await self._get_content_object(
+            owner_user_id=job.owner_user_id,
+            content_object_id=job.content_object_id,
+        )
+        return content_object.updated_at > job.content_updated_at_snapshot
+
+    async def _tags_auto_apply_mode(self, *, owner_user_id: str) -> AutomaticApplyMode:
+        settings = await self.session.scalar(
+            select(TaxonomyUserSettings).where(TaxonomyUserSettings.owner_user_id == owner_user_id)
+        )
+        if settings is None:
+            return AutomaticApplyMode.AUTO_APPLY_HIGH_CONFIDENCE
+        try:
+            return AutomaticApplyMode(settings.tags_auto_apply_mode)
+        except ValueError:
+            return AutomaticApplyMode.AUTO_APPLY_HIGH_CONFIDENCE
+
+    async def _ensure_aliases_available(
+        self,
+        *,
+        owner_user_id: str,
+        aliases: list[str],
+        except_tag_id: str | None = None,
+    ) -> None:
+        for alias in aliases:
+            existing = await self.repository.get_tag_by_slug_or_alias(
+                owner_user_id=owner_user_id,
+                slug=alias,
+            )
+            if existing is not None and existing.id != except_tag_id:
+                raise TagConflictError
+
+    def _record_feedback(
+        self,
+        *,
+        owner_user_id: str,
+        content_object_id: str,
+        target_id: str | None,
+        action: str,
+        reason: str | None,
+        previous_target_id: str | None = None,
+        new_target_id: str | None = None,
+        source: str = "user",
+    ) -> None:
+        self.session.add(
+            ClassificationFeedback(
+                owner_user_id=owner_user_id,
+                content_object_id=content_object_id,
+                target_type="tag",
+                target_id=target_id,
+                action=action,
+                previous_target_id=previous_target_id,
+                new_target_id=new_target_id,
+                reason=reason,
+                source=source,
+            )
+        )
+
     @staticmethod
     def _validate_name(name: str) -> str:
         clean_name = name.strip()
         if not clean_name:
             raise TagValidationError("Tag name must not be empty.")
         return clean_name
+
+    @staticmethod
+    def _normalize_aliases(aliases: list[str], *, primary_name: str) -> list[str]:
+        primary_slug = slugify(primary_name)
+        normalized = []
+        for alias in aliases:
+            alias_slug = slugify(alias)
+            if not alias_slug or alias_slug == primary_slug:
+                continue
+            normalized.append(alias_slug)
+        return list(dict.fromkeys(normalized))
 
     @staticmethod
     def _text_excerpt(content_object: ContentObject, *, max_chars: int) -> str | None:
@@ -638,7 +880,13 @@ class TagsService:
 
     @staticmethod
     def _tag_match_score(*, tag: Tag, text: str) -> int:
-        candidates = [tag.name, tag.slug, tag.description or "", tag.tag_kind or ""]
+        candidates = [
+            tag.name,
+            tag.slug,
+            *(tag.aliases or []),
+            tag.description or "",
+            tag.tag_kind or "",
+        ]
         score = 0
         for candidate in candidates:
             normalized = candidate.strip().casefold()

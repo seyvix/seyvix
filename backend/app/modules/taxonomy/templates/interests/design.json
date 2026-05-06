@@ -1,0 +1,64 @@
+{
+  "slug": "design",
+  "aliases": [],
+  "name": "Design",
+  "description": "UX, UI, исследования, визуальные референсы и продуктовый дизайн.",
+  "tree": [
+    {
+      "name": "Design",
+      "description": "Дизайн интерфейсов, пользовательский опыт, исследования, UI-паттерны и визуальные материалы.",
+      "profile": {
+        "summary": "Материалы про дизайн как основную тему: UX, UI, исследования пользователей, визуальные референсы, прототипы, flows и product design decisions.",
+        "keywords": ["design", "ux", "ui", "research", "references", "prototype"],
+        "positive_examples": ["Разбор onboarding flow.", "UI reference для review queue.", "Итоги пользовательского интервью."],
+        "negative_examples": ["Backend API без интерфейса.", "Бизнес-стратегия без UX.", "AI prompt без пользовательского flow."]
+      },
+      "children": [
+        {
+          "name": "UX",
+          "description": "Пользовательский опыт, сценарии, onboarding, review states и error handling.",
+          "profile": {
+            "summary": "Материалы про UX: user flows, onboarding, states, empty states, error handling, review queues, usability и практичность интерфейса.",
+            "keywords": ["ux", "user-flow", "onboarding", "review-queue", "states", "usability"],
+            "positive_examples": ["Поток принятия предложенной категории.", "Onboarding выбора интересов.", "Empty state для pending assignments."],
+            "negative_examples": ["Backend-only repository method.", "Docker config без UI.", "Database index без пользовательского сценария."]
+          },
+          "children": []
+        },
+        {
+          "name": "UI",
+          "description": "Компоненты, layout, visual polish, responsive states и interaction details.",
+          "profile": {
+            "summary": "Материалы про UI-реализацию и визуальный слой: компоненты, layout, typography, colors, responsive states, controls и interaction details.",
+            "keywords": ["ui", "components", "layout", "typography", "responsive", "controls"],
+            "positive_examples": ["Состояния кнопки approve/reject.", "Layout review queue.", "Правка переполнения текста в card."],
+            "negative_examples": ["Исследовательская заметка без интерфейса.", "Backend worker без UI.", "SQL migration без visual layer."]
+          },
+          "children": []
+        },
+        {
+          "name": "Research",
+          "description": "Пользовательские интервью, discovery, usability findings и synthesis.",
+          "profile": {
+            "summary": "Материалы про дизайн-исследования: интервью, discovery, usability tests, synthesis, user needs и evidence для продуктовых решений.",
+            "keywords": ["research", "user-interviews", "discovery", "usability", "synthesis", "findings"],
+            "positive_examples": ["Итоги интервью с пользователем.", "Список pain points onboarding.", "Usability finding для taxonomy review."],
+            "negative_examples": ["UI polish без исследования.", "Backend implementation detail.", "Маркетинговый канал без user research."]
+          },
+          "children": []
+        },
+        {
+          "name": "References",
+          "description": "Визуальные и продуктовые референсы, screenshots, patterns и inspiration.",
+          "profile": {
+            "summary": "Материалы-референсы для дизайна: screenshots, product patterns, visual inspiration, interface examples и подборки UI решений.",
+            "keywords": ["references", "screenshots", "patterns", "inspiration", "examples", "visual"],
+            "positive_examples": ["Скриншот удачной review queue.", "Подборка UI для tag management.", "Пример onboarding из другого продукта."],
+            "negative_examples": ["Собственный UX вывод без внешнего примера.", "Код компонента без reference.", "Техническая статья без визуального паттерна."]
+          },
+          "children": []
+        }
+      ]
+    }
+  ]
+}

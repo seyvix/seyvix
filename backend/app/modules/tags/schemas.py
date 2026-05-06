@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from pydantic import BaseModel, Field
+
 from app.modules.tags.contracts import (
     AssignmentCreatedByType,
     AssignmentSource,
@@ -9,20 +11,25 @@ from app.modules.tags.contracts import (
     TagCreatedByType,
     TagSource,
 )
-from pydantic import BaseModel, Field
 
 
 class TagCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     description: str | None = None
     tag_kind: str | None = Field(default=None, max_length=64)
+    aliases: list[str] = Field(default_factory=list, max_length=50)
 
 
 class TagUpdateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = None
     tag_kind: str | None = Field(default=None, max_length=64)
+    aliases: list[str] | None = Field(default=None, max_length=50)
     is_archived: bool | None = None
+
+
+class TagMergeRequest(BaseModel):
+    target_tag_id: str = Field(min_length=1, max_length=36)
 
 
 class TagResponse(BaseModel):
@@ -31,6 +38,7 @@ class TagResponse(BaseModel):
     slug: str
     description: str | None
     tag_kind: str | None
+    aliases: list[str]
     created_by_type: TagCreatedByType
     created_by_user_id: str | None
     source: TagSource
@@ -90,6 +98,8 @@ class TaggingJobDetailResponse(BaseModel):
     status: str
     attempts: int
     max_attempts: int
+    source_event_id: str | None
+    correlation_id: str | None
     last_error: str | None
     created_at: datetime
     updated_at: datetime
@@ -97,3 +107,17 @@ class TaggingJobDetailResponse(BaseModel):
 
 class TaggingJobListResponse(BaseModel):
     items: list[TaggingJobDetailResponse]
+
+
+class TagReviewQueueResponse(BaseModel):
+    items: list[ContentTagAssignmentResponse]
+
+
+class JobStatusCountResponse(BaseModel):
+    status: str
+    count: int
+
+
+class TagsJobMetricsResponse(BaseModel):
+    jobs_by_status: list[JobStatusCountResponse]
+    suggestions_pending: int
