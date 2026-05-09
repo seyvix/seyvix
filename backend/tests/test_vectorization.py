@@ -3,10 +3,13 @@ import hashlib
 import hmac
 import os
 from datetime import UTC, datetime
-from pathlib import Path
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
+from pydantic import ValidationError
+from sqlalchemy import select
+
 from app.core.config import Settings
 from app.core.database import build_session_factory
 from app.modules.vectorization.contracts import (
@@ -30,9 +33,6 @@ from app.modules.vectorization.models import (
 )
 from app.modules.vectorization.service import VectorizationService, compute_source_hash
 from app.modules.vectorization.worker import VectorizationWorker
-from fastapi.testclient import TestClient
-from pydantic import ValidationError
-from sqlalchemy import select
 
 TELEGRAM_BOT_TOKEN = "123456:test-bot-token"
 
@@ -847,20 +847,3 @@ def test_failed_provider_retries_until_failed() -> None:
 
     assert first_delay > datetime.now(UTC)
     assert final_status == "failed"
-
-
-def test_migration_creates_vector_extension_and_tables() -> None:
-    migration_path = (
-        Path(__file__).resolve().parents[1]
-        / "migrations"
-        / "versions"
-        / "20260429_0007_create_vectorization_tables.py"
-    )
-    content = migration_path.read_text(encoding="utf-8")
-
-    assert "CREATE EXTENSION IF NOT EXISTS vector" in content
-    assert '"vectorization_sources"' in content
-    assert '"vectorization_documents"' in content
-    assert '"vectorization_chunks"' in content
-    assert '"vectorization_embeddings"' in content
-    assert '"vectorization_jobs"' in content

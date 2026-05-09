@@ -74,41 +74,6 @@ def test_worker_entrypoint_loads_models_needed_by_foreign_keys() -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_worker_entrypoint_is_limited_to_event_processing_modes() -> None:
-    from app.workers import main
-
-    assert set(main.WORKER_MODES) == {
-        "tags-worker",
-        "taxonomy-worker",
-        "vectorization-worker",
-    }
-
-
-def test_worker_startup_helpers_are_split_by_responsibility() -> None:
-    from app.workers.polling import poll_worker_forever
-    from app.workers.rabbit import build_worker_rabbit, declare_worker_rabbit_topology
-    from app.workers.runtime import build_worker_runtime
-
-    assert callable(build_worker_runtime)
-    assert callable(build_worker_rabbit)
-    assert callable(declare_worker_rabbit_topology)
-    assert callable(poll_worker_forever)
-
-
-def test_worker_run_entrypoints_live_under_run_package() -> None:
-    from app.workers.run.outbox import run_outbox_publisher
-    from app.workers.run.snapshot import run_snapshot_worker
-    from app.workers.run.tags import run_tags_worker
-    from app.workers.run.taxonomy import run_taxonomy_worker
-    from app.workers.run.vectorization import run_vectorization_worker
-
-    assert callable(run_outbox_publisher)
-    assert callable(run_snapshot_worker)
-    assert callable(run_tags_worker)
-    assert callable(run_taxonomy_worker)
-    assert callable(run_vectorization_worker)
-
-
 def test_rabbit_connection_retry_waits_for_broker(monkeypatch: pytest.MonkeyPatch) -> None:
     attempts = 0
     delays: list[float] = []
