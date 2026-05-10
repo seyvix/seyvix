@@ -103,9 +103,6 @@ export default function SettingsPage() {
           <p className={styles.eyebrow}>Настройки</p>
           <h1>Аккаунт и обработка материалов</h1>
         </div>
-        <button className={styles.logoutButton} onClick={() => void logout()}>
-          Выйти
-        </button>
       </header>
 
       <div className={styles.shell}>
