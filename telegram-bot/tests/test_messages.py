@@ -1,7 +1,32 @@
 from __future__ import annotations
 
+from aiogram.types import Message
+
 from telegram_bot.domain.models import InboundMaterial, MaterialType
-from telegram_bot.presentation.telegram.message_mapper import material_from_mapping
+from telegram_bot.presentation.telegram.message_mapper import (
+    material_from_mapping,
+    material_from_message,
+)
+
+
+def test_material_from_aiogram_message_uses_telegram_from_alias() -> None:
+    message = Message.model_validate(
+        {
+            "message_id": 18,
+            "date": 1_777_777_780,
+            "chat": {"id": 700, "type": "private"},
+            "from": {"id": 100500, "is_bot": False, "first_name": "User"},
+            "text": "Plain note from aiogram",
+        }
+    )
+
+    material = material_from_message(message)
+
+    assert material is not None
+    assert material.telegram_user_id == "100500"
+    assert material.telegram_chat_id == "700"
+    assert material.material_type == MaterialType.TEXT
+    assert material.text == "Plain note from aiogram"
 
 
 def test_parse_message_extracts_plain_text_payload() -> None:

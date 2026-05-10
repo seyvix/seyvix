@@ -13,7 +13,7 @@ def material_from_message(message: Message) -> InboundMaterial | None:
     if message.from_user is None:
         return None
 
-    payload = message.model_dump(mode="python")
+    payload = message.model_dump(mode="python", by_alias=True)
     return material_from_mapping(payload)
 
 
