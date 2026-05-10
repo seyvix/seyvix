@@ -127,6 +127,8 @@ def test_create_text_note_persists_manifest_and_downloads_archive(
 
     assert payload["type"] == "simple"
     assert payload["objects"][0]["type"] == "text"
+    assert payload["objects"][0]["mimeType"] == "text/markdown"
+    assert payload["objects"][0]["content"] == "Research note body"
     assert payload["title"] == "Manual title"
     assert "folder" not in payload
     assert payload["taxonomyCategory"]["path"] == "projects/ai"
