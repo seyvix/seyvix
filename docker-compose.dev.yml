@@ -81,6 +81,17 @@ services:
       sh -c "uv sync --frozen &&
              python -m app.workers.run.tags"
 
+  telegram-bot:
+    build:
+      context: .
+      dockerfile: telegram-bot/Dockerfile
+      target: development
+    volumes:
+      - ./telegram-bot:/app
+    command: >
+      sh -c "uv sync &&
+             python -m telegram_bot.main"
+
   postgres:
     ports:
       - "${POSTGRES_PORT:-5432}:5432"

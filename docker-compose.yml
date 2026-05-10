@@ -27,6 +27,12 @@ x-backend-depends: &backend-depends
   minio-init:
     condition: service_completed_successfully
 
+x-telegram-bot-env: &telegram-bot-env
+  env_file:
+    - .env
+  environment:
+    TELEGRAM_BACKEND_BASE_URL: http://backend:8000/api/v1
+
 services:
   proxy:
     image: nginx:1.27-alpine
@@ -130,6 +136,17 @@ services:
       rabbitmq:
         condition: service_healthy
     command: python -m app.workers.run.tags
+
+  telegram-bot:
+    <<: *telegram-bot-env
+    build:
+      context: .
+      dockerfile: telegram-bot/Dockerfile
+      target: production
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
 
   postgres:
     image: pgvector/pgvector:pg16
