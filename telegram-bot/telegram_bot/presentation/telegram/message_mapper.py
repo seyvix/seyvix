@@ -127,22 +127,32 @@ def _markdown_text(value: object, entities_value: object) -> str | None:
     if not entities:
         return value
     replacements: list[tuple[int, int, str, str, str]] = []
-    for entity in entities:
+    entity_ranges = [
+        _entity_range(value, entity)
+        for entity in entities
+        if isinstance(entity.get("type"), str)
+    ]
+    non_custom_ranges = [
+        item for item in entity_ranges if item is not None and item[2].get("type") != "custom_emoji"
+    ]
+    custom_ranges = [
+        item for item in entity_ranges if item is not None and item[2].get("type") == "custom_emoji"
+    ]
+
+    for start, end, entity in entity_ranges:
         entity_type = entity.get("type")
-        if entity_type == "custom_emoji":
+        if entity_type == "custom_emoji" and _is_covered_by_non_custom(
+            start=start,
+            end=end,
+            ranges=non_custom_ranges,
+        ):
             continue
-        offset = entity.get("offset")
-        length = entity.get("length")
-        if not isinstance(offset, int) or not isinstance(length, int) or length <= 0:
-            continue
-        start = _utf16_index_to_py_index(value, offset)
-        end = _utf16_index_to_py_index(value, offset + length)
-        if start is None or end is None or start >= end:
-            continue
-        segment = value[start:end]
+        segment = _render_segment_with_custom_emoji(value, start, end, custom_ranges)
         prefix = suffix = ""
         replacement = segment
-        if entity_type == "bold":
+        if entity_type == "custom_emoji" and entity.get("custom_emoji_id"):
+            replacement = _telegram_emoji_marker(str(entity["custom_emoji_id"]), value[start:end])
+        elif entity_type == "bold":
             prefix, suffix = "**", "**"
         elif entity_type == "italic":
             prefix, suffix = "_", "_"
@@ -171,9 +181,62 @@ def _markdown_text(value: object, entities_value: object) -> str | None:
         reverse=True,
     ):
         if prefix or suffix:
-            replacement = f"{prefix}{result[start:end]}{suffix}"
+            replacement = f"{prefix}{replacement}{suffix}"
         result = f"{result[:start]}{replacement}{result[end:]}"
     return result
+
+
+def _entity_range(
+    value: str,
+    entity: Mapping[str, Any],
+) -> tuple[int, int, Mapping[str, Any]] | None:
+    offset = entity.get("offset")
+    length = entity.get("length")
+    if not isinstance(offset, int) or not isinstance(length, int) or length <= 0:
+        return None
+    start = _utf16_index_to_py_index(value, offset)
+    end = _utf16_index_to_py_index(value, offset + length)
+    if start is None or end is None or start >= end:
+        return None
+    return start, end, entity
+
+
+def _is_covered_by_non_custom(
+    *,
+    start: int,
+    end: int,
+    ranges: list[tuple[int, int, Mapping[str, Any]]],
+) -> bool:
+    return any(other_start <= start and end <= other_end for other_start, other_end, _ in ranges)
+
+
+def _render_segment_with_custom_emoji(
+    value: str,
+    start: int,
+    end: int,
+    custom_ranges: list[tuple[int, int, Mapping[str, Any]]],
+) -> str:
+    result = value[start:end]
+    for custom_start, custom_end, entity in sorted(
+        (
+            item
+            for item in custom_ranges
+            if start <= item[0] and item[1] <= end and item[2].get("custom_emoji_id")
+        ),
+        key=lambda item: item[0],
+        reverse=True,
+    ):
+        local_start = custom_start - start
+        local_end = custom_end - start
+        fallback = result[local_start:local_end]
+        marker = _telegram_emoji_marker(str(entity["custom_emoji_id"]), fallback)
+        result = f"{result[:local_start]}{marker}{result[local_end:]}"
+    return result
+
+
+def _telegram_emoji_marker(custom_emoji_id: str, fallback: str) -> str:
+    safe_fallback = fallback.replace("|", "")
+    return f"{{{{tg_emoji:{custom_emoji_id}|{safe_fallback}}}}}"
 
 
 def _utf16_index_to_py_index(value: str, target: int) -> int | None:

@@ -120,7 +120,10 @@ def test_parse_message_preserves_telegram_source_metadata_and_markdown() -> None
     )
 
     assert material is not None
-    assert material.caption == "**⚡️ Важно**\n\n[Бэкдор](https://t.me/whackdoor)"
+    assert (
+        material.caption
+        == "**{{tg_emoji:5280586677532774817|⚡️}} Важно**\n\n[Бэкдор](https://t.me/whackdoor)"
+    )
     assert material.source is not None
     assert material.source.provider == "telegram"
     assert material.source.external_id == "801627037:29"

@@ -749,6 +749,14 @@
   overflow-wrap: anywhere;
 }
 
+.inlineTelegramEmoji {
+  display: inline-block;
+  width: 1.25em;
+  height: 1.25em;
+  object-fit: contain;
+  vertical-align: -0.22em;
+}
+
 .objTextarea {
   font-size: var(--font-size-base);
   font-family: var(--font-family);

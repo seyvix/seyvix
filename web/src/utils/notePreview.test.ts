@@ -28,3 +28,15 @@ test('text preview prefers generated snapshot text and truncates it', () => {
     'short genera...',
   )
 })
+
+test('text preview renders telegram custom emoji markers as fallback emoji', () => {
+  assert.equal(
+    getObjectDisplayText({
+      id: 'asset-1',
+      type: 'text',
+      content: '{{tg_emoji:5280586677532774817|⚡️}} Важно',
+      createdAt: '2026-05-01T10:00:00Z',
+    }),
+    '⚡️ Важно',
+  )
+})

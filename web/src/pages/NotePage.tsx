@@ -178,8 +178,16 @@ const SNAPSHOT_ICON: Record<string, React.ReactNode> = {
   html:     <Globe     size={12} />,
 }
 
-function MarkdownText({ text }: { text: string }) {
-  const pattern = /!\[favicon\]\(([^)]+)\)\s+\[([^\]]+)\]\(([^)]+)\)/g
+function customEmojiAssets(source?: NoteObject['source'] | null): Record<string, { data_url?: string; fallback?: string }> {
+  const assets = source?.metadata?.custom_emoji_assets
+  return assets && typeof assets === 'object' && !Array.isArray(assets)
+    ? assets as Record<string, { data_url?: string; fallback?: string }>
+    : {}
+}
+
+function MarkdownText({ text, source }: { text: string; source?: NoteObject['source'] | null }) {
+  const pattern = /!\[favicon\]\(([^)]+)\)\s+\[([^\]]+)\]\(([^)]+)\)|\{\{tg_emoji:([0-9]+)\|([^}]+)\}\}/g
+  const emojiAssets = customEmojiAssets(source)
   const parts: ReactNode[] = []
   let lastIndex = 0
 
@@ -188,19 +196,36 @@ function MarkdownText({ text }: { text: string }) {
     if (index > lastIndex) {
       parts.push(text.slice(lastIndex, index))
     }
-    const [, faviconUrl, label, href] = match
-    parts.push(
-      <a
-        key={`${href}-${index}`}
-        className={styles.inlineMarkdownLink}
-        href={href}
-        target="_blank"
-        rel="noopener noreferrer"
-      >
-        <img src={faviconUrl} alt="" />
-        <span>{label}</span>
-      </a>
-    )
+    const [, faviconUrl, label, href, customEmojiId, fallback] = match
+    if (customEmojiId) {
+      const asset = emojiAssets[customEmojiId]
+      parts.push(
+        asset?.data_url ? (
+          <img
+            key={`${customEmojiId}-${index}`}
+            className={styles.inlineTelegramEmoji}
+            src={asset.data_url}
+            alt={asset.fallback || fallback}
+            title={customEmojiId}
+          />
+        ) : (
+          <span key={`${customEmojiId}-${index}`} title={customEmojiId}>{fallback}</span>
+        )
+      )
+    } else {
+      parts.push(
+        <a
+          key={`${href}-${index}`}
+          className={styles.inlineMarkdownLink}
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <img src={faviconUrl} alt="" />
+          <span>{label}</span>
+        </a>
+      )
+    }
     lastIndex = index + match[0].length
   }
 
@@ -505,7 +530,7 @@ function ImageObj({ obj, isEditing, onDelete }: { obj: NoteObject; isEditing: bo
         onClick={() => window.open(obj.content, '_blank')}
       />
       <ObjectSource source={obj.source} />
-      {obj.caption && <p className={styles.objImageCaption}><MarkdownText text={obj.caption} /></p>}
+      {obj.caption && <p className={styles.objImageCaption}><MarkdownText text={obj.caption} source={obj.source} /></p>}
       {isEditing && <button className={styles.objDeleteBtn} onClick={onDelete}><X size={12} /></button>}
     </div>
   )
@@ -534,7 +559,7 @@ function TextObj({
   return (
     <div className={styles.objWrapper}>
       <ObjectSource source={obj.source} />
-      <p className={styles.objText}><MarkdownText text={obj.content} /></p>
+      <p className={styles.objText}><MarkdownText text={obj.content} source={obj.source} /></p>
     </div>
   )
 }
@@ -940,7 +965,7 @@ function CollectionStream({
               onClick={() => !isEditing && canNavigate ? navigate(`/notes/${obj.id}`) : window.open(obj.content, '_blank')}
             />
             <ObjectSource source={obj.source} />
-            {obj.caption && <p className={styles.objImageCaption}><MarkdownText text={obj.caption} /></p>}
+            {obj.caption && <p className={styles.objImageCaption}><MarkdownText text={obj.caption} source={obj.source} /></p>}
             {hint}
             {removeBtn}
           </div>
@@ -977,7 +1002,7 @@ function CollectionStream({
         if (obj.type === 'text') return (
           <div key={obj.id} className={styles.objWrapper}>
             <ObjectSource source={obj.source} />
-            <p className={styles.objText}><MarkdownText text={obj.content} /></p>
+            <p className={styles.objText}><MarkdownText text={obj.content} source={obj.source} /></p>
             {hint}
             {removeBtn}
           </div>

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from base64 import b64encode
+from dataclasses import replace
 from html import escape
 from io import BytesIO
 
 import httpx
 from aiogram import Bot, Router
 from aiogram.filters import Command, CommandStart
-from aiogram.types import Message
+from aiogram.types import Message, Sticker
 
+from telegram_bot.domain.models import InboundMaterial
 from telegram_bot.application.use_cases import BotUseCases
 from telegram_bot.presentation.telegram.keyboards import web_app_keyboard
 from telegram_bot.presentation.telegram.media_group_buffer import MediaGroupBuffer
@@ -68,6 +71,7 @@ def build_router() -> Router:
         material = material_from_message(message)
         if material is None:
             return
+        material = await _with_custom_emoji_assets(bot, material)
         if material.attachment is not None:
             material = material.with_attachment_data(
                 await _download_attachment(bot, material.attachment.file_id)
@@ -97,6 +101,55 @@ async def _download_attachment(bot: Bot, file_id: str) -> bytes:
     destination = BytesIO()
     await bot.download(file_id, destination=destination)
     return destination.getvalue()
+
+
+async def _with_custom_emoji_assets(bot: Bot, material: InboundMaterial) -> InboundMaterial:
+    source = material.source
+    if source is None or not source.custom_emoji_ids:
+        return material
+    try:
+        stickers = await bot.get_custom_emoji_stickers(source.custom_emoji_ids)
+    except Exception:
+        return material
+
+    assets = {}
+    for sticker in stickers:
+        custom_emoji_id = sticker.custom_emoji_id
+        if not custom_emoji_id:
+            continue
+        file_id = _sticker_preview_file_id(sticker)
+        if not file_id:
+            continue
+        try:
+            data = await _download_attachment(bot, file_id)
+        except Exception:
+            continue
+        assets[custom_emoji_id] = {
+            "data_url": f"data:{_sticker_preview_mime_type(sticker)};base64,{b64encode(data).decode()}",
+            "fallback": sticker.emoji,
+        }
+
+    if not assets:
+        return material
+    metadata = dict(source.metadata or {})
+    metadata["custom_emoji_assets"] = assets
+    return replace(material, source=replace(source, metadata=metadata))
+
+
+def _sticker_preview_file_id(sticker: Sticker) -> str | None:
+    if sticker.thumbnail is not None:
+        return sticker.thumbnail.file_id
+    return sticker.file_id
+
+
+def _sticker_preview_mime_type(sticker: Sticker) -> str:
+    if sticker.thumbnail is not None:
+        return "image/webp"
+    if sticker.is_video:
+        return "video/webm"
+    if sticker.is_animated:
+        return "application/x-tgsticker"
+    return "image/webp"
 
 
 async def _edit_ingest_error(
