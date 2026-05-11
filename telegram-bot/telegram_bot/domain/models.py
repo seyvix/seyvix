@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
+from typing import Any
 
 
 class MaterialType(StrEnum):
@@ -28,6 +29,26 @@ class Attachment:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceMetadata:
+    provider: str
+    provider_label: str
+    external_id: str
+    url: str | None = None
+    title: str | None = None
+    original_created_at: str | None = None
+    origin: dict[str, Any] | None = None
+    author: dict[str, Any] | None = None
+    group_id: str | None = None
+    entities: list[dict[str, Any]] | None = None
+    custom_emoji_ids: list[str] | None = None
+    raw_payload: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
+
+    def to_payload(self) -> dict[str, Any]:
+        return {key: value for key, value in asdict(self).items() if value is not None}
+
+
+@dataclass(frozen=True, slots=True)
 class InboundMaterial:
     telegram_user_id: str
     telegram_chat_id: str
@@ -37,6 +58,7 @@ class InboundMaterial:
     text: str | None
     caption: str | None
     attachment: Attachment | None
+    source: SourceMetadata | None = None
 
     def with_attachment_data(self, data: bytes) -> InboundMaterial:
         if self.attachment is None:

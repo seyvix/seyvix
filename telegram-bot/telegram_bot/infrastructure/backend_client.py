@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 import httpx
@@ -31,6 +32,8 @@ class HttpSeyvixBackend:
             data["text"] = material.text
         if material.caption is not None:
             data["caption"] = material.caption
+        if material.source is not None:
+            data["source"] = json.dumps(material.source.to_payload(), ensure_ascii=False)
         if material.attachment is not None:
             data["filename"] = material.attachment.filename
             if material.attachment.mime_type is not None:

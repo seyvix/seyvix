@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from aiogram.types import Message
 
-from telegram_bot.domain.models import InboundMaterial, MaterialType
+from telegram_bot.domain.models import MaterialType
 from telegram_bot.presentation.telegram.message_mapper import (
     material_from_mapping,
     material_from_message,
@@ -40,16 +40,17 @@ def test_parse_message_extracts_plain_text_payload() -> None:
         }
     )
 
-    assert material == InboundMaterial(
-        telegram_user_id="100500",
-        telegram_chat_id="700",
-        telegram_message_id="15",
-        message_date=1_777_777_777,
-        material_type=MaterialType.TEXT,
-        text="Markdown **note**",
-        caption=None,
-        attachment=None,
-    )
+    assert material is not None
+    assert material.telegram_user_id == "100500"
+    assert material.telegram_chat_id == "700"
+    assert material.telegram_message_id == "15"
+    assert material.message_date == 1_777_777_777
+    assert material.material_type == MaterialType.TEXT
+    assert material.text == "Markdown **note**"
+    assert material.caption is None
+    assert material.attachment is None
+    assert material.source is not None
+    assert material.source.provider == "telegram"
 
 
 def test_parse_message_uses_largest_photo_and_caption() -> None:
@@ -74,6 +75,63 @@ def test_parse_message_uses_largest_photo_and_caption() -> None:
     assert material.attachment.file_id == "large"
     assert material.attachment.filename == "telegram-photo.jpg"
     assert material.attachment.mime_type == "image/jpeg"
+
+
+def test_parse_message_preserves_telegram_source_metadata_and_markdown() -> None:
+    material = material_from_mapping(
+        {
+            "message_id": 29,
+            "date": 1_778_425_087,
+            "chat": {"id": 801627037, "type": "private"},
+            "from": {"id": 801627037, "is_bot": False, "first_name": "lv"},
+            "forward_origin": {
+                "type": "channel",
+                "chat": {
+                    "id": -1001319248631,
+                    "title": "Бэкдор",
+                    "username": "whackdoor",
+                    "type": "channel",
+                },
+                "message_id": 28305,
+                "date": 1_778_411_961,
+            },
+            "media_group_id": "14227400699706618",
+            "photo": [
+                {"file_id": "small", "file_unique_id": "small-u", "file_size": 10},
+                {"file_id": "large", "file_unique_id": "large-u", "file_size": 50},
+            ],
+            "caption": "⚡️ Важно\n\nБэкдор",
+            "caption_entities": [
+                {"offset": 0, "length": 8, "type": "bold"},
+                {
+                    "offset": 10,
+                    "length": 6,
+                    "type": "text_link",
+                    "url": "https://t.me/whackdoor",
+                },
+                {
+                    "offset": 0,
+                    "length": 2,
+                    "type": "custom_emoji",
+                    "custom_emoji_id": "5280586677532774817",
+                },
+            ],
+        }
+    )
+
+    assert material is not None
+    assert material.caption == "**⚡️ Важно**\n\n[Бэкдор](https://t.me/whackdoor)"
+    assert material.source is not None
+    assert material.source.provider == "telegram"
+    assert material.source.external_id == "801627037:29"
+    assert material.source.group_id == "14227400699706618"
+    assert material.source.origin is not None
+    assert material.source.origin["title"] == "Бэкдор"
+    assert material.source.origin["username"] == "whackdoor"
+    assert material.source.origin["url"] == "https://t.me/whackdoor/28305"
+    assert material.source.entities[0]["type"] == "bold"
+    assert material.source.custom_emoji_ids == ["5280586677532774817"]
+    assert material.source.raw_payload["message_id"] == 29
 
 
 def test_parse_message_ignores_bot_commands() -> None:
