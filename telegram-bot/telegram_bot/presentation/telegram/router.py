@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from html import escape
 from io import BytesIO
 
 import httpx
@@ -74,11 +75,19 @@ def build_router() -> Router:
         await media_group_buffer.ingest(
             material=material,
             save=use_cases.ingest_material,
-            answer_saved=lambda saved: message.answer(
-                f"Сохранено: {saved.title}",
+            send_loading=lambda _material: message.answer(
+                "Загружаю и сохраняю…",
                 reply_markup=web_app_keyboard(web_app_url),
             ),
-            answer_error=lambda exc: _answer_ingest_error(message, exc, web_app_url),
+            update_saved=lambda status_message, saved: status_message.edit_text(
+                f"Сохранено: {escape(saved.title)}",
+                reply_markup=web_app_keyboard(web_app_url),
+            ),
+            update_error=lambda status_message, exc: _edit_ingest_error(
+                status_message,
+                exc,
+                web_app_url,
+            ),
         )
 
     return router
@@ -90,13 +99,13 @@ async def _download_attachment(bot: Bot, file_id: str) -> bytes:
     return destination.getvalue()
 
 
-async def _answer_backend_error(
-    message: Message,
-    exc: httpx.HTTPStatusError,
+async def _edit_ingest_error(
+    status_message: Message,
+    exc: Exception,
     web_app_url: str | None,
 ) -> None:
-    if exc.response.status_code == 404:
-        await message.answer(
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 404:
+        await status_message.edit_text(
             (
                 "Telegram не привязан к аккаунту Seyvix. "
                 "Откройте приложение и войдите через Telegram."
@@ -104,18 +113,10 @@ async def _answer_backend_error(
             reply_markup=web_app_keyboard(web_app_url),
         )
         return
-    await message.answer("Не удалось сохранить материал.")
-
-
-async def _answer_ingest_error(
-    message: Message,
-    exc: Exception,
-    web_app_url: str | None,
-) -> None:
-    if isinstance(exc, httpx.HTTPStatusError):
-        await _answer_backend_error(message, exc, web_app_url)
-        return
-    await message.answer("Не удалось сохранить материал.")
+    await status_message.edit_text(
+        "Не удалось сохранить материал.",
+        reply_markup=web_app_keyboard(web_app_url),
+    )
 
 
 def _telegram_user_id(message: Message) -> str | None:

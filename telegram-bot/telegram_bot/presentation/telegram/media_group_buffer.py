@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
+from typing import TypeVar
 
 from telegram_bot.domain.models import InboundMaterial, SavedMaterial
 
+StatusMessage = TypeVar("StatusMessage")
 SaveMaterial = Callable[[InboundMaterial], Awaitable[SavedMaterial]]
-AnswerSaved = Callable[[SavedMaterial], Awaitable[None]]
-AnswerError = Callable[[Exception], Awaitable[None]]
+SendLoading = Callable[[InboundMaterial], Awaitable[StatusMessage]]
+UpdateSaved = Callable[[StatusMessage, SavedMaterial], Awaitable[None]]
+UpdateError = Callable[[StatusMessage, Exception], Awaitable[None]]
 
 
 class MediaGroupBuffer:
@@ -16,25 +19,30 @@ class MediaGroupBuffer:
         self.flush_delay_seconds = flush_delay_seconds
         self._buckets: dict[str, list[InboundMaterial]] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._statuses: dict[str, object] = {}
 
     async def ingest(
         self,
         *,
         material: InboundMaterial,
         save: SaveMaterial,
-        answer_saved: AnswerSaved,
-        answer_error: AnswerError,
+        send_loading: SendLoading[StatusMessage],
+        update_saved: UpdateSaved[StatusMessage],
+        update_error: UpdateError[StatusMessage],
     ) -> None:
         key = self._group_key(material)
         if key is None:
+            status = await send_loading(material)
             try:
                 saved = await save(material)
             except Exception as exc:
-                await answer_error(exc)
+                await update_error(status, exc)
                 return
-            await answer_saved(saved)
+            await update_saved(status, saved)
             return
 
+        if key not in self._buckets:
+            self._statuses[key] = await send_loading(material)
         self._buckets.setdefault(key, []).append(material)
         previous = self._tasks.pop(key, None)
         if previous is not None:
@@ -43,8 +51,8 @@ class MediaGroupBuffer:
             self._flush_later(
                 key=key,
                 save=save,
-                answer_saved=answer_saved,
-                answer_error=answer_error,
+                update_saved=update_saved,
+                update_error=update_error,
             )
         )
 
@@ -53,8 +61,8 @@ class MediaGroupBuffer:
         *,
         key: str,
         save: SaveMaterial,
-        answer_saved: AnswerSaved,
-        answer_error: AnswerError,
+        update_saved: UpdateSaved[StatusMessage],
+        update_error: UpdateError[StatusMessage],
     ) -> None:
         try:
             await asyncio.sleep(self.flush_delay_seconds)
@@ -62,8 +70,9 @@ class MediaGroupBuffer:
             return
 
         materials = self._buckets.pop(key, [])
+        status = self._statuses.pop(key, None)
         self._tasks.pop(key, None)
-        if not materials:
+        if not materials or status is None:
             return
 
         saved: SavedMaterial | None = None
@@ -71,11 +80,11 @@ class MediaGroupBuffer:
             for material in _deduplicate_repeated_captions(_sort_materials(materials)):
                 saved = await save(material)
         except Exception as exc:
-            await answer_error(exc)
+            await update_error(status, exc)
             return
 
         if saved is not None:
-            await answer_saved(saved)
+            await update_saved(status, saved)
 
     @staticmethod
     def _group_key(material: InboundMaterial) -> str | None:
