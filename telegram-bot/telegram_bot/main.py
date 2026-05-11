@@ -24,6 +24,7 @@ async def main() -> None:
             bot=build_bot(settings.telegram_bot_token),
             use_cases=BotUseCases(backend=backend),
             web_app_url=settings.telegram_web_app_url,
+            media_group_flush_seconds=settings.telegram_media_group_flush_seconds,
         )
 
 

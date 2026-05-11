@@ -9,6 +9,7 @@ from aiogram.types import Message
 
 from telegram_bot.application.use_cases import BotUseCases
 from telegram_bot.presentation.telegram.keyboards import web_app_keyboard
+from telegram_bot.presentation.telegram.media_group_buffer import MediaGroupBuffer
 from telegram_bot.presentation.telegram.message_mapper import material_from_message
 
 
@@ -60,6 +61,7 @@ def build_router() -> Router:
         message: Message,
         bot: Bot,
         use_cases: BotUseCases,
+        media_group_buffer: MediaGroupBuffer,
         web_app_url: str | None = None,
     ) -> None:
         material = material_from_message(message)
@@ -69,14 +71,14 @@ def build_router() -> Router:
             material = material.with_attachment_data(
                 await _download_attachment(bot, material.attachment.file_id)
             )
-        try:
-            saved = await use_cases.ingest_material(material)
-        except httpx.HTTPStatusError as exc:
-            await _answer_backend_error(message, exc, web_app_url)
-            return
-        await message.answer(
-            f"Сохранено: {saved.title}",
-            reply_markup=web_app_keyboard(web_app_url),
+        await media_group_buffer.ingest(
+            material=material,
+            save=use_cases.ingest_material,
+            answer_saved=lambda saved: message.answer(
+                f"Сохранено: {saved.title}",
+                reply_markup=web_app_keyboard(web_app_url),
+            ),
+            answer_error=lambda exc: _answer_ingest_error(message, exc, web_app_url),
         )
 
     return router
@@ -101,6 +103,17 @@ async def _answer_backend_error(
             ),
             reply_markup=web_app_keyboard(web_app_url),
         )
+        return
+    await message.answer("Не удалось сохранить материал.")
+
+
+async def _answer_ingest_error(
+    message: Message,
+    exc: Exception,
+    web_app_url: str | None,
+) -> None:
+    if isinstance(exc, httpx.HTTPStatusError):
+        await _answer_backend_error(message, exc, web_app_url)
         return
     await message.answer("Не удалось сохранить материал.")
 

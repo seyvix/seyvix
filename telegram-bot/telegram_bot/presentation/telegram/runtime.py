@@ -17,6 +17,11 @@ async def run_polling(
     bot: Bot,
     use_cases: BotUseCases,
     web_app_url: str | None,
+    media_group_flush_seconds: float,
 ) -> None:
-    dispatcher = build_dispatcher(use_cases=use_cases, web_app_url=web_app_url)
+    dispatcher = build_dispatcher(
+        use_cases=use_cases,
+        web_app_url=web_app_url,
+        media_group_flush_seconds=media_group_flush_seconds,
+    )
     await dispatcher.start_polling(bot)

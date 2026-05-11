@@ -11,6 +11,7 @@ class Settings:
     telegram_backend_base_url: str
     telegram_web_app_url: str | None
     telegram_bot_poll_timeout_seconds: int = 30
+    telegram_media_group_flush_seconds: float = 1.2
     log_level: str = "INFO"
 
 
@@ -26,6 +27,9 @@ def get_settings() -> Settings:
         ).rstrip("/"),
         telegram_web_app_url=os.getenv("TELEGRAM_WEB_APP_URL") or None,
         telegram_bot_poll_timeout_seconds=int(os.getenv("TELEGRAM_BOT_POLL_TIMEOUT_SECONDS", "30")),
+        telegram_media_group_flush_seconds=float(
+            os.getenv("TELEGRAM_MEDIA_GROUP_FLUSH_SECONDS", "1.2")
+        ),
         log_level=os.getenv("LOG_LEVEL", "INFO"),
     )
 
