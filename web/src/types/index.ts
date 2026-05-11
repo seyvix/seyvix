@@ -10,6 +10,22 @@ export interface SnapshotView {
   url: string
 }
 
+export interface SourceMetadata {
+  provider: string
+  providerLabel: string
+  externalId: string
+  url?: string | null
+  title?: string | null
+  originalCreatedAt?: string | null
+  origin?: Record<string, unknown> | null
+  author?: Record<string, unknown> | null
+  groupId?: string | null
+  entities?: Array<Record<string, unknown>>
+  customEmojiIds?: string[]
+  rawPayload?: Record<string, unknown> | null
+  metadata?: Record<string, unknown>
+}
+
 export interface Tag {
   id: string
   name: string
@@ -94,6 +110,7 @@ export interface NoteObject {
   id: string
   type: NoteObjectType
   content: string
+  caption?: string | null
   cover?: string
   thumbnailUrl?: string | null
   thumbnailText?: string | null
@@ -104,6 +121,7 @@ export interface NoteObject {
   mimeType?: string | null
   sizeBytes?: number
   slug?: string          // slug дочерней заметки (для элементов коллекции)
+  source?: SourceMetadata | null
   createdAt: string
 }
 
@@ -127,6 +145,7 @@ export interface Note {
   updatedAt: string
   isFavorite?: boolean
   collection?: NoteCollectionRef | null
+  source?: SourceMetadata | null
   /** Стабильный ключ для React — не меняется при tempId→serverId переходе */
   stableKey?: string
   isLocal?: boolean    // хранится локально, ещё не синхронизировано

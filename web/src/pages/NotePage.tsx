@@ -17,6 +17,7 @@ import {
   FolderTree,
   Plus,
   Search,
+  Send,
   Tag as TagIcon,
   Trash2,
 } from 'lucide-react'
@@ -51,7 +52,7 @@ import {
   type TaxonomyAssignment,
   type TaxonomyClassificationJob,
 } from '../api/enrichment'
-import type { Note, NoteObject, SnapshotView, Tag } from '../types'
+import type { Note, NoteObject, SnapshotView, SourceMetadata, Tag } from '../types'
 import styles from './NotePage.module.css'
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
@@ -65,6 +66,46 @@ function getExt(filename?: string): string {
 function getBaseName(filename?: string): string {
   if (!filename) return 'Документ'
   return filename.replace(/\.[^.]+$/, '')
+}
+
+function sourceTextValue(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+function sourceOriginLabel(source: SourceMetadata): string | null {
+  const origin = source.origin
+  if (!origin) return null
+  const title = sourceTextValue(origin.title)
+  const name = sourceTextValue(origin.name)
+  const username = sourceTextValue(origin.username)
+  const base = title ?? name ?? username
+  if (!base) return null
+  return username && username !== base ? `${base} @${username}` : base
+}
+
+function sourceLabel(source: SourceMetadata): string {
+  const origin = sourceOriginLabel(source)
+  return origin ? `${source.providerLabel} · ${origin}` : source.providerLabel
+}
+
+function ObjectSource({ source }: { source?: SourceMetadata | null }) {
+  if (!source) return null
+  const label = sourceLabel(source)
+  const children = (
+    <>
+      <Send size={12} />
+      <span>{label}</span>
+      {source.url && <ExternalLink size={11} />}
+    </>
+  )
+  if (source.url) {
+    return (
+      <a className={styles.sourceMeta} href={source.url} target="_blank" rel="noreferrer">
+        {children}
+      </a>
+    )
+  }
+  return <div className={styles.sourceMeta}>{children}</div>
 }
 
 async function authDownload(url: string, filename?: string) {
@@ -456,13 +497,15 @@ function EnrichmentPanel({ note }: { note: Note }) {
 
 function ImageObj({ obj, isEditing, onDelete }: { obj: NoteObject; isEditing: boolean; onDelete: () => void }) {
   return (
-    <div className={`${styles.objWrapper} ${styles.objImage}`}>
+    <div className={`${styles.objWrapper} ${styles.objImage} ${obj.caption ? styles.objImageWithCaption : ''}`}>
       <AuthImage
         src={obj.content}
         alt=""
         style={{ cursor: 'zoom-in' }}
         onClick={() => window.open(obj.content, '_blank')}
       />
+      <ObjectSource source={obj.source} />
+      {obj.caption && <p className={styles.objImageCaption}><MarkdownText text={obj.caption} /></p>}
       {isEditing && <button className={styles.objDeleteBtn} onClick={onDelete}><X size={12} /></button>}
     </div>
   )
@@ -489,9 +532,10 @@ function TextObj({
     )
   }
   return (
-    <>
+    <div className={styles.objWrapper}>
+      <ObjectSource source={obj.source} />
       <p className={styles.objText}><MarkdownText text={obj.content} /></p>
-    </>
+    </div>
   )
 }
 
@@ -888,13 +932,15 @@ function CollectionStream({
           : null
 
         if (obj.type === 'image') return (
-          <div key={obj.id} className={`${styles.objWrapper} ${styles.objImage}`}>
+          <div key={obj.id} className={`${styles.objWrapper} ${styles.objImage} ${obj.caption ? styles.objImageWithCaption : ''}`}>
             <AuthImage
               src={obj.content}
               alt=""
               style={{ cursor: canNavigate && !isEditing ? 'pointer' : 'zoom-in' }}
               onClick={() => !isEditing && canNavigate ? navigate(`/notes/${obj.id}`) : window.open(obj.content, '_blank')}
             />
+            <ObjectSource source={obj.source} />
+            {obj.caption && <p className={styles.objImageCaption}><MarkdownText text={obj.caption} /></p>}
             {hint}
             {removeBtn}
           </div>
@@ -930,6 +976,7 @@ function CollectionStream({
 
         if (obj.type === 'text') return (
           <div key={obj.id} className={styles.objWrapper}>
+            <ObjectSource source={obj.source} />
             <p className={styles.objText}><MarkdownText text={obj.content} /></p>
             {hint}
             {removeBtn}
