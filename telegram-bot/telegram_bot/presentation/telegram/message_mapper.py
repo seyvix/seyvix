@@ -10,9 +10,6 @@ from telegram_bot.domain.models import Attachment, InboundMaterial, MaterialType
 
 
 def material_from_message(message: Message) -> InboundMaterial | None:
-    if message.from_user is None:
-        return None
-
     payload = message.model_dump(mode="python", by_alias=True)
     return material_from_mapping(payload)
 
@@ -20,7 +17,11 @@ def material_from_message(message: Message) -> InboundMaterial | None:
 def material_from_mapping(message: Mapping[str, Any]) -> InboundMaterial | None:
     sender = message.get("from")
     chat = message.get("chat")
-    if not isinstance(sender, Mapping) or not isinstance(chat, Mapping):
+    if not isinstance(chat, Mapping):
+        return None
+    if not isinstance(sender, Mapping):
+        sender = chat if chat.get("type") == "private" else None
+    if not isinstance(sender, Mapping):
         return None
 
     text = message.get("text")
@@ -194,6 +195,8 @@ def _source_metadata(
 ) -> SourceMetadata:
     forward_origin = message.get("forward_origin")
     origin = _forward_origin(forward_origin if isinstance(forward_origin, Mapping) else None)
+    if origin is None:
+        origin = _legacy_forward_origin(message)
     source_url = origin.get("url") if origin is not None else None
     title = _source_title(origin)
     entities = _all_entities(message)
@@ -243,6 +246,36 @@ def _forward_origin(value: Mapping[str, Any] | None) -> dict[str, Any] | None:
     if value.get("date") is not None:
         result["date"] = _iso_datetime(value.get("date"))
     return result or None
+
+
+def _legacy_forward_origin(message: Mapping[str, Any]) -> dict[str, Any] | None:
+    forward_chat = message.get("forward_from_chat")
+    if isinstance(forward_chat, Mapping):
+        result = _telegram_chat(forward_chat)
+        if message.get("forward_from_message_id") is not None:
+            result["message_id"] = message["forward_from_message_id"]
+        username = forward_chat.get("username")
+        if username and message.get("forward_from_message_id") is not None:
+            result["url"] = f"https://t.me/{username}/{message['forward_from_message_id']}"
+        if message.get("forward_date") is not None:
+            result["date"] = _iso_datetime(message.get("forward_date"))
+        return result
+
+    forward_user = message.get("forward_from")
+    if isinstance(forward_user, Mapping):
+        result = _telegram_user(forward_user) or {"type": "user"}
+        if message.get("forward_date") is not None:
+            result["date"] = _iso_datetime(message.get("forward_date"))
+        return result
+
+    forward_sender_name = message.get("forward_sender_name")
+    if forward_sender_name:
+        result = {"type": "hidden_user", "name": str(forward_sender_name)}
+        if message.get("forward_date") is not None:
+            result["date"] = _iso_datetime(message.get("forward_date"))
+        return result
+
+    return None
 
 
 def _telegram_user(value: object) -> dict[str, Any] | None:

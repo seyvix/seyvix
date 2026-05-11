@@ -134,6 +134,39 @@ def test_parse_message_preserves_telegram_source_metadata_and_markdown() -> None
     assert material.source.raw_payload["message_id"] == 29
 
 
+def test_parse_private_forward_without_from_user_uses_private_chat_as_sender() -> None:
+    material = material_from_mapping(
+        {
+            "message_id": 33,
+            "date": 1_778_425_100,
+            "chat": {
+                "id": 801627037,
+                "first_name": "lv",
+                "username": "hardzz",
+                "type": "private",
+            },
+            "forward_from_chat": {
+                "id": -1001319248631,
+                "title": "Бэкдор",
+                "username": "whackdoor",
+                "type": "channel",
+            },
+            "forward_from_message_id": 28305,
+            "forward_date": 1_778_411_961,
+            "text": "legacy forwarded text",
+        }
+    )
+
+    assert material is not None
+    assert material.telegram_user_id == "801627037"
+    assert material.telegram_chat_id == "801627037"
+    assert material.text == "legacy forwarded text"
+    assert material.source is not None
+    assert material.source.origin is not None
+    assert material.source.origin["title"] == "Бэкдор"
+    assert material.source.origin["url"] == "https://t.me/whackdoor/28305"
+
+
 def test_parse_message_ignores_bot_commands() -> None:
     assert (
         material_from_mapping(
