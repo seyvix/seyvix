@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Annotated
 
@@ -16,6 +17,7 @@ from app.modules.telegram_integration.schemas import (
     TelegramMaterialType,
     TelegramModeRequest,
     TelegramModeResponse,
+    UniversalSourcePayload,
 )
 from app.modules.telegram_integration.service import (
     TelegramCollectionNotFoundError,
@@ -23,6 +25,7 @@ from app.modules.telegram_integration.service import (
     TelegramUserNotLinkedError,
 )
 from fastapi import APIRouter, Depends, File, Form, Header, UploadFile, status
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/integrations/telegram", tags=["integrations"])
@@ -68,6 +71,19 @@ def _raise_integration_error(exc: Exception) -> None:
     raise exc
 
 
+def _parse_source_payload(raw: str | None) -> UniversalSourcePayload | None:
+    if raw is None or not raw.strip():
+        return None
+    try:
+        return UniversalSourcePayload.model_validate(json.loads(raw))
+    except (json.JSONDecodeError, ValidationError) as exc:
+        raise AppError(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            code="invalid_source_payload",
+            message="Source metadata payload is invalid.",
+        ) from exc
+
+
 @router.post(
     "/ingest",
     response_model=TelegramIngestResponse,
@@ -91,6 +107,7 @@ async def ingest_telegram_message(
     caption: Annotated[str | None, Form()] = None,
     filename: Annotated[str | None, Form(max_length=512)] = None,
     mime_type: Annotated[str | None, Form(max_length=255)] = None,
+    source: Annotated[str | None, Form()] = None,
     file: Annotated[UploadFile | None, File()] = None,
 ) -> TelegramIngestResponse:
     _verify_internal_token(authorization)
@@ -112,6 +129,7 @@ async def ingest_telegram_message(
         caption=caption,
         filename=filename,
         mime_type=mime_type,
+        source=_parse_source_payload(source),
     )
     try:
         return await service.ingest(payload=payload, uploaded=upload)

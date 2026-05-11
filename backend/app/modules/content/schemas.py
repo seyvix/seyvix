@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -54,6 +55,22 @@ class SnapshotViewResponse(BaseModel):
     url: str
 
 
+class SourceMetadataResponse(BaseModel):
+    provider: str
+    provider_label: str
+    external_id: str
+    url: str | None = None
+    title: str | None = None
+    original_created_at: datetime | None = None
+    origin: dict[str, Any] | None = None
+    author: dict[str, Any] | None = None
+    group_id: str | None = None
+    entities: list[dict[str, Any]] = Field(default_factory=list)
+    custom_emoji_ids: list[str] = Field(default_factory=list)
+    raw_payload: dict[str, Any] | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class NoteAssetResponse(BaseModel):
     id: str
     role: str
@@ -71,6 +88,7 @@ class NoteAssetResponse(BaseModel):
     snapshot_views: list[SnapshotViewResponse] = Field(default_factory=list)
     image_width: int | None = None
     image_height: int | None = None
+    source: SourceMetadataResponse | None = None
 
 
 class NoteCardResponse(BaseModel):
@@ -88,6 +106,7 @@ class NoteCardResponse(BaseModel):
     updated_at: datetime
     download_url: str
     collection: CollectionParentResponse | None = None
+    source: SourceMetadataResponse | None = None
     assets: list[NoteAssetResponse] = Field(default_factory=list)
     items: list[NoteCardResponse] = Field(default_factory=list)
 

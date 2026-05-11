@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from app.core.database import Base
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 
@@ -162,6 +162,51 @@ class ContentAsset(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     content_object: Mapped[ContentObject] = relationship(back_populates="assets")
+
+
+class ContentSource(Base):
+    __tablename__ = "content_sources"
+    __table_args__ = (
+        UniqueConstraint(
+            "provider",
+            "external_id",
+            "content_object_id",
+            name="uq_content_sources_provider_external_object",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    owner_user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+    )
+    content_object_id: Mapped[str] = mapped_column(
+        ForeignKey("content_objects.id", ondelete="CASCADE"),
+        index=True,
+    )
+    content_asset_id: Mapped[str | None] = mapped_column(
+        ForeignKey("content_assets.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    provider: Mapped[str] = mapped_column(String(64), index=True)
+    provider_label: Mapped[str] = mapped_column(String(128))
+    external_id: Mapped[str] = mapped_column(String(512), index=True)
+    group_id: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
+    source_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    title: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    original_created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
+    origin: Mapped[dict | None] = mapped_column(JSON(), nullable=True)
+    author: Mapped[dict | None] = mapped_column(JSON(), nullable=True)
+    entities: Mapped[list | None] = mapped_column(JSON(), nullable=True)
+    custom_emoji_ids: Mapped[list | None] = mapped_column(JSON(), nullable=True)
+    raw_payload: Mapped[dict | None] = mapped_column(JSON(), nullable=True)
+    source_metadata: Mapped[dict | None] = mapped_column("metadata", JSON(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class ContentCollectionItem(Base):

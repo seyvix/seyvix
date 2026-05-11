@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import json
 
 from fastapi.testclient import TestClient
 from tests.test_content import TELEGRAM_BOT_TOKEN, _auth_headers
@@ -84,6 +85,107 @@ def test_telegram_ingest_text_creates_markdown_note(content_client: TestClient) 
     assert payload["note"]["objects"][0]["type"] == "text"
     assert payload["note"]["objects"][0]["mimeType"] == "text/markdown"
     assert payload["note"]["objects"][0]["content"] == "## Research\n\nTelegram **markdown** body"
+
+
+def test_telegram_ingest_returns_universal_source_metadata(
+    content_client: TestClient,
+) -> None:
+    _auth_headers(content_client)
+
+    source = {
+        "provider": "telegram",
+        "provider_label": "Telegram",
+        "external_id": "801627037:28",
+        "original_created_at": datetime(2026, 5, 12, 10, 30, tzinfo=UTC).isoformat(),
+        "origin": {
+            "type": "user",
+            "name": "Тёма",
+            "username": "luvrikin",
+        },
+        "raw_payload": {"message_id": 28, "text": "да, давай так и сделаем"},
+        "metadata": {"telegram_message_id": "28"},
+    }
+
+    response = content_client.post(
+        "/api/v1/integrations/telegram/ingest",
+        headers=_internal_headers(),
+        data={
+            "telegram_user_id": "100500",
+            "telegram_chat_id": "801627037",
+            "telegram_message_id": "28",
+            "message_date": datetime.now(UTC).isoformat(),
+            "material_type": "text",
+            "text": "да, давай так и сделаем",
+            "source": json.dumps(source),
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    obj = response.json()["note"]["objects"][0]
+    assert obj["source"]["provider"] == "telegram"
+    assert obj["source"]["providerLabel"] == "Telegram"
+    assert obj["source"]["origin"]["name"] == "Тёма"
+    assert obj["source"]["origin"]["username"] == "luvrikin"
+    assert obj["source"]["rawPayload"]["message_id"] == 28
+
+
+def test_telegram_media_group_creates_single_collection_with_item_sources(
+    content_client: TestClient,
+) -> None:
+    _auth_headers(content_client)
+
+    def ingest_photo(message_id: int, original_message_id: int, caption: str | None) -> dict:
+        source = {
+            "provider": "telegram",
+            "provider_label": "Telegram",
+            "external_id": f"801627037:{message_id}",
+            "group_id": "14227400699706618",
+            "origin": {
+                "type": "channel",
+                "title": "Бэкдор",
+                "username": "whackdoor",
+                "url": f"https://t.me/whackdoor/{original_message_id}",
+            },
+            "metadata": {"telegram_message_id": str(message_id)},
+            "raw_payload": {"message_id": message_id, "media_group_id": "14227400699706618"},
+        }
+        files = {
+            "file": (
+                f"telegram-photo-{message_id}.jpg",
+                b"\xff\xd8\xff\xe0telegram-image\xff\xd9",
+                "image/jpeg",
+            )
+        }
+        response = content_client.post(
+            "/api/v1/integrations/telegram/ingest",
+            headers=_internal_headers(),
+            data={
+                "telegram_user_id": "100500",
+                "telegram_chat_id": "801627037",
+                "telegram_message_id": str(message_id),
+                "message_date": datetime.now(UTC).isoformat(),
+                "material_type": "photo",
+                "caption": caption,
+                "filename": f"telegram-photo-{message_id}.jpg",
+                "mime_type": "image/jpeg",
+                "source": json.dumps(source),
+            },
+            files=files,
+        )
+        assert response.status_code == 201, response.text
+        return response.json()
+
+    first = ingest_photo(29, 28305, "Caption from first album item")
+    second = ingest_photo(30, 28306, None)
+
+    assert first["note"]["type"] == "simple"
+    assert second["status"] == "collection_updated"
+    assert second["note"]["type"] == "collection"
+    assert second["note"]["objects"][0]["caption"] == "Caption from first album item"
+    assert [obj["source"]["origin"]["url"] for obj in second["note"]["objects"]] == [
+        "https://t.me/whackdoor/28305",
+        "https://t.me/whackdoor/28306",
+    ]
 
 
 def test_telegram_default_mode_groups_fast_message_series(

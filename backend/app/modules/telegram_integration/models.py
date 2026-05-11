@@ -29,6 +29,17 @@ class TelegramIngestState(Base):
         nullable=True,
         index=True,
     )
+    source_group_collection_id: Mapped[str | None] = mapped_column(
+        ForeignKey("content_objects.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    source_group_key: Mapped[str | None] = mapped_column(String(640), nullable=True, index=True)
+    source_group_last_message_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
     last_message_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,

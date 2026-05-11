@@ -85,6 +85,14 @@ class TelegramIngestService:
                 uploaded=uploaded,
                 message_at=message_at,
             )
+        if self._source_group_key(payload) is not None:
+            return await self._ingest_source_group(
+                owner_user_id=user.id,
+                state=state,
+                payload=payload,
+                uploaded=uploaded,
+                message_at=message_at,
+            )
         return await self._ingest_default(
             owner_user_id=user.id,
             state=state,
@@ -92,6 +100,49 @@ class TelegramIngestService:
             uploaded=uploaded,
             message_at=message_at,
         )
+
+    async def _ingest_source_group(
+        self,
+        *,
+        owner_user_id: str,
+        state: TelegramIngestState,
+        payload: TelegramIngestPayload,
+        uploaded: UploadedContent | None,
+        message_at: datetime,
+    ) -> TelegramIngestResponse:
+        group_key = self._source_group_key(payload)
+        target_id = (
+            state.source_group_collection_id
+            if group_key is not None and state.source_group_key == group_key
+            else None
+        )
+        if target_id is None:
+            card = await self._create_standalone(
+                owner_user_id=owner_user_id,
+                payload=payload,
+                uploaded=uploaded,
+            )
+            state.source_group_key = group_key
+            state.source_group_collection_id = card.id
+            state.source_group_last_message_at = message_at
+            state.default_group_collection_id = card.id
+            state.last_message_at = message_at
+            await self.session.commit()
+            return self._response(status="saved", mode="default", card=card)
+
+        card = await self._append_to_collection(
+            owner_user_id=owner_user_id,
+            target_id=target_id,
+            payload=payload,
+            uploaded=uploaded,
+        )
+        state.source_group_key = group_key
+        state.source_group_collection_id = card.id
+        state.source_group_last_message_at = message_at
+        state.default_group_collection_id = card.id
+        state.last_message_at = message_at
+        await self.session.commit()
+        return self._response(status="collection_updated", mode="default", card=card)
 
     async def _ingest_default(
         self,
@@ -196,7 +247,7 @@ class TelegramIngestService:
         text = self._message_text(payload)
         title = self._title(payload=payload, uploaded=uploaded, text=text)
         if uploaded is None:
-            return await self.content.create_note(
+            card = await self.content.create_note(
                 owner_user_id=owner_user_id,
                 media_type="link" if payload.material_type == "link" else "text",
                 text=text or "",
@@ -204,6 +255,11 @@ class TelegramIngestService:
                 folder_path=None,
                 tag_names=[],
                 file_upload_ids=[],
+            )
+            return await self._attach_source_and_reload(
+                owner_user_id=owner_user_id,
+                card=card,
+                payload=payload,
             )
 
         if text:
@@ -218,7 +274,7 @@ class TelegramIngestService:
             )
             if not isinstance(upload, FileUploadResponse) or not upload.files:
                 raise TelegramCollectionNotFoundError
-            return await self.content.create_note(
+            card = await self.content.create_note(
                 owner_user_id=owner_user_id,
                 media_type="text",
                 text=text,
@@ -226,6 +282,11 @@ class TelegramIngestService:
                 folder_path=None,
                 tag_names=[],
                 file_upload_ids=[upload.files[0].id],
+            )
+            return await self._attach_source_and_reload(
+                owner_user_id=owner_user_id,
+                card=card,
+                payload=payload,
             )
 
         uploaded_card = await self.content.upload_files(
@@ -239,7 +300,27 @@ class TelegramIngestService:
         )
         if isinstance(uploaded_card, FileUploadResponse) or uploaded_card is None:
             raise TelegramCollectionNotFoundError
-        return uploaded_card
+        return await self._attach_source_and_reload(
+            owner_user_id=owner_user_id,
+            card=uploaded_card,
+            payload=payload,
+        )
+
+    async def _attach_source_and_reload(
+        self,
+        *,
+        owner_user_id: str,
+        card: NoteCardResponse,
+        payload: TelegramIngestPayload,
+    ) -> NoteCardResponse:
+        if payload.source is None:
+            return card
+        await self.content.attach_source_metadata(
+            owner_user_id=owner_user_id,
+            content_object_id=card.id,
+            source=payload.source.model_dump(mode="python"),
+        )
+        return await self.content.get_note(owner_user_id=owner_user_id, slug=card.slug)
 
     def _is_inside_default_window(
         self,
@@ -258,6 +339,12 @@ class TelegramIngestService:
     @staticmethod
     def _mode(state: TelegramIngestState) -> TelegramIngestMode:
         return "grouped_notes" if state.mode == "grouped_notes" else "default"
+
+    @staticmethod
+    def _source_group_key(payload: TelegramIngestPayload) -> str | None:
+        if payload.source is None or not payload.source.group_id:
+            return None
+        return f"{payload.source.provider}:{payload.source.group_id}"
 
     @staticmethod
     def _message_text(payload: TelegramIngestPayload) -> str | None:

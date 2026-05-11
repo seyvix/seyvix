@@ -26,6 +26,7 @@ from app.modules.content.models import (
     ContentFileUpload,
     ContentObject,
     ContentObjectTag,
+    ContentSource,
 )
 from app.modules.content.models import ContentTag as LegacyContentTag
 from app.modules.content.schemas import (
@@ -39,6 +40,7 @@ from app.modules.content.schemas import (
     NoteAssetResponse,
     NoteCardResponse,
     NoteListResponse,
+    SourceMetadataResponse,
     SnapshotViewResponse,
     TagResponse,
     UploadedFileResponse,
@@ -53,6 +55,7 @@ from app.platform.events.outbox import EventOutboxRepository
 from app.platform.storage.repositories import StorageObjectRepository
 from app.platform.storage.service import StorageBackend, StoredObject
 from sqlalchemy import delete as sql_delete
+from sqlalchemy import or_, select
 from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -66,6 +69,34 @@ def _note_path_ref_as_uuid(ref: str) -> str | None:
 
 
 logger = get_logger(__name__)
+
+
+def _optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return str(value)
+
+
+def _optional_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    if isinstance(value, str) and value:
+        parsed = datetime.fromisoformat(value)
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+    return None
+
+
+def _optional_dict(value: Any) -> dict[str, Any] | None:
+    return value if isinstance(value, dict) else None
+
+
+def _optional_list(value: Any) -> list[Any] | None:
+    return value if isinstance(value, list) else None
 
 
 class NoteNotFoundError(Exception):
@@ -352,6 +383,51 @@ class ContentService:
 
     async def get_note(self, *, owner_user_id: str, slug: str) -> NoteCardResponse:
         return await self._to_card(await self._load_note(owner_user_id=owner_user_id, slug=slug))
+
+    async def attach_source_metadata(
+        self,
+        *,
+        owner_user_id: str,
+        content_object_id: str,
+        source: dict[str, Any],
+        content_asset_id: str | None = None,
+    ) -> None:
+        provider = source.get("provider")
+        external_id = source.get("external_id")
+        if not isinstance(provider, str) or not provider or not isinstance(external_id, str):
+            return
+
+        existing = await self.session.scalar(
+            select(ContentSource).where(
+                ContentSource.provider == provider,
+                ContentSource.external_id == external_id,
+                ContentSource.content_object_id == content_object_id,
+            )
+        )
+        if existing is None:
+            existing = ContentSource(
+                owner_user_id=owner_user_id,
+                content_object_id=content_object_id,
+                content_asset_id=content_asset_id,
+                provider=provider,
+                provider_label=str(source.get("provider_label") or provider.title()),
+                external_id=external_id,
+            )
+            self.session.add(existing)
+
+        existing.content_asset_id = content_asset_id
+        existing.provider_label = str(source.get("provider_label") or provider.title())
+        existing.group_id = _optional_string(source.get("group_id"))
+        existing.source_url = _optional_string(source.get("url"))
+        existing.title = _optional_string(source.get("title"))
+        existing.original_created_at = _optional_datetime(source.get("original_created_at"))
+        existing.origin = _optional_dict(source.get("origin"))
+        existing.author = _optional_dict(source.get("author"))
+        existing.entities = _optional_list(source.get("entities"))
+        existing.custom_emoji_ids = _optional_list(source.get("custom_emoji_ids"))
+        existing.raw_payload = _optional_dict(source.get("raw_payload"))
+        existing.source_metadata = _optional_dict(source.get("metadata"))
+        await self.session.flush()
 
     async def list_trash(self, *, owner_user_id: str) -> NoteListResponse:
         objects = await self.content.list_deleted(owner_user_id=owner_user_id)
@@ -1780,6 +1856,7 @@ class ContentService:
             owner_user_id=content_object.owner_user_id,
             content_object_id=content_object.id,
         )
+        object_source, asset_sources = await self._source_metadata_for_object(content_object)
         asset_responses: list[NoteAssetResponse] = []
         for asset in content_object.assets:
             asset_url = f"{self.api_prefix}/notes/{content_object.slug}/asset/{asset.id}"
@@ -1849,6 +1926,7 @@ class ContentService:
                     snapshot_views=snapshot_views,
                     image_width=asset.image_width,
                     image_height=asset.image_height,
+                    source=asset_sources.get(asset.id) or object_source,
                 )
             )
         return NoteCardResponse(
@@ -1866,8 +1944,54 @@ class ContentService:
             updated_at=content_object.updated_at,
             download_url=f"{self.api_prefix}/notes/{content_object.slug}/download",
             collection=collection_parent,
+            source=object_source,
             assets=asset_responses,
             items=items,
+        )
+
+    async def _source_metadata_for_object(
+        self,
+        content_object: ContentObject,
+    ) -> tuple[SourceMetadataResponse | None, dict[str, SourceMetadataResponse]]:
+        asset_ids = [asset.id for asset in content_object.assets]
+        conditions = [ContentSource.content_object_id == content_object.id]
+        if asset_ids:
+            conditions.append(ContentSource.content_asset_id.in_(asset_ids))
+        query = (
+            select(ContentSource)
+            .where(
+                ContentSource.owner_user_id == content_object.owner_user_id,
+                or_(*conditions),
+            )
+            .order_by(ContentSource.created_at.asc())
+        )
+        records = list(await self.session.scalars(query))
+        object_source = None
+        asset_sources: dict[str, SourceMetadataResponse] = {}
+        for record in records:
+            response = self._source_response(record)
+            if record.content_asset_id:
+                asset_sources.setdefault(record.content_asset_id, response)
+            elif record.content_object_id == content_object.id and object_source is None:
+                object_source = response
+        return object_source, asset_sources
+
+    @staticmethod
+    def _source_response(record: ContentSource) -> SourceMetadataResponse:
+        return SourceMetadataResponse(
+            provider=record.provider,
+            provider_label=record.provider_label,
+            external_id=record.external_id,
+            url=record.source_url,
+            title=record.title,
+            original_created_at=record.original_created_at,
+            origin=record.origin,
+            author=record.author,
+            group_id=record.group_id,
+            entities=record.entities or [],
+            custom_emoji_ids=record.custom_emoji_ids or [],
+            raw_payload=record.raw_payload,
+            metadata=record.source_metadata or {},
         )
 
     @staticmethod

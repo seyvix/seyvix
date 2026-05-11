@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -26,6 +26,29 @@ class AppSnapshotView(BaseModel):
     kind: str
     label: str
     url: str
+
+
+class AppSourceMetadata(BaseModel):
+    model_config = ConfigDict(serialize_by_alias=True)
+    provider: str
+    providerLabel: str = Field(serialization_alias="providerLabel")
+    externalId: str = Field(serialization_alias="externalId")
+    url: str | None = None
+    title: str | None = None
+    originalCreatedAt: datetime | None = Field(
+        default=None,
+        serialization_alias="originalCreatedAt",
+    )
+    origin: dict[str, Any] | None = None
+    author: dict[str, Any] | None = None
+    groupId: str | None = Field(default=None, serialization_alias="groupId")
+    entities: list[dict[str, Any]] = Field(default_factory=list)
+    customEmojiIds: list[str] = Field(
+        default_factory=list,
+        serialization_alias="customEmojiIds",
+    )
+    rawPayload: dict[str, Any] | None = Field(default=None, serialization_alias="rawPayload")
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class AppTag(BaseModel):
@@ -55,6 +78,7 @@ class AppNoteObject(BaseModel):
     id: str
     object_type: NoteObjectType = Field(serialization_alias="type")
     content: str
+    caption: str | None = None
     cover: str | None = None
     thumbnailUrl: str | None = None
     thumbnailText: str | None = None
@@ -65,6 +89,7 @@ class AppNoteObject(BaseModel):
     mimeType: str | None = None
     sizeBytes: int | None = None
     slug: str | None = None
+    source: AppSourceMetadata | None = None
     createdAt: datetime = Field(serialization_alias="createdAt")
 
 
@@ -86,6 +111,7 @@ class AppNote(BaseModel):
     updatedAt: datetime = Field(serialization_alias="updatedAt")
     isFavorite: bool = Field(default=False, serialization_alias="isFavorite")
     collection: AppCollectionParent | None = None
+    source: AppSourceMetadata | None = None
 
 
 class AppNoteListResponse(BaseModel):
@@ -108,6 +134,29 @@ class FolderDetailAppResponse(BaseModel):
 
 def _snapshots(views: list[SnapshotViewResponse]) -> list[AppSnapshotView]:
     return [AppSnapshotView(kind=v.kind, label=v.label, url=v.url) for v in views]
+
+
+def _source(source: object) -> AppSourceMetadata | None:
+    if source is None:
+        return None
+    data = source.model_dump() if isinstance(source, BaseModel) else source
+    if not isinstance(data, dict):
+        return None
+    return AppSourceMetadata(
+        provider=data["provider"],
+        providerLabel=data["provider_label"],
+        externalId=data["external_id"],
+        url=data.get("url"),
+        title=data.get("title"),
+        originalCreatedAt=data.get("original_created_at"),
+        origin=data.get("origin"),
+        author=data.get("author"),
+        groupId=data.get("group_id"),
+        entities=data.get("entities") or [],
+        customEmojiIds=data.get("custom_emoji_ids") or [],
+        rawPayload=data.get("raw_payload"),
+        metadata=data.get("metadata") or {},
+    )
 
 
 def _media_to_object_type(media_type: str | None) -> NoteObjectType:
@@ -142,12 +191,14 @@ def _map_asset(asset: NoteAssetResponse, download_url: str, created_at: datetime
         filename=asset.filename,
         mimeType=asset.mime_type,
         sizeBytes=asset.size_bytes,
+        source=_source(asset.source),
         createdAt=created_at,
     )
 
 
 def _collection_item_to_object(item: NoteCardResponse) -> AppNoteObject:
     first = item.assets[0] if item.assets else None
+    text_asset = next((asset for asset in item.assets if asset.media_type == "text"), None)
     ot = _media_to_object_type(first.media_type if first else item.media_type)
     if ot in ("text", "link"):
         tc = first.text_content if first else None
@@ -164,6 +215,11 @@ def _collection_item_to_object(item: NoteCardResponse) -> AppNoteObject:
         id=item.id,
         object_type=ot,
         content=content,
+        caption=(
+            text_asset.text_content
+            if text_asset is not None and first is not None and first.id != text_asset.id
+            else None
+        ),
         cover=cover,
         thumbnailUrl=thumb,
         thumbnailText=first.thumbnail_text if first else None,
@@ -174,6 +230,7 @@ def _collection_item_to_object(item: NoteCardResponse) -> AppNoteObject:
         filename=first.filename if first else None,
         mimeType=first.mime_type if first else None,
         sizeBytes=first.size_bytes if first else None,
+        source=_source(item.source or (first.source if first else None)),
         createdAt=item.created_at,
     )
 
@@ -189,6 +246,7 @@ def note_card_to_app_note(card: NoteCardResponse) -> AppNote:
                 id=f"{card.id}-text",
                 object_type="text",
                 content=card.title,
+                source=_source(card.source),
                 createdAt=card.created_at,
             )
         ]
@@ -217,6 +275,7 @@ def note_card_to_app_note(card: NoteCardResponse) -> AppNote:
             if card.collection
             else None
         ),
+        source=_source(card.source),
     )
 
 
