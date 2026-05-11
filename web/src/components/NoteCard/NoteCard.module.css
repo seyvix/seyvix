@@ -63,6 +63,7 @@
 /* Simple с картинкой — без padding, изображение в край */
 .cardSimpleImage {
   padding: 0;
+  position: relative;
 }
 
 .simpleImageMedia {
@@ -70,6 +71,18 @@
   display: block;
   border-radius: var(--radius-md);
   pointer-events: none;
+}
+
+.imageOnlyMeta {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  z-index: 2;
+}
+
+.imageOnlyMeta .tags {
+  margin: 0;
 }
 
 .cover {
@@ -119,6 +132,48 @@
 
 .tag:hover {
   opacity: 0.75;
+}
+
+.sourceTag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 3px 8px;
+  border: 1px solid rgba(45, 152, 219, 0.28);
+  border-radius: 20px;
+  background: rgba(45, 152, 219, 0.12);
+  color: #8bc8ff;
+  font-size: 12px;
+  font-weight: var(--font-weight-semibold);
+  line-height: 1.4;
+}
+
+.sourceTag svg {
+  flex-shrink: 0;
+}
+
+.sourceProvider,
+.sourceOrigin {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sourceProvider {
+  flex-shrink: 0;
+}
+
+.sourceOrigin {
+  color: rgba(214, 235, 255, 0.86);
+}
+
+.sourceOrigin::before {
+  content: '/';
+  margin: 0 5px 0 1px;
+  color: rgba(139, 200, 255, 0.55);
 }
 
 /* === Collection — fixed 3:4, depth (слои со смещением) === */

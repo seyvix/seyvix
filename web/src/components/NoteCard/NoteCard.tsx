@@ -1,7 +1,7 @@
 import { useRef, useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { ExternalLink, FileText, ImageIcon, Link2, AlignLeft, Plus, UploadCloud, RefreshCw, Check } from 'lucide-react'
+import { ExternalLink, FileText, ImageIcon, Link2, AlignLeft, Plus, UploadCloud, RefreshCw, Check, Send } from 'lucide-react'
 import { useSyncLocalNote } from '../../hooks/useSyncLocalNote'
 import { useBulkSelect } from '../../contexts/BulkSelectContext'
 import { draggable, dropTargetForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter'
@@ -9,7 +9,7 @@ import { dropTargetForExternal } from '@atlaskit/pragmatic-drag-and-drop/externa
 import { containsFiles, getFiles } from '@atlaskit/pragmatic-drag-and-drop/external/file'
 import AuthImage from '../AuthImage/AuthImage'
 import { LoaderSpinner } from '../LoaderSpinner'
-import type { Note, NoteObject, Tag } from '../../types'
+import type { Note, NoteObject, SourceMetadata, Tag } from '../../types'
 import { getTagColor } from '../../utils/tagColor'
 import { MERGE_NOTES_ENABLED } from '../../api/notes'
 import { useMergeNotes } from '../../hooks/useMergeNotes'
@@ -31,10 +31,69 @@ function notePageHref(note: Note): string {
 
 // ─── Tags ─────────────────────────────────────────────────────────────────────
 
+type SourceChip = {
+  key: string
+  providerLabel: string
+  originLabel: string | null
+  title: string
+}
+
+function sourceText(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+function sourceOriginLabel(source: SourceMetadata): string | null {
+  const origin = source.origin
+  if (!origin) return sourceText(source.title)
+  const title = sourceText(origin.title)
+  const name = sourceText(origin.name)
+  const username = sourceText(origin.username)
+  return title ?? name ?? username ?? sourceText(source.title)
+}
+
+function collectSourceChips(note: Note): SourceChip[] {
+  const sources = [
+    note.source,
+    ...note.objects.map(obj => obj.source),
+  ].filter((source): source is SourceMetadata => Boolean(source))
+  const chips = new Map<string, SourceChip>()
+
+  for (const source of sources) {
+    const providerLabel = source.providerLabel || source.provider
+    const originLabel = sourceOriginLabel(source)
+    const key = `${source.provider}:${originLabel ?? source.externalId}`
+    if (chips.has(key)) continue
+    chips.set(key, {
+      key,
+      providerLabel,
+      originLabel,
+      title: originLabel ? `${providerLabel}: ${originLabel}` : providerLabel,
+    })
+  }
+
+  return Array.from(chips.values()).slice(0, 3)
+}
+
+function SourceChipList({ note }: { note: Note }) {
+  const chips = collectSourceChips(note)
+  if (chips.length === 0) return null
+  return (
+    <>
+      {chips.map(chip => (
+        <span key={chip.key} className={styles.sourceTag} title={chip.title}>
+          <Send size={10} />
+          <span className={styles.sourceProvider}>{chip.providerLabel}</span>
+          {chip.originLabel && <span className={styles.sourceOrigin}>{chip.originLabel}</span>}
+        </span>
+      ))}
+    </>
+  )
+}
+
 function TagList({ tags, onTagClick }: { tags: Tag[]; onTagClick?: (name: string) => void }) {
   if (tags.length === 0) return null
   return (
-    <div className={styles.tags}>
+    <>
       {tags.map(tag => {
         const { bg, text } = getTagColor(tag.name)
         return (
@@ -48,6 +107,17 @@ function TagList({ tags, onTagClick }: { tags: Tag[]; onTagClick?: (name: string
           </span>
         )
       })}
+    </>
+  )
+}
+
+function CardMeta({ note, onTagClick }: { note: Note; onTagClick?: (name: string) => void }) {
+  const hasSources = collectSourceChips(note).length > 0
+  if (!hasSources && note.tags.length === 0) return null
+  return (
+    <div className={styles.tags}>
+      <SourceChipList note={note} />
+      <TagList tags={note.tags} onTagClick={onTagClick} />
     </div>
   )
 }
@@ -57,6 +127,7 @@ function TagList({ tags, onTagClick }: { tags: Tag[]; onTagClick?: (name: string
 function SimpleCard({ note, onTagClick }: { note: Note; onTagClick?: (name: string) => void }) {
   const imageObj = note.objects.find(o => o.type === 'image')
   const textObj  = note.objects.find(o => o.type === 'text')
+  const hasMeta = note.tags.length > 0 || collectSourceChips(note).length > 0
 
   // Только картинка — без заголовка, изображение в край
   if (imageObj && !textObj) {
@@ -72,6 +143,11 @@ function SimpleCard({ note, onTagClick }: { note: Note; onTagClick?: (name: stri
           alt={note.title}
           style={imageStyle}
         />
+        {hasMeta && (
+          <div className={styles.imageOnlyMeta}>
+            <CardMeta note={note} onTagClick={onTagClick} />
+          </div>
+        )}
       </Link>
     )
   }
@@ -81,7 +157,7 @@ function SimpleCard({ note, onTagClick }: { note: Note; onTagClick?: (name: stri
       {imageObj && <AuthImage className={styles.cover} src={getObjectPreviewSource(imageObj)} alt="" />}
       <div className={styles.title}>{note.title}</div>
       {textObj && <div className={styles.excerpt}>{getObjectDisplayText(textObj)}</div>}
-      <TagList tags={note.tags} onTagClick={onTagClick} />
+      <CardMeta note={note} onTagClick={onTagClick} />
     </Link>
   )
 }
@@ -252,7 +328,7 @@ function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClic
       <div className={styles.cardFooter}>
         <CollectionStats objects={note.objects} />
         {titleNode}
-        <TagList tags={note.tags} onTagClick={onTagClick} />
+        <CardMeta note={note} onTagClick={onTagClick} />
       </div>
     </Link>
   )
@@ -366,7 +442,7 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
         {textObj && !/^https?:\/\//.test(textObj.content) && (
           <div className={styles.excerpt}>{getObjectDisplayText(textObj)}</div>
         )}
-        <TagList tags={note.tags} onTagClick={onTagClick} />
+        <CardMeta note={note} onTagClick={onTagClick} />
       </div>
     </Link>
   )
