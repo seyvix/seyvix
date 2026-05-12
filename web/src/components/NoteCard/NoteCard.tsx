@@ -53,6 +53,7 @@ import { useDragContext } from '../../contexts/DragContext'
 import { getObjectDisplayText, getObjectPreviewSource } from '../../utils/notePreview'
 import { collectSourceChips } from '../../utils/noteCardPresentation'
 import { htmlToMarkdown, makeMarkdownTitle, replaceBlobImageSources } from '../../utils/markdownPaste'
+import type { DropPlacement } from '../../utils/reorderNotes'
 import { useFavicon } from '../../hooks/useFavicon'
 import styles from './NoteCard.module.css'
 
@@ -443,10 +444,24 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
 
 const HIGHLIGHT_MS = 5000
 
-export function NoteCard({ note, isNew, onTagClick }: { note: Note; isNew?: boolean; onTagClick?: (tag: string) => void }) {
+export function NoteCard({
+  note,
+  isNew,
+  onTagClick,
+  onMoveNote,
+  isReorderEnabled = false,
+}: {
+  note: Note
+  isNew?: boolean
+  onTagClick?: (tag: string) => void
+  onMoveNote?: (sourceSlug: string, targetSlug: string, placement: DropPlacement) => void
+  isReorderEnabled?: boolean
+}) {
   const wrapperRef = useRef<HTMLDivElement>(null)
   const [isDragging,     setIsDragging]     = useState(false)
   const [isOver,         setIsOver]         = useState(false)
+  const [dropPlacement,  setDropPlacement]  = useState<DropPlacement | null>(null)
+  const dropPlacementRef = useRef<DropPlacement | null>(null)
   const [fileHoverState, setFileHoverState] = useState<'new' | 'merge' | null>(null)
 
   // Rename after merge
@@ -497,26 +512,61 @@ export function NoteCard({ note, isNew, onTagClick }: { note: Note; isNew?: bool
 
   const dragEnterTimeRef = useRef(0)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const canMoveThisCard = isReorderEnabled && !note.isLocal && !note.isLoading && !isBulk
 
   useEffect(() => {
     const el = wrapperRef.current
     if (!el) return
 
+    const updatePlacement = (clientY: number) => {
+      const rect = el.getBoundingClientRect()
+      const next = clientY < rect.top + rect.height / 2 ? 'before' : 'after'
+      dropPlacementRef.current = next
+      setDropPlacement(next)
+    }
+
+    const acceptsNoteDrag = (source: { data: Record<string, unknown> }) => (
+      source.data.type === 'note'
+      && source.data.noteId !== note.id
+      && !note.isLocal
+      && !note.isLoading
+      && (isReorderEnabled || MERGE_NOTES_ENABLED)
+    )
+
     const cleanupDrag = draggable({
       element: el,
       getInitialData: () => ({ type: 'note', noteId: note.id, noteSlug: note.slug, noteType: note.type, noteTitle: note.title }),
+      canDrag: () => canMoveThisCard || MERGE_NOTES_ENABLED,
       onDragStart: () => setIsDragging(true),
       onDrop: () => setIsDragging(false),
     })
 
     const cleanupDrop = dropTargetForElements({
       element: el,
-      canDrop: ({ source }) =>
-        MERGE_NOTES_ENABLED && source.data.type === 'note' && source.data.noteId !== note.id,
-      onDragEnter: () => setIsOver(true),
-      onDragLeave: () => setIsOver(false),
-      onDrop: ({ source }) => {
+      canDrop: ({ source }) => acceptsNoteDrag(source),
+      onDragEnter: ({ location }) => {
+        setIsOver(true)
+        updatePlacement(location.current.input.clientY)
+      },
+      onDrag: ({ location }) => updatePlacement(location.current.input.clientY),
+      onDragLeave: () => {
         setIsOver(false)
+        dropPlacementRef.current = null
+        setDropPlacement(null)
+      },
+      onDrop: ({ source, location }) => {
+        setIsOver(false)
+        const placement = dropPlacementRef.current ?? (
+          location.current.input.clientY < el.getBoundingClientRect().top + el.getBoundingClientRect().height / 2
+            ? 'before'
+            : 'after'
+        )
+        dropPlacementRef.current = null
+        setDropPlacement(null)
+        if (isReorderEnabled) {
+          onMoveNote?.(source.data.noteSlug as string, note.slug, placement)
+          return
+        }
         if (!MERGE_NOTES_ENABLED) return
         const sourceType  = source.data.noteType  as string
         const sourceTitle = source.data.noteTitle as string
@@ -566,12 +616,14 @@ export function NoteCard({ note, isNew, onTagClick }: { note: Note; isNew?: bool
       cleanupDrop()
       cleanupFileDrop()
     }
-  }, [note.id])
+  }, [canMoveThisCard, isReorderEnabled, note.id, note.isLoading, note.isLocal, note.slug, note.title, note.type, onMoveNote])
 
   const cls = [
     styles.cardWrapper,
     isDragging                 ? styles.isDragging      : '',
     isOver                     ? styles.isDropOver      : '',
+    isOver && dropPlacement === 'before' ? styles.isReorderBefore : '',
+    isOver && dropPlacement === 'after'  ? styles.isReorderAfter  : '',
     fileHoverState === 'new'   ? styles.isFileOverNew   : '',
     fileHoverState === 'merge' ? styles.isFileOverMerge : '',
     highlighted                ? styles.isHighlighted   : '',

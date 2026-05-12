@@ -22,6 +22,27 @@
   transition: border-color 0.1s, box-shadow 0.1s;
 }
 
+.isReorderBefore::before,
+.isReorderAfter::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--color-accent);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18);
+  z-index: 5;
+}
+
+.isReorderBefore::before {
+  top: -5px;
+}
+
+.isReorderAfter::after {
+  bottom: -5px;
+}
+
 /* Новая карточка — подсветка 5 с */
 @keyframes highlightEnter {
   0%   { box-shadow: 0 0 0 6px rgba(99, 102, 241, 0.7), 0 0 24px rgba(99, 102, 241, 0.4); border-color: var(--color-accent); }
