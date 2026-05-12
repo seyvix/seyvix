@@ -9,6 +9,8 @@ class MaterialType(StrEnum):
     TEXT = "text"
     LINK = "link"
     PHOTO = "photo"
+    AUDIO = "audio"
+    VIDEO = "video"
     DOCUMENT = "document"
 
 

@@ -78,7 +78,7 @@ export function getTelegramCardModel(note: Note): TelegramCardModel | null {
     sourceLabel: source.providerLabel || 'Telegram',
     originLabel: sourceOriginLabel(source),
     caption,
-    media: note.objects.filter(obj => obj.type === 'image' || obj.type === 'video' || obj.type === 'document'),
+    media: note.objects.filter(obj => obj.type === 'image' || obj.type === 'audio' || obj.type === 'video' || obj.type === 'document'),
     itemCount: note.objects.length,
   }
 }

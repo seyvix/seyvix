@@ -44,22 +44,77 @@ def material_from_mapping(message: Mapping[str, Any]) -> InboundMaterial | None:
 
     document = message.get("document")
     if isinstance(document, Mapping) and document.get("file_id"):
-        return InboundMaterial(
+        return _attachment_material(
             telegram_user_id=telegram_user_id,
             telegram_chat_id=telegram_chat_id,
             telegram_message_id=telegram_message_id,
             message_date=message_date,
             material_type=MaterialType.DOCUMENT,
-            text=None,
             caption=caption,
-            attachment=Attachment(
-                file_id=str(document["file_id"]),
-                filename=str(document.get("file_name") or "telegram-document"),
-                mime_type=(
-                    str(document["mime_type"]) if document.get("mime_type") is not None else None
-                ),
-            ),
             source=source,
+            file_id=str(document["file_id"]),
+            filename=str(document.get("file_name") or "telegram-document"),
+            mime_type=_string_or_none(document.get("mime_type")),
+        )
+
+    video = message.get("video")
+    if isinstance(video, Mapping) and video.get("file_id"):
+        return _attachment_material(
+            telegram_user_id=telegram_user_id,
+            telegram_chat_id=telegram_chat_id,
+            telegram_message_id=telegram_message_id,
+            message_date=message_date,
+            material_type=MaterialType.VIDEO,
+            caption=caption,
+            source=source,
+            file_id=str(video["file_id"]),
+            filename=str(video.get("file_name") or "telegram-video.mp4"),
+            mime_type=_string_or_none(video.get("mime_type")) or "video/mp4",
+        )
+
+    video_note = message.get("video_note")
+    if isinstance(video_note, Mapping) and video_note.get("file_id"):
+        return _attachment_material(
+            telegram_user_id=telegram_user_id,
+            telegram_chat_id=telegram_chat_id,
+            telegram_message_id=telegram_message_id,
+            message_date=message_date,
+            material_type=MaterialType.VIDEO,
+            caption=caption,
+            source=source,
+            file_id=str(video_note["file_id"]),
+            filename="telegram-video-note.mp4",
+            mime_type="video/mp4",
+        )
+
+    voice = message.get("voice")
+    if isinstance(voice, Mapping) and voice.get("file_id"):
+        return _attachment_material(
+            telegram_user_id=telegram_user_id,
+            telegram_chat_id=telegram_chat_id,
+            telegram_message_id=telegram_message_id,
+            message_date=message_date,
+            material_type=MaterialType.AUDIO,
+            caption=caption,
+            source=source,
+            file_id=str(voice["file_id"]),
+            filename="telegram-voice.ogg",
+            mime_type=_string_or_none(voice.get("mime_type")) or "audio/ogg",
+        )
+
+    audio = message.get("audio")
+    if isinstance(audio, Mapping) and audio.get("file_id"):
+        return _attachment_material(
+            telegram_user_id=telegram_user_id,
+            telegram_chat_id=telegram_chat_id,
+            telegram_message_id=telegram_message_id,
+            message_date=message_date,
+            material_type=MaterialType.AUDIO,
+            caption=caption,
+            source=source,
+            file_id=str(audio["file_id"]),
+            filename=str(audio.get("file_name") or "telegram-audio.mp3"),
+            mime_type=_string_or_none(audio.get("mime_type")) or "audio/mpeg",
         )
 
     photos = message.get("photo")
@@ -70,20 +125,17 @@ def material_from_mapping(message: Mapping[str, Any]) -> InboundMaterial | None:
             default=None,
         )
         if photo is not None:
-            return InboundMaterial(
+            return _attachment_material(
                 telegram_user_id=telegram_user_id,
                 telegram_chat_id=telegram_chat_id,
                 telegram_message_id=telegram_message_id,
                 message_date=message_date,
                 material_type=MaterialType.PHOTO,
-                text=None,
                 caption=caption,
-                attachment=Attachment(
-                    file_id=str(photo["file_id"]),
-                    filename="telegram-photo.jpg",
-                    mime_type="image/jpeg",
-                ),
                 source=source,
+                file_id=str(photo["file_id"]),
+                filename="telegram-photo.jpg",
+                mime_type="image/jpeg",
             )
 
     if isinstance(text, str) and text.strip():
@@ -104,6 +156,40 @@ def material_from_mapping(message: Mapping[str, Any]) -> InboundMaterial | None:
         )
 
     return None
+
+
+def _attachment_material(
+    *,
+    telegram_user_id: str,
+    telegram_chat_id: str,
+    telegram_message_id: str,
+    message_date: int,
+    material_type: MaterialType,
+    caption: str | None,
+    source: SourceMetadata,
+    file_id: str,
+    filename: str,
+    mime_type: str | None,
+) -> InboundMaterial:
+    return InboundMaterial(
+        telegram_user_id=telegram_user_id,
+        telegram_chat_id=telegram_chat_id,
+        telegram_message_id=telegram_message_id,
+        message_date=message_date,
+        material_type=material_type,
+        text=None,
+        caption=caption,
+        attachment=Attachment(
+            file_id=file_id,
+            filename=filename,
+            mime_type=mime_type,
+        ),
+        source=source,
+    )
+
+
+def _string_or_none(value: object) -> str | None:
+    return str(value) if value is not None else None
 
 
 def _message_date_as_timestamp(value: object) -> int:

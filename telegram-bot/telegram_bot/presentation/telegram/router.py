@@ -24,7 +24,7 @@ def build_router() -> Router:
     @router.message(Command("help"))
     async def help_handler(message: Message, web_app_url: str | None = None) -> None:
         await message.answer(
-            "Отправьте текст, ссылку, изображение или документ, чтобы сохранить материал.",
+            "Отправьте текст, ссылку, изображение, видео, голосовое или документ, чтобы сохранить материал.",
             reply_markup=web_app_keyboard(web_app_url),
         )
 

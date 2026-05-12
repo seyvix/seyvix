@@ -7,7 +7,16 @@ from app.modules.content.app_note import AppNote
 from pydantic import BaseModel, Field
 
 TelegramIngestMode = Literal["default", "grouped_notes"]
-TelegramMaterialType = Literal["text", "link", "photo", "document"]
+TelegramMaterialType = Literal[
+    "text",
+    "link",
+    "photo",
+    "document",
+    "audio",
+    "voice",
+    "video",
+    "video_note",
+]
 TelegramIngestStatus = Literal["saved", "collection_started", "collection_updated"]
 
 

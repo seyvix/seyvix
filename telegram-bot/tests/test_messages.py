@@ -77,6 +77,82 @@ def test_parse_message_uses_largest_photo_and_caption() -> None:
     assert material.attachment.mime_type == "image/jpeg"
 
 
+def test_parse_message_maps_video_attachment() -> None:
+    material = material_from_mapping(
+        {
+            "message_id": 19,
+            "date": 1_777_777_781,
+            "chat": {"id": 700},
+            "from": {"id": 100500},
+            "caption": "Video caption",
+            "video": {
+                "file_id": "video-file",
+                "file_name": "clip.mp4",
+                "mime_type": "video/mp4",
+                "duration": 12,
+            },
+        }
+    )
+
+    assert material is not None
+    assert material.material_type == MaterialType.VIDEO
+    assert material.caption == "Video caption"
+    assert material.attachment is not None
+    assert material.attachment.file_id == "video-file"
+    assert material.attachment.filename == "clip.mp4"
+    assert material.attachment.mime_type == "video/mp4"
+
+
+def test_parse_message_maps_video_note_as_video() -> None:
+    material = material_from_mapping(
+        {
+            "message_id": 20,
+            "date": 1_777_777_782,
+            "chat": {"id": 700},
+            "from": {"id": 100500},
+            "video_note": {
+                "file_id": "round-video-file",
+                "duration": 5,
+                "length": 240,
+            },
+        }
+    )
+
+    assert material is not None
+    assert material.material_type == MaterialType.VIDEO
+    assert material.attachment is not None
+    assert material.attachment.file_id == "round-video-file"
+    assert material.attachment.filename == "telegram-video-note.mp4"
+    assert material.attachment.mime_type == "video/mp4"
+    assert material.source is not None
+    assert material.source.raw_payload["video_note"]["file_id"] == "round-video-file"
+
+
+def test_parse_message_maps_voice_as_audio() -> None:
+    material = material_from_mapping(
+        {
+            "message_id": 21,
+            "date": 1_777_777_783,
+            "chat": {"id": 700},
+            "from": {"id": 100500},
+            "voice": {
+                "file_id": "voice-file",
+                "mime_type": "audio/ogg",
+                "duration": 7,
+            },
+        }
+    )
+
+    assert material is not None
+    assert material.material_type == MaterialType.AUDIO
+    assert material.attachment is not None
+    assert material.attachment.file_id == "voice-file"
+    assert material.attachment.filename == "telegram-voice.ogg"
+    assert material.attachment.mime_type == "audio/ogg"
+    assert material.source is not None
+    assert material.source.raw_payload["voice"]["file_id"] == "voice-file"
+
+
 def test_parse_message_preserves_telegram_source_metadata_and_markdown() -> None:
     material = material_from_mapping(
         {

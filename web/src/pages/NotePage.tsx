@@ -15,6 +15,7 @@ import {
   ChevronRight,
   Check,
   FolderTree,
+  Mic2,
   Plus,
   Search,
   Send,
@@ -1036,6 +1037,17 @@ function TelegramDetailMediaTile({ obj }: { obj: NoteObject }) {
     return (
       <div className={styles.telegramDetailMediaTile}>
         <video controls src={obj.content} />
+      </div>
+    )
+  }
+  if (obj.type === 'audio') {
+    return (
+      <div className={`${styles.telegramDetailMediaTile} ${styles.telegramDetailAudioTile}`}>
+        <div className={styles.telegramDetailAudioIcon}>
+          <Mic2 size={26} />
+        </div>
+        <audio controls src={obj.content} />
+        <span>{obj.filename ?? 'Голосовое сообщение'}</span>
       </div>
     )
   }

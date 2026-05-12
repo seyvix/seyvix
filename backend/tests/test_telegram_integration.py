@@ -188,6 +188,63 @@ def test_telegram_media_group_creates_single_collection_with_item_sources(
     ]
 
 
+def test_telegram_ingest_video_file_creates_video_note_object(
+    content_client: TestClient,
+) -> None:
+    _auth_headers(content_client)
+
+    response = content_client.post(
+        "/api/v1/integrations/telegram/ingest",
+        headers=_internal_headers(),
+        data={
+            "telegram_user_id": "100500",
+            "telegram_chat_id": "801627037",
+            "telegram_message_id": "42",
+            "message_date": datetime.now(UTC).isoformat(),
+            "material_type": "video",
+            "caption": "Video from Telegram",
+            "filename": "clip.mp4",
+            "mime_type": "video/mp4",
+        },
+        files={"file": ("clip.mp4", b"fake-video", "video/mp4")},
+    )
+
+    assert response.status_code == 201, response.text
+    objects = response.json()["note"]["objects"]
+    video = next(obj for obj in objects if obj["type"] == "video")
+    caption = next(obj for obj in objects if obj["type"] == "text")
+    assert video["filename"] == "clip.mp4"
+    assert video["mimeType"] == "video/mp4"
+    assert caption["content"] == "Video from Telegram"
+
+
+def test_telegram_ingest_voice_file_creates_audio_note_object(
+    content_client: TestClient,
+) -> None:
+    _auth_headers(content_client)
+
+    response = content_client.post(
+        "/api/v1/integrations/telegram/ingest",
+        headers=_internal_headers(),
+        data={
+            "telegram_user_id": "100500",
+            "telegram_chat_id": "801627037",
+            "telegram_message_id": "43",
+            "message_date": datetime.now(UTC).isoformat(),
+            "material_type": "voice",
+            "filename": "telegram-voice.ogg",
+            "mime_type": "audio/ogg",
+        },
+        files={"file": ("telegram-voice.ogg", b"fake-audio", "audio/ogg")},
+    )
+
+    assert response.status_code == 201, response.text
+    obj = response.json()["note"]["objects"][0]
+    assert obj["type"] == "audio"
+    assert obj["filename"] == "telegram-voice.ogg"
+    assert obj["mimeType"] == "audio/ogg"
+
+
 def test_telegram_default_mode_groups_fast_message_series(
     content_client: TestClient,
 ) -> None:

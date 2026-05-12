@@ -864,6 +864,39 @@
   text-align: center;
 }
 
+.telegramDetailAudioTile {
+  display: flex;
+  min-height: 180px;
+  aspect-ratio: auto;
+  cursor: default;
+  padding: 22px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.telegramDetailAudioTile audio {
+  width: min(100%, 520px);
+}
+
+.telegramDetailAudioIcon {
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #d7efff;
+  background: linear-gradient(145deg, #2496d8, #1b75b2);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+.telegramDetailAudioTile span {
+  position: static;
+  max-width: min(100%, 520px);
+}
+
 .telegramDetailCaption {
   padding: 18px 20px 20px;
   color: var(--color-text-primary);
