@@ -51,7 +51,7 @@ import { useCreateNote } from '../../hooks/useCreateNote'
 import { useUpdateNote } from '../../hooks/useUpdateNote'
 import { useDragContext } from '../../contexts/DragContext'
 import { getObjectDisplayText, getObjectPreviewSource } from '../../utils/notePreview'
-import { collectSourceChips, getTelegramCardModel } from '../../utils/noteCardPresentation'
+import { collectSourceChips } from '../../utils/noteCardPresentation'
 import { htmlToMarkdown, makeMarkdownTitle, replaceBlobImageSources } from '../../utils/markdownPaste'
 import { useFavicon } from '../../hooks/useFavicon'
 import styles from './NoteCard.module.css'
@@ -149,95 +149,6 @@ function SimpleCard({ note, onTagClick }: { note: Note; onTagClick?: (name: stri
       <div className={styles.title}>{note.title}</div>
       {textObj && <div className={styles.excerpt}>{getObjectDisplayText(textObj)}</div>}
       <CardMeta note={note} onTagClick={onTagClick} />
-    </Link>
-  )
-}
-
-// ─── Telegram ────────────────────────────────────────────────────────────────
-
-function TelegramMediaTile({ obj, extraCount = 0, preserveAspect = false }: { obj: NoteObject; extraCount?: number; preserveAspect?: boolean }) {
-  const source = getObjectPreviewSource(obj)
-  const isImageLike = obj.type === 'image' || Boolean(obj.thumbnailUrl || obj.cover)
-  const tileStyle = preserveAspect && obj.imageWidth && obj.imageHeight ? { aspectRatio: `${obj.imageWidth} / ${obj.imageHeight}` } : undefined
-
-  return (
-    <div className={styles.telegramMediaTile} style={tileStyle}>
-      {isImageLike ? (
-        <AuthImage src={source} alt="" className={styles.telegramMediaImg} />
-      ) : (
-        <div className={styles.telegramMediaFallback}>
-          <FileText size={22} />
-          <span>{obj.filename ?? 'Вложение'}</span>
-        </div>
-      )}
-      {extraCount > 0 && <div className={styles.telegramMediaMore}>+{extraCount}</div>}
-    </div>
-  )
-}
-
-function TelegramMediaGrid({ objects }: { objects: NoteObject[] }) {
-  if (objects.length === 0) return null
-
-  const visible = objects.slice(0, 4)
-  const extraCount = Math.max(0, objects.length - visible.length)
-  const cls = [
-    styles.telegramMediaGrid,
-    objects.length === 1 ? styles.telegramMediaGridSingle : '',
-    objects.length === 2 ? styles.telegramMediaGridPair : '',
-  ].filter(Boolean).join(' ')
-
-  return (
-    <div className={cls}>
-      {visible.map((obj, index) => (
-        <TelegramMediaTile
-          key={obj.id}
-          obj={obj}
-          preserveAspect={objects.length === 1}
-          extraCount={index === visible.length - 1 ? extraCount : 0}
-        />
-      ))}
-    </div>
-  )
-}
-
-function TelegramCard({
-  note,
-  onTagClick,
-  titleNode,
-  isRenaming,
-}: {
-  note: Note
-  onTagClick?: (name: string) => void
-  titleNode?: React.ReactNode
-  isRenaming?: boolean
-}) {
-  const model = getTelegramCardModel(note)
-  if (!model) return null
-
-  const itemLabel = model.itemCount === 1 ? '1 элемент' : `${model.itemCount} эл.`
-
-  return (
-    <Link draggable={false} to={notePageHref(note)} className={`${styles.card} ${styles.telegramCard}`}>
-      <div className={styles.telegramHeader}>
-        <div className={styles.telegramSourceIcon}>
-          <Send size={13} />
-        </div>
-        <div className={styles.telegramSourceText}>
-          <span>{model.originLabel ? model.sourceLabel : 'Источник'}</span>
-          <strong>{model.originLabel ?? model.sourceLabel}</strong>
-        </div>
-        <div className={styles.telegramItemCount}>{itemLabel}</div>
-      </div>
-
-      <TelegramMediaGrid objects={model.media} />
-
-      <div className={styles.telegramBody}>
-        {(isRenaming || !model.caption) && titleNode}
-        {model.caption && (
-          <div className={styles.telegramCaption}>{model.caption}</div>
-        )}
-        <CardMeta note={note} onTagClick={onTagClick} />
-      </div>
     </Link>
   )
 }
@@ -710,13 +621,9 @@ export function NoteCard({ note, isNew, onTagClick }: { note: Note; isNew?: bool
     </AnimatePresence>
   )
 
-  const telegramCard = getTelegramCardModel(note)
-
   return (
     <div ref={wrapperRef} className={cls} style={{ position: 'relative' }}>
-      {telegramCard ? (
-        <TelegramCard note={note} onTagClick={onTagClick} titleNode={titleNode} isRenaming={renamePending} />
-      ) : note.type === 'collection' ? (
+      {note.type === 'collection' ? (
         <CollectionCard note={note} onTagClick={onTagClick} titleNode={titleNode} />
       ) : note.type === 'composite' ? (
         <CompositeCard  note={note} onTagClick={onTagClick} titleNode={titleNode} />

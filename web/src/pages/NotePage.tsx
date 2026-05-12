@@ -25,6 +25,8 @@ import { useNote } from '../hooks/useNote'
 import { useUpdateNote } from '../hooks/useUpdateNote'
 import { useRemoveCollectionItems } from '../hooks/useRemoveCollectionItems'
 import { getTagColor } from '../utils/tagColor'
+import { getObjectPreviewSource } from '../utils/notePreview'
+import { getTelegramCardModel, type TelegramCardModel } from '../utils/noteCardPresentation'
 import AuthImage from '../components/AuthImage/AuthImage'
 import HtmlSnapshotViewer from '../components/HtmlSnapshotViewer/HtmlSnapshotViewer'
 import { LoaderSpinner } from '../components/LoaderSpinner'
@@ -106,6 +108,23 @@ function ObjectSource({ source }: { source?: SourceMetadata | null }) {
     )
   }
   return <div className={styles.sourceMeta}>{children}</div>
+}
+
+function notePrimarySource(note: Note, objects: NoteObject[]): SourceMetadata | null {
+  return note.source ?? objects.find(obj => obj.source)?.source ?? null
+}
+
+function sourceDateLabel(source?: SourceMetadata | null): string | null {
+  if (!source?.originalCreatedAt) return null
+  const date = new Date(source.originalCreatedAt)
+  if (Number.isNaN(date.getTime())) return null
+  return date.toLocaleString('ru-RU', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
 }
 
 async function authDownload(url: string, filename?: string) {
@@ -893,6 +912,92 @@ function MediaObj({ obj, isEditing, onDelete }: { obj: NoteObject; isEditing: bo
   )
 }
 
+// ─── Telegram detail post ─────────────────────────────────────────────────────
+
+function TelegramDetailMediaTile({ obj }: { obj: NoteObject }) {
+  if (obj.type === 'image') {
+    return (
+      <button className={styles.telegramDetailMediaTile} onClick={() => window.open(obj.content, '_blank')} title="Открыть изображение">
+        <AuthImage src={getObjectPreviewSource(obj)} alt="" />
+      </button>
+    )
+  }
+  if (obj.type === 'video') {
+    return (
+      <div className={styles.telegramDetailMediaTile}>
+        <video controls src={obj.content} />
+      </div>
+    )
+  }
+  if (obj.type === 'document') {
+    const thumb = obj.thumbnailUrl ?? obj.cover
+    return (
+      <button className={styles.telegramDetailMediaTile} onClick={() => authDownload(obj.content, obj.filename)} title="Скачать документ">
+        {thumb ? <AuthImage src={thumb} alt="" /> : <FileText size={30} />}
+        <span>{obj.filename ?? 'Документ'}</span>
+      </button>
+    )
+  }
+  return null
+}
+
+function TelegramDetailPost({
+  note,
+  objects,
+  model,
+}: {
+  note: Note
+  objects: NoteObject[]
+  model: TelegramCardModel
+}) {
+  const source = notePrimarySource(note, objects)
+  const dateLabel = sourceDateLabel(source)
+  const captionObj = objects.find(obj => obj.caption?.trim())
+  const textObj = objects.find(obj => obj.type === 'text' && obj.content.trim())
+  const caption = captionObj?.caption ?? textObj?.content ?? null
+  const sourceTitle = model.originLabel ?? model.sourceLabel
+  const media = model.media.filter(obj => objects.some(visible => visible.id === obj.id))
+  const gridClass = [
+    styles.telegramDetailMediaGrid,
+    media.length === 1 ? styles.telegramDetailMediaSingle : '',
+    media.length === 2 ? styles.telegramDetailMediaPair : '',
+  ].filter(Boolean).join(' ')
+
+  return (
+    <article className={styles.telegramDetailPost}>
+      <header className={styles.telegramDetailHeader}>
+        <div className={styles.telegramDetailIcon}>
+          <Send size={16} />
+        </div>
+        <div className={styles.telegramDetailSource}>
+          <span>{model.sourceLabel}</span>
+          <strong>{sourceTitle}</strong>
+        </div>
+        <div className={styles.telegramDetailMeta}>
+          {dateLabel && <span>{dateLabel}</span>}
+          {source?.url && (
+            <a href={source.url} target="_blank" rel="noreferrer" title="Открыть оригинал">
+              <ExternalLink size={14} />
+            </a>
+          )}
+        </div>
+      </header>
+
+      {media.length > 0 && (
+        <div className={gridClass}>
+          {media.map(obj => <TelegramDetailMediaTile key={obj.id} obj={obj} />)}
+        </div>
+      )}
+
+      {caption && (
+        <div className={styles.telegramDetailCaption}>
+          <MarkdownText text={caption} source={captionObj?.source ?? textObj?.source ?? source} />
+        </div>
+      )}
+    </article>
+  )
+}
+
 // ─── Document viewer ───────────────────────────────────────────────────────────
 
 function DocViewer({
@@ -1112,6 +1217,9 @@ export default function NotePage() {
   }
 
   const visibleObjects = note.objects.filter(o => !deletedObjs.has(o.id))
+  const telegramDetailModel = !isEditing
+    ? getTelegramCardModel({ ...note, objects: visibleObjects })
+    : null
   const formattedDate  = new Date(note.updatedAt).toLocaleDateString('ru-RU', {
     day: 'numeric', month: 'long', year: 'numeric',
   })
@@ -1186,8 +1294,12 @@ export default function NotePage() {
 
         <EnrichmentPanel note={note} />
 
+        {telegramDetailModel && (
+          <TelegramDetailPost note={note} objects={visibleObjects} model={telegramDetailModel} />
+        )}
+
         {/* Collection → article stream */}
-        {note.type === 'collection' && (
+        {!telegramDetailModel && note.type === 'collection' && (
           <CollectionStream
             objects={visibleObjects}
             isEditing={isEditing}
@@ -1201,7 +1313,7 @@ export default function NotePage() {
         )}
 
         {/* Simple / Composite → stream */}
-        {note.type !== 'collection' && (
+        {!telegramDetailModel && note.type !== 'collection' && (
           <div className={styles.stream}>
             {visibleObjects.map(obj => {
               if (obj.type === 'image') return (
