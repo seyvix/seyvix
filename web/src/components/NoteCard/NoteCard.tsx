@@ -1,7 +1,39 @@
-import { useRef, useState, useEffect } from 'react'
+import { useRef, useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { ExternalLink, FileText, ImageIcon, Link2, AlignLeft, Plus, UploadCloud, RefreshCw, Check, Send } from 'lucide-react'
+import { EditorContent, useEditor, type Editor } from '@tiptap/react'
+import { BubbleMenu } from '@tiptap/react/menus'
+import StarterKit from '@tiptap/starter-kit'
+import Placeholder from '@tiptap/extension-placeholder'
+import TaskList from '@tiptap/extension-task-list'
+import TaskItem from '@tiptap/extension-task-item'
+import Image from '@tiptap/extension-image'
+import LinkExtension from '@tiptap/extension-link'
+import Typography from '@tiptap/extension-typography'
+import UnderlineExtension from '@tiptap/extension-underline'
+import {
+  AlignLeft,
+  Bold,
+  Check,
+  Code2,
+  ExternalLink,
+  FileText,
+  Heading1,
+  ImageIcon,
+  Italic,
+  Link2,
+  List,
+  ListChecks,
+  ListOrdered,
+  Minus,
+  Paperclip,
+  Plus,
+  RefreshCw,
+  Send,
+  TextQuote,
+  Underline,
+  UploadCloud,
+} from 'lucide-react'
 import { useSyncLocalNote } from '../../hooks/useSyncLocalNote'
 import { useBulkSelect } from '../../contexts/BulkSelectContext'
 import { draggable, dropTargetForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter'
@@ -20,6 +52,7 @@ import { useUpdateNote } from '../../hooks/useUpdateNote'
 import { useDragContext } from '../../contexts/DragContext'
 import { getObjectDisplayText, getObjectPreviewSource } from '../../utils/notePreview'
 import { collectSourceChips, getTelegramCardModel } from '../../utils/noteCardPresentation'
+import { htmlToMarkdown, makeMarkdownTitle, replaceBlobImageSources } from '../../utils/markdownPaste'
 import { useFavicon } from '../../hooks/useFavicon'
 import styles from './NoteCard.module.css'
 
@@ -716,17 +749,150 @@ export function NoteCard({ note, isNew, onTagClick }: { note: Note; isNew?: bool
 // ─── Add card ─────────────────────────────────────────────────────────────────
 
 export function AddNoteCard({ onClick }: { onClick?: () => void }) {
-  const dropRef  = useRef<HTMLDivElement>(null)
-  const textaRef = useRef<HTMLTextAreaElement>(null)
+  const dropRef = useRef<HTMLDivElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const editorRef = useRef<Editor | null>(null)
+  const blobNamesRef = useRef(new Map<string, string>())
+  const objectUrlsRef = useRef<string[]>([])
 
-  const [isOver,    setIsOver]    = useState(false)
+  const [isOver, setIsOver] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
-  const [text,      setText]      = useState('')
-  const [files,     setFiles]     = useState<File[]>([])
+  const [isEditorEmpty, setIsEditorEmpty] = useState(true)
+  const [files, setFiles] = useState<File[]>([])
+  const [slashMenu, setSlashMenu] = useState<{ visible: boolean; top: number; left: number; query: string }>({
+    visible: false,
+    top: 0,
+    left: 0,
+    query: '',
+  })
 
   const { mutate: upload } = useUploadFiles()
   const { mutate: create } = useCreateNote()
   const { isFileDragging } = useDragContext()
+
+  const attachFiles = useCallback((incoming: File[], insertImages: boolean) => {
+    if (incoming.length === 0) return
+    setFiles(prev => [...prev, ...incoming])
+
+    if (!insertImages) return
+    const editor = editorRef.current
+    if (!editor) return
+
+    incoming
+      .filter(file => file.type.startsWith('image/'))
+      .forEach((file, index) => {
+        const name = file.name || `pasted-image-${Date.now()}-${index + 1}.png`
+        const url = URL.createObjectURL(file)
+        objectUrlsRef.current.push(url)
+        blobNamesRef.current.set(url, name)
+        editor.chain().focus().setImage({ src: url, alt: name, title: name }).run()
+      })
+  }, [])
+
+  const updateSlashMenu = useCallback((editor: Editor) => {
+    const { selection } = editor.state
+    if (!selection.empty) {
+      setSlashMenu(prev => prev.visible ? { ...prev, visible: false } : prev)
+      return
+    }
+
+    const $from = selection.$from
+    const textBeforeCursor = $from.parent.textBetween(0, $from.parentOffset, '\n', '\n')
+    const match = /^\/([\p{L}\p{N}_-]*)?$/u.exec(textBeforeCursor)
+    const root = dropRef.current
+    if (!match || !root) {
+      setSlashMenu(prev => prev.visible ? { ...prev, visible: false } : prev)
+      return
+    }
+
+    const coords = editor.view.coordsAtPos(selection.from)
+    const bounds = root.getBoundingClientRect()
+    setSlashMenu({
+      visible: true,
+      top: coords.bottom - bounds.top + 8,
+      left: Math.max(16, coords.left - bounds.left),
+      query: match[1]?.toLowerCase() ?? '',
+    })
+  }, [])
+
+  const editor = useEditor({
+    extensions: [
+      StarterKit.configure({
+        heading: { levels: [1, 2, 3] },
+        link: false,
+      }),
+      UnderlineExtension,
+      Typography,
+      LinkExtension.configure({
+        autolink: true,
+        openOnClick: false,
+        linkOnPaste: true,
+        HTMLAttributes: { rel: 'noopener noreferrer nofollow' },
+      }),
+      Image.configure({
+        allowBase64: true,
+        inline: false,
+      }),
+      TaskList,
+      TaskItem.configure({ nested: true }),
+      Placeholder.configure({
+        placeholder: 'Введите / для команд или вставьте текст из Word',
+      }),
+    ],
+    autofocus: false,
+    content: '',
+    immediatelyRender: false,
+    editorProps: {
+      attributes: {
+        class: styles.quickNoteEditorContent,
+      },
+      handlePaste: (_view, event) => {
+        const items = Array.from(event.clipboardData?.items ?? [])
+        const pastedImages = items
+          .filter(item => item.kind === 'file' && item.type.startsWith('image/'))
+          .map((item, index) => {
+            const file = item.getAsFile()
+            if (!file) return null
+            const ext = file.type.split('/')[1] || 'png'
+            return new File([file], file.name || `pasted-image-${Date.now()}-${index + 1}.${ext}`, { type: file.type })
+          })
+          .filter((file): file is File => Boolean(file))
+
+        if (pastedImages.length === 0) return false
+        event.preventDefault()
+        attachFiles(pastedImages, true)
+        return true
+      },
+      handleKeyDown: (_view, event) => {
+        if (event.key === 'Escape') {
+          handleCancel()
+          return true
+        }
+        if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+          handleSubmit()
+          return true
+        }
+        if (event.key === 'Enter' && slashMenu.visible && slashItems.length > 0) {
+          runSlashCommand(slashItems[0].id)
+          return true
+        }
+        return false
+      },
+    },
+    onUpdate: ({ editor }) => {
+      setIsEditorEmpty(editor.isEmpty)
+      updateSlashMenu(editor)
+    },
+    onSelectionUpdate: ({ editor }) => updateSlashMenu(editor),
+  })
+
+  useEffect(() => {
+    editorRef.current = editor
+  }, [editor])
+
+  useEffect(() => () => {
+    objectUrlsRef.current.forEach(url => URL.revokeObjectURL(url))
+  }, [])
 
   useEffect(() => {
     const el = dropRef.current
@@ -738,62 +904,100 @@ export function AddNoteCard({ onClick }: { onClick?: () => void }) {
       onDragLeave: () => setIsOver(false),
       onDrop: ({ source }) => {
         setIsOver(false)
-        // DnD-дроп всегда создаёт новую заметку сразу
         const dropped = getFiles({ source })
-        if (dropped.length > 0) upload({ files: dropped })
+        if (dropped.length === 0) return
+        if (isEditing) {
+          attachFiles(dropped, true)
+        } else {
+          upload({ files: dropped })
+        }
       },
     })
-  }, [upload])
-
-  useEffect(() => {
-    if (isEditing) textaRef.current?.focus()
-  }, [isEditing])
+  }, [attachFiles, isEditing, upload])
 
   function handleOpen() {
     setIsEditing(true)
     onClick?.()
+    window.setTimeout(() => editorRef.current?.commands.focus('end'), 0)
   }
 
   function handleCancel() {
     setIsEditing(false)
-    setText('')
+    editorRef.current?.commands.clearContent()
+    setIsEditorEmpty(true)
+    setSlashMenu(prev => ({ ...prev, visible: false }))
     setFiles([])
+    blobNamesRef.current.clear()
+    objectUrlsRef.current.forEach(url => URL.revokeObjectURL(url))
+    objectUrlsRef.current = []
   }
 
   function handleSubmit() {
-    const trimmed = text.trim()
+    const html = editorRef.current?.getHTML() ?? ''
+    const markdown = replaceBlobImageSources(htmlToMarkdown(html), blobNamesRef.current).trim()
     const hasFiles = files.length > 0
 
-    if (!trimmed && !hasFiles) { handleCancel(); return }
+    if (!markdown && !hasFiles) { handleCancel(); return }
 
     if (hasFiles) {
-      // Файлы (возможно + текст) → один джоб
-      upload({ files, text: trimmed || undefined })
+      upload({ files, text: markdown || undefined })
     } else {
-      // Только текст → обычное создание
-      const title = trimmed.split('\n')[0].slice(0, 60) || 'Новая заметка'
+      const title = makeMarkdownTitle(markdown)
       create({
         title,
         type: 'simple',
-        objects: [{ id: `txt-${Date.now()}`, type: 'text', content: trimmed, createdAt: new Date().toISOString() }],
+        objects: [{ id: `txt-${Date.now()}`, type: 'text', content: markdown, createdAt: new Date().toISOString() }],
       })
     }
     handleCancel()
   }
 
-  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === 'Escape') { handleCancel(); return }
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleSubmit()
-  }
-
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const picked = Array.from(e.target.files ?? [])
-    if (picked.length > 0) setFiles(prev => [...prev, ...picked])
+    attachFiles(picked, true)
     e.target.value = ''
   }
 
   function removeFile(idx: number) {
     setFiles(prev => prev.filter((_, i) => i !== idx))
+  }
+
+  function clearSlashTrigger() {
+    const editor = editorRef.current
+    if (!editor) return
+    const { selection } = editor.state
+    const from = selection.from
+    const start = from - selection.$from.parentOffset
+    editor.chain().focus().deleteRange({ from: start, to: from }).run()
+  }
+
+  function runSlashCommand(command: string) {
+    const editor = editorRef.current
+    if (!editor) return
+    clearSlashTrigger()
+    const chain = editor.chain().focus()
+    if (command === 'heading') chain.toggleHeading({ level: 1 }).run()
+    if (command === 'task') chain.toggleTaskList().run()
+    if (command === 'image') fileInputRef.current?.click()
+    if (command === 'divider') chain.setHorizontalRule().run()
+    if (command === 'quote') chain.toggleBlockquote().run()
+    if (command === 'code') chain.toggleCodeBlock().run()
+    if (command === 'bullet') chain.toggleBulletList().run()
+    if (command === 'ordered') chain.toggleOrderedList().run()
+    setSlashMenu(prev => ({ ...prev, visible: false }))
+  }
+
+  function setLink() {
+    const editor = editorRef.current
+    if (!editor) return
+    const previousUrl = editor.getAttributes('link').href as string | undefined
+    const url = window.prompt('Ссылка', previousUrl ?? 'https://')
+    if (url === null) return
+    if (!url.trim()) {
+      editor.chain().focus().extendMarkRange('link').unsetLink().run()
+      return
+    }
+    editor.chain().focus().extendMarkRange('link').setLink({ href: url.trim() }).run()
   }
 
   const showFileMode = (isFileDragging || isOver) && !isEditing
@@ -805,18 +1009,56 @@ export function AddNoteCard({ onClick }: { onClick?: () => void }) {
     isFileDragging && !isEditing ? styles.addCardFileDrag  : '',
   ].filter(Boolean).join(' ')
 
+  const slashItems = [
+    { id: 'heading', label: 'Заголовок', icon: <Heading1 size={18} />, keywords: 'heading заголовок h1' },
+    { id: 'task', label: 'Список задач', icon: <ListChecks size={18} />, keywords: 'task todo задача чеклист' },
+    { id: 'image', label: 'Изображение', icon: <ImageIcon size={18} />, keywords: 'image img фото картинка' },
+    { id: 'divider', label: 'Разделитель', icon: <Minus size={18} />, keywords: 'divider hr линия' },
+    { id: 'quote', label: 'Цитата', icon: <TextQuote size={18} />, keywords: 'quote цитата' },
+    { id: 'code', label: 'Код', icon: <Code2 size={18} />, keywords: 'code код' },
+    { id: 'bullet', label: 'Маркированный список', icon: <List size={18} />, keywords: 'bullet list список' },
+    { id: 'ordered', label: 'Нумерованный список', icon: <ListOrdered size={18} />, keywords: 'ordered number список' },
+  ].filter(item => !slashMenu.query || item.keywords.includes(slashMenu.query) || item.label.toLowerCase().includes(slashMenu.query))
+
   return (
+    <>
+    {isEditing && <div className={styles.addCardBackdrop} onClick={handleCancel} />}
     <div ref={dropRef} className={wrapperCls}>
       {isEditing ? (
         <>
-          <textarea
-            ref={textaRef}
-            className={styles.addCardTextarea}
-            placeholder="Что у вас на уме?"
-            value={text}
-            onChange={e => setText(e.target.value)}
-            onKeyDown={handleKeyDown}
-          />
+          <div className={styles.addCardEditorShell}>
+            <div className={styles.addCardKicker}>Новая заметка</div>
+            {editor && (
+              <BubbleMenu editor={editor} className={styles.quickNoteBubble}>
+                <button type="button" className={editor.isActive('bold') ? styles.quickNoteToolActive : ''} onMouseDown={e => { e.preventDefault(); editor.chain().focus().toggleBold().run() }} title="Жирный">
+                  <Bold size={18} />
+                </button>
+                <button type="button" className={editor.isActive('italic') ? styles.quickNoteToolActive : ''} onMouseDown={e => { e.preventDefault(); editor.chain().focus().toggleItalic().run() }} title="Курсив">
+                  <Italic size={18} />
+                </button>
+                <button type="button" className={editor.isActive('underline') ? styles.quickNoteToolActive : ''} onMouseDown={e => { e.preventDefault(); editor.chain().focus().toggleUnderline().run() }} title="Подчеркнуть">
+                  <Underline size={18} />
+                </button>
+                <button type="button" className={editor.isActive('link') ? styles.quickNoteToolActive : ''} onMouseDown={e => { e.preventDefault(); setLink() }} title="Ссылка">
+                  <Link2 size={18} />
+                </button>
+                <button type="button" className={editor.isActive('code') ? styles.quickNoteToolActive : ''} onMouseDown={e => { e.preventDefault(); editor.chain().focus().toggleCode().run() }} title="Код">
+                  <Code2 size={18} />
+                </button>
+              </BubbleMenu>
+            )}
+            <EditorContent editor={editor} className={styles.quickNoteEditor} />
+            {slashMenu.visible && slashItems.length > 0 && (
+              <div className={styles.quickNoteSlashMenu} style={{ top: slashMenu.top, left: slashMenu.left }}>
+                {slashItems.map(item => (
+                  <button key={item.id} type="button" onMouseDown={e => { e.preventDefault(); runSlashCommand(item.id) }}>
+                    {item.icon}
+                    <span>{item.label}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           {files.length > 0 && (
             <ul className={styles.addCardFileList}>
               {files.map((f, i) => (
@@ -829,23 +1071,27 @@ export function AddNoteCard({ onClick }: { onClick?: () => void }) {
           )}
           <div className={styles.addCardActions}>
             <label className={styles.addCardFileBtn} title="Прикрепить файл">
-              <Plus size={15} />
-              <input type="file" multiple hidden onChange={handleFileChange} />
+              <Paperclip size={15} />
+              <input ref={fileInputRef} type="file" multiple hidden onChange={handleFileChange} />
             </label>
             <button className={styles.addCardCancelBtn} onClick={handleCancel}>Отмена</button>
-            <button className={styles.addCardSubmitBtn} onClick={handleSubmit}>Создать</button>
+            <button className={styles.addCardSubmitBtn} disabled={isEditorEmpty && files.length === 0} onClick={handleSubmit}>Создать</button>
           </div>
         </>
       ) : (
         <button className={styles.addCardTrigger} onClick={handleOpen}>
           {showFileMode
             ? <UploadCloud size={28} className={styles.addIcon} />
-            : <Plus size={20} className={styles.addIcon} />
+            : <Plus size={18} className={styles.addIcon} />
           }
-          {isOver ? 'Отпустите файлы' : showFileMode ? 'Бросьте сюда' : 'Добавить заметку'}
+          <span className={styles.addCardTriggerText}>
+            <strong>{isOver ? 'Отпустите файлы' : showFileMode ? 'Бросьте сюда' : 'Новая заметка'}</strong>
+            <span>{showFileMode ? 'Создать из файлов' : 'Markdown, вставка из Word, / команды'}</span>
+          </span>
         </button>
       )}
     </div>
+    </>
   )
 }
 
