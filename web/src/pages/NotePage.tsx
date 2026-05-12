@@ -27,6 +27,7 @@ import { useRemoveCollectionItems } from '../hooks/useRemoveCollectionItems'
 import { getTagColor } from '../utils/tagColor'
 import { getObjectPreviewSource } from '../utils/notePreview'
 import { getTelegramCardModel, type TelegramCardModel } from '../utils/noteCardPresentation'
+import { parseMarkdownBlocks, type MarkdownBlock } from '../utils/markdownBlocks'
 import AuthImage from '../components/AuthImage/AuthImage'
 import HtmlSnapshotViewer from '../components/HtmlSnapshotViewer/HtmlSnapshotViewer'
 import { LoaderSpinner } from '../components/LoaderSpinner'
@@ -204,8 +205,8 @@ function customEmojiAssets(source?: NoteObject['source'] | null): Record<string,
     : {}
 }
 
-function MarkdownText({ text, source }: { text: string; source?: NoteObject['source'] | null }) {
-  const pattern = /!\[favicon\]\(([^)]+)\)\s+\[([^\]]+)\]\(([^)]+)\)|\{\{tg_emoji:([0-9]+)\|([^}]+)\}\}/g
+function renderInlineMarkdown(text: string, source: NoteObject['source'] | null | undefined, keyPrefix: string): ReactNode[] {
+  const pattern = /!\[favicon\]\(([^)]+)\)\s+\[([^\]]+)\]\(([^)]+)\)|\{\{tg_emoji:([0-9]+)\|([^}]+)\}\}|!\[([^\]]*)\]\(([^)]+)\)|\[([^\]]+)\]\(([^)]+)\)|\*\*([^*]+)\*\*|__([^_]+)__|`([^`]+)`|<u>(.*?)<\/u>|_([^_\n]+)_/g
   const emojiAssets = customEmojiAssets(source)
   const parts: ReactNode[] = []
   let lastIndex = 0
@@ -215,35 +216,83 @@ function MarkdownText({ text, source }: { text: string; source?: NoteObject['sou
     if (index > lastIndex) {
       parts.push(text.slice(lastIndex, index))
     }
-    const [, faviconUrl, label, href, customEmojiId, fallback] = match
+    const [
+      ,
+      faviconUrl,
+      faviconLabel,
+      faviconHref,
+      customEmojiId,
+      fallback,
+      imageAlt,
+      imageHref,
+      linkLabel,
+      linkHref,
+      boldText,
+      boldAltText,
+      codeText,
+      underlineText,
+      italicText,
+    ] = match
     if (customEmojiId) {
       const asset = emojiAssets[customEmojiId]
       parts.push(
         asset?.data_url ? (
           <img
-            key={`${customEmojiId}-${index}`}
+            key={`${keyPrefix}-emoji-${customEmojiId}-${index}`}
             className={styles.inlineTelegramEmoji}
             src={asset.data_url}
             alt={asset.fallback || fallback}
             title={customEmojiId}
           />
         ) : (
-          <span key={`${customEmojiId}-${index}`} title={customEmojiId}>{fallback}</span>
+          <span key={`${keyPrefix}-emoji-fallback-${customEmojiId}-${index}`} title={customEmojiId}>{fallback}</span>
         )
       )
-    } else {
+    } else if (faviconHref) {
       parts.push(
         <a
-          key={`${href}-${index}`}
+          key={`${keyPrefix}-favicon-${faviconHref}-${index}`}
           className={styles.inlineMarkdownLink}
-          href={href}
+          href={faviconHref}
           target="_blank"
           rel="noopener noreferrer"
         >
           <img src={faviconUrl} alt="" />
-          <span>{label}</span>
+          <span>{faviconLabel}</span>
         </a>
       )
+    } else if (imageHref) {
+      parts.push(
+        <a
+          key={`${keyPrefix}-image-${imageHref}-${index}`}
+          className={styles.inlineMarkdownAttachment}
+          href={imageHref}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          {imageAlt || imageHref}
+        </a>
+      )
+    } else if (linkHref) {
+      parts.push(
+        <a
+          key={`${keyPrefix}-link-${linkHref}-${index}`}
+          href={linkHref}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          {linkLabel}
+        </a>
+      )
+    } else if (boldText || boldAltText) {
+      const value = boldText ?? boldAltText
+      parts.push(<strong key={`${keyPrefix}-bold-${index}`}>{renderInlineMarkdown(value, source, `${keyPrefix}-bold-${index}`)}</strong>)
+    } else if (codeText) {
+      parts.push(<code key={`${keyPrefix}-code-${index}`}>{codeText}</code>)
+    } else if (underlineText) {
+      parts.push(<u key={`${keyPrefix}-underline-${index}`}>{renderInlineMarkdown(underlineText, source, `${keyPrefix}-underline-${index}`)}</u>)
+    } else if (italicText) {
+      parts.push(<em key={`${keyPrefix}-italic-${index}`}>{renderInlineMarkdown(italicText, source, `${keyPrefix}-italic-${index}`)}</em>)
     }
     lastIndex = index + match[0].length
   }
@@ -252,7 +301,68 @@ function MarkdownText({ text, source }: { text: string; source?: NoteObject['sou
     parts.push(text.slice(lastIndex))
   }
 
-  return <>{parts}</>
+  return parts
+}
+
+function MarkdownBlockView({ block, source, index }: { block: MarkdownBlock; source?: NoteObject['source'] | null; index: number }) {
+  const keyPrefix = `md-${index}`
+  if (block.type === 'heading') {
+    const Tag = `h${block.level}` as 'h1' | 'h2' | 'h3'
+    return <Tag>{renderInlineMarkdown(block.text, source, keyPrefix)}</Tag>
+  }
+  if (block.type === 'paragraph') {
+    return <p>{renderInlineMarkdown(block.text, source, keyPrefix)}</p>
+  }
+  if (block.type === 'blockquote') {
+    return <blockquote>{renderInlineMarkdown(block.text, source, keyPrefix)}</blockquote>
+  }
+  if (block.type === 'bulletList') {
+    return (
+      <ul>
+        {block.items.map((item, itemIndex) => (
+          <li key={itemIndex}>{renderInlineMarkdown(item, source, `${keyPrefix}-li-${itemIndex}`)}</li>
+        ))}
+      </ul>
+    )
+  }
+  if (block.type === 'orderedList') {
+    return (
+      <ol>
+        {block.items.map((item, itemIndex) => (
+          <li key={itemIndex}>{renderInlineMarkdown(item, source, `${keyPrefix}-li-${itemIndex}`)}</li>
+        ))}
+      </ol>
+    )
+  }
+  if (block.type === 'taskList') {
+    return (
+      <ul className={styles.markdownTaskList}>
+        {block.items.map((item, itemIndex) => (
+          <li key={itemIndex}>
+            <input type="checkbox" checked={item.checked} readOnly />
+            <span>{renderInlineMarkdown(item.text, source, `${keyPrefix}-task-${itemIndex}`)}</span>
+          </li>
+        ))}
+      </ul>
+    )
+  }
+  if (block.type === 'code') {
+    return (
+      <pre>
+        <code>{block.text}</code>
+      </pre>
+    )
+  }
+  return <hr />
+}
+
+function MarkdownText({ text, source, className }: { text: string; source?: NoteObject['source'] | null; className?: string }) {
+  const blocks = parseMarkdownBlocks(text)
+  return (
+    <div className={`${styles.markdownText}${className ? ` ${className}` : ''}`}>
+      {blocks.map((block, index) => <MarkdownBlockView key={index} block={block} source={source} index={index} />)}
+    </div>
+  )
 }
 
 const LINK_SNAPSHOT_TYPES: Array<{ jobType: 'markdown' | 'pdf'; label: string }> = [
@@ -549,7 +659,7 @@ function ImageObj({ obj, isEditing, onDelete }: { obj: NoteObject; isEditing: bo
         onClick={() => window.open(obj.content, '_blank')}
       />
       <ObjectSource source={obj.source} />
-      {obj.caption && <p className={styles.objImageCaption}><MarkdownText text={obj.caption} source={obj.source} /></p>}
+      {obj.caption && <MarkdownText className={styles.objImageCaption} text={obj.caption} source={obj.source} />}
       {isEditing && <button className={styles.objDeleteBtn} onClick={onDelete}><X size={12} /></button>}
     </div>
   )
@@ -578,7 +688,7 @@ function TextObj({
   return (
     <div className={styles.objWrapper}>
       <ObjectSource source={obj.source} />
-      <p className={styles.objText}><MarkdownText text={obj.content} source={obj.source} /></p>
+      <MarkdownText className={styles.objText} text={obj.content} source={obj.source} />
     </div>
   )
 }
@@ -990,9 +1100,7 @@ function TelegramDetailPost({
       )}
 
       {caption && (
-        <div className={styles.telegramDetailCaption}>
-          <MarkdownText text={caption} source={captionObj?.source ?? textObj?.source ?? source} />
-        </div>
+        <MarkdownText className={styles.telegramDetailCaption} text={caption} source={captionObj?.source ?? textObj?.source ?? source} />
       )}
     </article>
   )
@@ -1070,7 +1178,7 @@ function CollectionStream({
               onClick={() => !isEditing && canNavigate ? navigate(`/notes/${obj.id}`) : window.open(obj.content, '_blank')}
             />
             <ObjectSource source={obj.source} />
-            {obj.caption && <p className={styles.objImageCaption}><MarkdownText text={obj.caption} source={obj.source} /></p>}
+            {obj.caption && <MarkdownText className={styles.objImageCaption} text={obj.caption} source={obj.source} />}
             {hint}
             {removeBtn}
           </div>
@@ -1107,7 +1215,7 @@ function CollectionStream({
         if (obj.type === 'text') return (
           <div key={obj.id} className={styles.objWrapper}>
             <ObjectSource source={obj.source} />
-            <p className={styles.objText}><MarkdownText text={obj.content} source={obj.source} /></p>
+            <MarkdownText className={styles.objText} text={obj.content} source={obj.source} />
             {hint}
             {removeBtn}
           </div>
