@@ -518,9 +518,17 @@ export function NoteCard({
     const el = wrapperRef.current
     if (!el) return
 
-    const updatePlacement = (clientY: number) => {
+    const updatePlacement = (clientX: number, clientY: number) => {
       const rect = el.getBoundingClientRect()
-      const next = clientY < rect.top + rect.height / 2 ? 'before' : 'after'
+      const topZone = rect.top + rect.height * 0.34
+      const bottomZone = rect.bottom - rect.height * 0.34
+      const next = clientY < topZone
+        ? 'before'
+        : clientY > bottomZone
+          ? 'after'
+          : clientX < rect.left + rect.width / 2
+            ? 'before'
+            : 'after'
       dropPlacementRef.current = next
       setDropPlacement(next)
     }
@@ -546,9 +554,9 @@ export function NoteCard({
       canDrop: ({ source }) => acceptsNoteDrag(source),
       onDragEnter: ({ location }) => {
         setIsOver(true)
-        updatePlacement(location.current.input.clientY)
+        updatePlacement(location.current.input.clientX, location.current.input.clientY)
       },
-      onDrag: ({ location }) => updatePlacement(location.current.input.clientY),
+      onDrag: ({ location }) => updatePlacement(location.current.input.clientX, location.current.input.clientY),
       onDragLeave: () => {
         setIsOver(false)
         dropPlacementRef.current = null
