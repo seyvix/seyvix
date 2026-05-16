@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
-from app.core.database import Base
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.core.database import Base
 
 
 def utcnow() -> datetime:
@@ -200,12 +202,14 @@ class ContentSource(Base):
         nullable=True,
         index=True,
     )
-    origin: Mapped[dict | None] = mapped_column(JSON(), nullable=True)
-    author: Mapped[dict | None] = mapped_column(JSON(), nullable=True)
-    entities: Mapped[list | None] = mapped_column(JSON(), nullable=True)
-    custom_emoji_ids: Mapped[list | None] = mapped_column(JSON(), nullable=True)
-    raw_payload: Mapped[dict | None] = mapped_column(JSON(), nullable=True)
-    source_metadata: Mapped[dict | None] = mapped_column("metadata", JSON(), nullable=True)
+    origin: Mapped[dict[str, Any] | None] = mapped_column(JSON(), nullable=True)
+    author: Mapped[dict[str, Any] | None] = mapped_column(JSON(), nullable=True)
+    entities: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON(), nullable=True)
+    custom_emoji_ids: Mapped[list[str] | None] = mapped_column(JSON(), nullable=True)
+    raw_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON(), nullable=True)
+    source_metadata: Mapped[dict[str, Any] | None] = mapped_column(
+        "metadata", JSON(), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

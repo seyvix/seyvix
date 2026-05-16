@@ -10,6 +10,11 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
+from sqlalchemy import delete as sql_delete
+from sqlalchemy import or_, select
+from sqlalchemy import update as sql_update
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.contracts.events import ContentObjectChangedPayload, EventEnvelope
 from app.core.config import get_settings
 from app.core.logging import get_logger
@@ -19,7 +24,6 @@ from app.modules.content.infrastructure.repositories import (
     FileUploadRepository,
     TagRepository,
 )
-
 from app.modules.content.models import (
     ContentAsset,
     ContentCollectionItem,
@@ -40,8 +44,8 @@ from app.modules.content.schemas import (
     NoteAssetResponse,
     NoteCardResponse,
     NoteListResponse,
-    SourceMetadataResponse,
     SnapshotViewResponse,
+    SourceMetadataResponse,
     TagResponse,
     UploadedFileResponse,
 )
@@ -54,10 +58,6 @@ from app.modules.taxonomy.service import TaxonomyService
 from app.platform.events.outbox import EventOutboxRepository
 from app.platform.storage.repositories import StorageObjectRepository
 from app.platform.storage.service import StorageBackend, StoredObject
-from sqlalchemy import delete as sql_delete
-from sqlalchemy import or_, select
-from sqlalchemy import update as sql_update
-from sqlalchemy.ext.asyncio import AsyncSession
 
 
 def _note_path_ref_as_uuid(ref: str) -> str | None:
@@ -490,7 +490,7 @@ class ContentService:
         )
         if content_object is None:
             raise NoteNotFoundError
-        text_excerpt = self._classification_text_excerpt(
+        text_excerpt = await self._classification_text_excerpt(
             content_object,
             max_chars=text_excerpt_max_chars,
         )
@@ -1915,7 +1915,11 @@ class ContentService:
                     markdown_url=(
                         markdown.url
                         if markdown is not None
-                        else asset_url if self._is_markdown_asset(asset) and not is_text_asset else None
+                        else (
+                            asset_url
+                            if self._is_markdown_asset(asset) and not is_text_asset
+                            else None
+                        )
                     ),
                     pdf_url=(
                         pdf.url
@@ -2062,17 +2066,25 @@ class ContentService:
         ]
         return any(search in value.casefold() for value in haystack)
 
-    @staticmethod
-    def _classification_text_excerpt(
+    async def _classification_text_excerpt(
+        self,
         content_object: ContentObject,
         *,
         max_chars: int,
     ) -> str | None:
-        text = "\n".join(
-            asset.text_content.strip()
-            for asset in content_object.assets
-            if asset.text_content is not None and asset.text_content.strip()
-        ).strip()
+        parts: list[str] = []
+        for asset in content_object.assets:
+            if asset.text_content is not None and asset.text_content.strip():
+                parts.append(asset.text_content.strip())
+                continue
+            if asset.media_type != "text":
+                snapshot_text = await self.snapshots.get_markdown_text(
+                    source_asset_id=asset.id,
+                    max_chars=max_chars,
+                )
+                if snapshot_text:
+                    parts.append(snapshot_text.strip())
+        text = "\n\n".join(parts).strip()
         if not text:
             return None
         return text[:max_chars]
@@ -2102,9 +2114,7 @@ class ContentService:
 
     @staticmethod
     def _is_visible_note(content_object: ContentObject) -> bool:
-        return not (
-            content_object.kind != "collection" and content_object.collection_memberships
-        )
+        return not (content_object.kind != "collection" and content_object.collection_memberships)
 
     @staticmethod
     def _path_matches_or_descends(candidate_path: str, parent_path: str) -> bool:
@@ -2255,7 +2265,7 @@ class ContentService:
 
     @staticmethod
     def _user_text_from_stored_markdown(file_text: str) -> str | None:
-        """Invert `ContentStorage.write_text_object` (# title, blank line, body, trailing newline)."""
+        """Invert `ContentStorage.write_text_object`."""
         if not file_text.startswith("# "):
             return None
         sep = file_text.find("\n\n", 2)

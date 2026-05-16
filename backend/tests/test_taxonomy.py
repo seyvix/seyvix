@@ -17,6 +17,7 @@ from app.modules.content.models import ContentObject
 from app.modules.content.service import ContentService
 from app.modules.llm.contracts import LLMGenerationError
 from app.modules.search.schemas import SemanticSearchResult
+from app.modules.snapshots.models import SnapshotArtifact
 from app.modules.taxonomy.models import (
     ClassificationFeedback,
     TaxonomyCategory,
@@ -223,7 +224,9 @@ def test_unclassified_content_goes_to_inbox_and_can_be_requeued(
     async def count_jobs() -> int:
         async with app.state.session_factory() as session:
             return await session.scalar(
-                select(func.count()).select_from(TaxonomyClassificationJob).where(
+                select(func.count())
+                .select_from(TaxonomyClassificationJob)
+                .where(
                     TaxonomyClassificationJob.content_object_id == note["id"],
                 )
             )
@@ -463,9 +466,7 @@ def test_profile_manual_assignment_history_and_ownership(content_client: TestCli
 
     feedback_actions_result = content_client.portal.call(feedback_actions)
     assert feedback_actions_result
-    assert {"manually_assigned", "rejected", "accepted"}.issubset(
-        set(feedback_actions_result)
-    )
+    assert {"manually_assigned", "rejected", "accepted"}.issubset(set(feedback_actions_result))
 
 
 def test_taxonomy_review_queue_lists_pending_proposals(content_client: TestClient) -> None:
@@ -582,16 +583,22 @@ def test_delete_category_moves_descendant_content_to_inbox(content_client: TestC
     parent_note = _create_note(content_client, headers, "Parent material")
     child_note = _create_note(content_client, headers, "Child material")
 
-    assert content_client.post(
-        f"/api/v1/taxonomy/content/{parent_note['id']}/assignments",
-        headers=headers,
-        json={"category_id": parent["id"]},
-    ).status_code == 201
-    assert content_client.post(
-        f"/api/v1/taxonomy/content/{child_note['id']}/assignments",
-        headers=headers,
-        json={"category_id": child["id"]},
-    ).status_code == 201
+    assert (
+        content_client.post(
+            f"/api/v1/taxonomy/content/{parent_note['id']}/assignments",
+            headers=headers,
+            json={"category_id": parent["id"]},
+        ).status_code
+        == 201
+    )
+    assert (
+        content_client.post(
+            f"/api/v1/taxonomy/content/{child_note['id']}/assignments",
+            headers=headers,
+            json={"category_id": child["id"]},
+        ).status_code
+        == 201
+    )
 
     response = content_client.post(
         f"/api/v1/taxonomy/categories/{parent['id']}/delete",
@@ -628,11 +635,14 @@ def test_delete_category_with_notes_requires_danger_confirmation(
     _create_category(content_client, headers, slug="inbox", name="Inbox")
     category = _create_category(content_client, headers, slug="temporary", name="Temporary")
     note = _create_note(content_client, headers, "Temporary material")
-    assert content_client.post(
-        f"/api/v1/taxonomy/content/{note['id']}/assignments",
-        headers=headers,
-        json={"category_id": category["id"]},
-    ).status_code == 201
+    assert (
+        content_client.post(
+            f"/api/v1/taxonomy/content/{note['id']}/assignments",
+            headers=headers,
+            json={"category_id": category["id"]},
+        ).status_code
+        == 201
+    )
 
     blocked = content_client.post(
         f"/api/v1/taxonomy/categories/{category['id']}/delete",
@@ -1037,6 +1047,66 @@ def test_content_classification_input_contract(content_client: TestClient) -> No
     assert payload["metadata"]["kind"] == "simple"
     assert payload["metadata"]["media_type"] == "text"
     assert payload["created_at"] == note["created_at"]
+
+
+def test_content_classification_input_uses_ready_markdown_snapshot_for_document(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client)
+    upload_response = content_client.post(
+        "/api/v1/notes/file/upload",
+        headers=headers,
+        data={"create_object": "true"},
+        files={"file": ("report.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")},
+    )
+    assert upload_response.status_code == 201, upload_response.text
+    note = upload_response.json()
+    asset_id = note["objects"][0]["id"]
+
+    artifact_path = Path("snapshots") / note["id"] / "markdown" / "snapshot.md"
+    absolute_artifact_path = content_client.app.state.content_storage_root / artifact_path
+    absolute_artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    absolute_artifact_path.write_text(
+        "# Extracted report\n\nThis text came from the generated markdown snapshot.",
+        encoding="utf-8",
+    )
+
+    async def add_artifact_and_build_input() -> dict[str, object]:
+        async with content_client.app.state.session_factory() as session:
+            content_object = await session.scalar(
+                select(ContentObject).where(ContentObject.id == note["id"])
+            )
+            assert content_object is not None
+            session.add(
+                SnapshotArtifact(
+                    owner_user_id=content_object.owner_user_id,
+                    content_object_id=content_object.id,
+                    source_asset_id=asset_id,
+                    artifact_type="markdown",
+                    filename="snapshot.md",
+                    mime_type="text/markdown",
+                    size_bytes=absolute_artifact_path.stat().st_size,
+                    storage_path=str(artifact_path),
+                    storage_backend="local",
+                    bucket="app-storage",
+                    storage_key=str(artifact_path),
+                    status="ready",
+                )
+            )
+            await session.commit()
+            service = ContentService(session, content_client.app.state.content_storage_root)
+            classification_input = await service.build_classification_input(
+                owner_user_id=content_object.owner_user_id,
+                content_object_id=content_object.id,
+            )
+            return classification_input.model_dump(mode="json")
+
+    payload = content_client.portal.call(add_artifact_and_build_input)
+
+    assert payload["content_object_id"] == note["id"]
+    assert payload["text_excerpt"] == (
+        "# Extracted report\n\nThis text came from the generated markdown snapshot."
+    )
 
 
 class _FakeSemanticSearchService:

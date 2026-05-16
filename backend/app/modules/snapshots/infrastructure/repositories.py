@@ -3,12 +3,13 @@ from __future__ import annotations
 from typing import cast
 from uuid import uuid4
 
-from app.modules.content.models import ContentAsset, ContentObject
-from app.modules.snapshots.models import SnapshotArtifact, SnapshotJob, SnapshotUserSettings
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+
+from app.modules.content.models import ContentAsset, ContentObject
+from app.modules.snapshots.models import SnapshotArtifact, SnapshotJob, SnapshotUserSettings
 
 
 class SnapshotSettingsRepository:
@@ -93,6 +94,58 @@ class SnapshotJobRepository:
             )
         )
 
+    async def requeue(
+        self,
+        *,
+        owner_user_id: str,
+        content_object_id: str,
+        source_asset_id: str | None,
+        job_type: str,
+        force: bool,
+    ) -> str:
+        statement = postgresql_insert(SnapshotJob).values(
+            id=str(uuid4()),
+            owner_user_id=owner_user_id,
+            content_object_id=content_object_id,
+            source_asset_id=source_asset_id,
+            job_type=job_type,
+            status="pending",
+            attempts=0,
+            max_attempts=3,
+            correlation_id=None,
+            source_event_id=None,
+            metadata_={},
+        )
+        if force:
+            statement = statement.on_conflict_do_update(
+                constraint="uq_snapshot_jobs_object_asset_type",
+                set_={
+                    "status": "pending",
+                    "attempts": 0,
+                    "correlation_id": None,
+                    "source_event_id": None,
+                    "error_message": None,
+                    "last_error": None,
+                    "started_at": None,
+                    "finished_at": None,
+                },
+            )
+        else:
+            statement = statement.on_conflict_do_nothing(
+                constraint="uq_snapshot_jobs_object_asset_type"
+            )
+        job_id = await self.session.scalar(statement.returning(SnapshotJob.id))
+        if job_id is not None:
+            return str(job_id)
+        existing = await self.get_for_object_asset(
+            content_object_id=content_object_id,
+            source_asset_id=source_asset_id,
+            job_type=job_type,
+        )
+        if existing is None:
+            raise RuntimeError("Failed to resolve snapshot job after requeue.")
+        return existing.id
+
     async def exists(
         self,
         *,
@@ -114,6 +167,20 @@ class SnapshotJobRepository:
         job_type: str,
     ) -> SnapshotJob | None:
         query = select(SnapshotJob).where(
+            SnapshotJob.source_asset_id == source_asset_id,
+            SnapshotJob.job_type == job_type,
+        )
+        return cast(SnapshotJob | None, await self.session.scalar(query))
+
+    async def get_for_object_asset(
+        self,
+        *,
+        content_object_id: str,
+        source_asset_id: str | None,
+        job_type: str,
+    ) -> SnapshotJob | None:
+        query = select(SnapshotJob).where(
+            SnapshotJob.content_object_id == content_object_id,
             SnapshotJob.source_asset_id == source_asset_id,
             SnapshotJob.job_type == job_type,
         )
@@ -164,6 +231,45 @@ class SnapshotArtifactRepository:
 
     def add(self, artifact: SnapshotArtifact) -> None:
         self.session.add(artifact)
+
+    async def upsert_ready(self, artifact: SnapshotArtifact) -> None:
+        statement = postgresql_insert(SnapshotArtifact).values(
+            id=artifact.id,
+            owner_user_id=artifact.owner_user_id,
+            content_object_id=artifact.content_object_id,
+            source_asset_id=artifact.source_asset_id,
+            artifact_type=artifact.artifact_type,
+            filename=artifact.filename,
+            mime_type=artifact.mime_type,
+            size_bytes=artifact.size_bytes,
+            storage_path=artifact.storage_path,
+            storage_backend=artifact.storage_backend,
+            bucket=artifact.bucket,
+            storage_key=artifact.storage_key,
+            storage_ref=artifact.storage_ref,
+            checksum=artifact.checksum,
+            status=artifact.status,
+            error_message=artifact.error_message,
+        )
+        await self.session.execute(
+            statement.on_conflict_do_update(
+                constraint="uq_snapshot_artifacts_object_asset_type",
+                set_={
+                    "id": artifact.id,
+                    "filename": artifact.filename,
+                    "mime_type": artifact.mime_type,
+                    "size_bytes": artifact.size_bytes,
+                    "storage_path": artifact.storage_path,
+                    "storage_backend": artifact.storage_backend,
+                    "bucket": artifact.bucket,
+                    "storage_key": artifact.storage_key,
+                    "storage_ref": artifact.storage_ref,
+                    "checksum": artifact.checksum,
+                    "status": artifact.status,
+                    "error_message": artifact.error_message,
+                },
+            )
+        )
 
     async def get_ready(
         self,
@@ -230,3 +336,39 @@ class SnapshotContentRepository:
 
     async def get_asset(self, asset_id: str) -> ContentAsset | None:
         return cast(ContentAsset | None, await self.session.get(ContentAsset, asset_id))
+
+    async def get_object_for_user(
+        self,
+        *,
+        owner_user_id: str,
+        content_object_id: str,
+    ) -> ContentObject | None:
+        return cast(
+            ContentObject | None,
+            await self.session.scalar(
+                select(ContentObject)
+                .options(selectinload(ContentObject.assets))
+                .where(
+                    ContentObject.owner_user_id == owner_user_id,
+                    ContentObject.id == content_object_id,
+                )
+            ),
+        )
+
+    async def get_asset_for_user(
+        self,
+        *,
+        owner_user_id: str,
+        source_asset_id: str,
+    ) -> ContentAsset | None:
+        return cast(
+            ContentAsset | None,
+            await self.session.scalar(
+                select(ContentAsset)
+                .join(ContentObject, ContentObject.id == ContentAsset.content_object_id)
+                .where(
+                    ContentObject.owner_user_id == owner_user_id,
+                    ContentAsset.id == source_asset_id,
+                )
+            ),
+        )

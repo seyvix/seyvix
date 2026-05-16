@@ -5,16 +5,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.modules.content.models import ContentAsset, ContentObject
 from app.modules.snapshots.infrastructure.repositories import (
     SnapshotArtifactRepository,
+    SnapshotContentRepository,
     SnapshotJobRepository,
     SnapshotSettingsRepository,
 )
 from app.modules.snapshots.models import SnapshotUserSettings
 from app.modules.snapshots.schemas import (
+    ReprocessSnapshotsRequest,
+    ReprocessSnapshotsResponse,
     SnapshotArtifactListResponse,
     SnapshotArtifactResponse,
     SnapshotFormatOption,
@@ -26,7 +31,6 @@ from app.modules.snapshots.schemas import (
     UpdateSnapshotSettingsRequest,
 )
 from app.platform.storage.service import LocalVolumeStorage, StorageBackend
-from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = get_logger(__name__)
 
@@ -165,6 +169,7 @@ class SnapshotService:
         self.settings = SnapshotSettingsRepository(session)
         self.jobs = SnapshotJobRepository(session)
         self.artifacts = SnapshotArtifactRepository(session)
+        self.content = SnapshotContentRepository(session)
         self.api_prefix = get_settings().api_prefix
 
     async def get_user_settings(self, owner_user_id: str) -> SnapshotSettingsResponse:
@@ -262,6 +267,59 @@ class SnapshotService:
                 )
                 for artifact in artifacts
             ]
+        )
+
+    async def reprocess(
+        self,
+        *,
+        owner_user_id: str,
+        payload: ReprocessSnapshotsRequest,
+    ) -> ReprocessSnapshotsResponse:
+        job_types = payload.job_types or ["markdown"]
+        assets: list[ContentAsset]
+        if payload.source_asset_id is not None:
+            asset = await self.content.get_asset_for_user(
+                owner_user_id=owner_user_id,
+                source_asset_id=payload.source_asset_id,
+            )
+            if asset is None:
+                raise SnapshotArtifactNotFoundError
+            if (
+                payload.content_object_id is not None
+                and asset.content_object_id != payload.content_object_id
+            ):
+                raise SnapshotArtifactNotFoundError
+            assets = [asset]
+        elif payload.content_object_id is not None:
+            content_object = await self.content.get_object_for_user(
+                owner_user_id=owner_user_id,
+                content_object_id=payload.content_object_id,
+            )
+            if content_object is None:
+                raise SnapshotArtifactNotFoundError
+            assets = [asset for asset in content_object.assets if asset.role == "original"]
+        else:
+            raise SnapshotArtifactNotFoundError
+
+        job_ids: list[str] = []
+        source_asset_ids: list[str] = []
+        for asset in assets:
+            for job_type in job_types:
+                job_id = await self.jobs.requeue(
+                    owner_user_id=owner_user_id,
+                    content_object_id=asset.content_object_id,
+                    source_asset_id=asset.id,
+                    job_type=job_type,
+                    force=payload.force,
+                )
+                job_ids.append(job_id)
+                if asset.id not in source_asset_ids:
+                    source_asset_ids.append(asset.id)
+        await self.session.commit()
+        return ReprocessSnapshotsResponse(
+            queued_count=len(job_ids),
+            job_ids=job_ids,
+            source_asset_ids=source_asset_ids,
         )
 
     async def get_artifact_file(
@@ -407,6 +465,26 @@ class SnapshotService:
         else:
             data = self.storage_backend.get_bytes(artifact.storage_key or artifact.storage_path)
         return data.decode("utf-8", errors="replace")[:max_chars]
+
+    async def get_markdown_text(
+        self,
+        *,
+        source_asset_id: str,
+        max_chars: int = 50000,
+    ) -> str | None:
+        artifact = await self.artifacts.get_ready(
+            source_asset_id=source_asset_id,
+            artifact_type="markdown",
+        )
+        if artifact is None:
+            return None
+        path = self.storage_root / artifact.storage_path
+        if path.exists():
+            data = path.read_bytes()
+        else:
+            data = self.storage_backend.get_bytes(artifact.storage_key or artifact.storage_path)
+        text = data.decode("utf-8", errors="replace").strip()
+        return text[:max_chars] if text else None
 
     async def get_artifact_resource(
         self,

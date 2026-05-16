@@ -11,15 +11,17 @@ import subprocess
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 from typing import Any
 from urllib.parse import urlparse
 from xml.etree import ElementTree
 
 import httpx
+
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.modules.content.models import ContentAsset, ContentObject
+from app.modules.snapshots.extraction import ExtractorContext, extract_asset_text
 
 THUMBNAIL_MAX_WIDTH = 512
 THUMBNAIL_MAX_HEIGHT = 512
@@ -39,6 +41,7 @@ class GeneratedArtifact:
     width: int | None = None
     height: int | None = None
     resources_dir: Path | None = None
+    metadata_path: Path | None = None
 
     @property
     def size_bytes(self) -> int:
@@ -164,12 +167,51 @@ class SnapshotArtifactGenerator:
         source_path: Path,
         output_dir: Path,
     ) -> GeneratedArtifact:
-        text = self._extract_markdown_text(asset=asset, source_path=source_path)
-        if text is None:
+        result = extract_asset_text(
+            asset=asset,
+            source_path=source_path,
+            context=ExtractorContext(
+                fetch_webpage_html=self._fetch_webpage_html_for_markdown,
+                link_url=lambda candidate_asset, candidate_path: self._link_url(
+                    asset=candidate_asset, source_path=candidate_path
+                ),
+                convert_office_to_pdf=self._convert_office_to_pdf,
+            ),
+            render_page_image=self._render_page_image_for_ocr,
+        )
+        if result is None:
             raise UnsupportedSnapshotError("No markdown extractor is available for this file.")
+        if not result.markdown.strip():
+            message = (
+                "; ".join(result.warnings) or "No markdown extractor is available for this file."
+            )
+            raise UnsupportedSnapshotError(message)
         path = output_dir / "snapshot.md"
-        path.write_text(f"# {asset.filename}\n\n{text.strip()}\n", encoding="utf-8")
-        return GeneratedArtifact(filename="snapshot.md", mime_type="text/markdown", path=path)
+        metadata_path = output_dir / "snapshot.extraction.json"
+        path.write_text(f"# {asset.filename}\n\n{result.markdown.strip()}\n", encoding="utf-8")
+        metadata_path.write_text(
+            json.dumps(result.metadata_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return GeneratedArtifact(
+            filename="snapshot.md",
+            mime_type="text/markdown",
+            path=path,
+            metadata_path=metadata_path,
+        )
+
+    def _fetch_webpage_html_for_markdown(self, url: str) -> str:
+        try:
+            from app.modules.snapshots.browser import render_url  # noqa: PLC0415
+
+            return render_url(url).html
+        except Exception as exc:  # noqa: BLE001
+            logger.info(
+                "snapshot.artifact.markdown.rendered_html_fallback",
+                url=url,
+                error=str(exc),
+            )
+            return self._fetch_webpage(url).html
 
     def _generate_screenshot(
         self,
@@ -346,7 +388,10 @@ class SnapshotArtifactGenerator:
         artifact_id: str,
     ) -> GeneratedArtifact:
         from app.core.config import get_settings  # noqa: PLC0415
-        from app.modules.snapshots.browser import BrowserRenderError, render_url_archive  # noqa: PLC0415
+        from app.modules.snapshots.browser import (  # noqa: PLC0415
+            BrowserRenderError,
+            render_url_archive,
+        )
         from app.modules.snapshots.rewriter import rewrite_css, rewrite_html  # noqa: PLC0415
 
         url = self._link_url(asset=asset, source_path=source_path)
@@ -432,7 +477,10 @@ class SnapshotArtifactGenerator:
         source_path: Path,
         output_dir: Path,
     ) -> GeneratedArtifact:
-        from app.modules.snapshots.browser import BrowserRenderError, render_url_pdf  # noqa: PLC0415
+        from app.modules.snapshots.browser import (  # noqa: PLC0415
+            BrowserRenderError,
+            render_url_pdf,
+        )
 
         url = self._link_url(asset=asset, source_path=source_path)
         try:
@@ -474,6 +522,18 @@ class SnapshotArtifactGenerator:
             )
         finally:
             doc.close()
+
+    @staticmethod
+    def _render_page_image_for_ocr(page: Any, page_number: int) -> Path:
+        fitz = _load_fitz()
+        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+        temp_file = NamedTemporaryFile(
+            prefix=f"snapshot-page-{page_number}-", suffix=".png", delete=False
+        )
+        temp_file.close()
+        path = Path(temp_file.name)
+        pix.save(str(path))
+        return path
 
     def _render_image_thumbnail(
         self,

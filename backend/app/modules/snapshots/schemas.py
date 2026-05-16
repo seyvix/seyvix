@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel
+
+SnapshotReprocessJobType = Literal[
+    "markdown", "thumbnail", "thumbnail_text", "screenshot", "webpage_html", "pdf"
+]
 
 
 class SnapshotFormatOption(BaseModel):
@@ -68,3 +74,16 @@ class SnapshotArtifactResponse(BaseModel):
 
 class SnapshotArtifactListResponse(BaseModel):
     items: list[SnapshotArtifactResponse]
+
+
+class ReprocessSnapshotsRequest(BaseModel):
+    content_object_id: str | None = None
+    source_asset_id: str | None = None
+    job_types: list[SnapshotReprocessJobType] | None = None
+    force: bool = True
+
+
+class ReprocessSnapshotsResponse(BaseModel):
+    queued_count: int
+    job_ids: list[str]
+    source_asset_ids: list[str]

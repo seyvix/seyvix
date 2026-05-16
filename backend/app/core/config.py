@@ -74,6 +74,37 @@ class Settings(BaseSettings):
     snapshot_archive_org_enabled: bool = False
     snapshot_worker_batch_size: int = 10
     snapshot_worker_poll_interval_seconds: int = 10
+    snapshot_ocr_provider: Literal[
+        "disabled", "local", "http", "openai_compatible"
+    ] = "disabled"
+    snapshot_ocr_http_url: str | None = None
+    snapshot_ocr_languages: str = "eng+rus"
+    snapshot_ocr_openai_base_url: str | None = None
+    snapshot_ocr_openai_api_key: str | None = None
+    snapshot_ocr_openai_model: str = "gpt-4o-mini"
+    snapshot_ocr_max_image_bytes: int = 10_000_000
+    snapshot_stt_provider: Literal[
+        "disabled", "local", "http", "openai_compatible"
+    ] = "disabled"
+    snapshot_stt_http_url: str | None = None
+    snapshot_stt_model: str = "base"
+    snapshot_stt_openai_base_url: str | None = None
+    snapshot_stt_openai_api_key: str | None = None
+    snapshot_stt_openai_model: str = "whisper-1"
+    snapshot_stt_chunk_seconds: int = 600
+    snapshot_vision_provider: Literal["disabled", "http", "openai_compatible"] = "disabled"
+    snapshot_vision_http_url: str | None = None
+    snapshot_vision_openai_base_url: str | None = None
+    snapshot_vision_openai_api_key: str | None = None
+    snapshot_vision_openai_model: str = "gpt-4o-mini"
+    snapshot_vision_max_video_seconds: int = 300
+    snapshot_vision_max_image_bytes: int = 10_000_000
+    snapshot_vision_video_chunk_seconds: int = 60
+    snapshot_vision_video_frame_interval_seconds: int = 15
+    snapshot_vision_max_frames_per_request: int = 4
+    snapshot_extraction_timeout_seconds: int = 120
+    snapshot_extraction_max_pdf_pages: int = 100
+    snapshot_extraction_max_media_seconds: int = 1800
     vector_embedding_provider: Literal["fake", "http", "ollama"] = "fake"
     vector_embedding_base_url: str | None = None
     vector_embedding_api_key: str | None = None

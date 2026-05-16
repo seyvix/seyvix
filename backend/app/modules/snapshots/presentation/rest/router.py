@@ -22,6 +22,8 @@ from app.modules.auth.presentation.rest.router import (
 )
 from app.modules.auth.service import AuthContext, AuthService, InvalidAccessTokenError
 from app.modules.snapshots.schemas import (
+    ReprocessSnapshotsRequest,
+    ReprocessSnapshotsResponse,
     SnapshotArtifactListResponse,
     SnapshotJobListResponse,
     SnapshotSettingsResponse,
@@ -89,10 +91,13 @@ async def _resolve_snapshot_owner_user_id(
 
     if snapshot_access:
         try:
-            return _decode_snapshot_access_token(
-                token=snapshot_access,
-                artifact_id=artifact_id,
-            ), False
+            return (
+                _decode_snapshot_access_token(
+                    token=snapshot_access,
+                    artifact_id=artifact_id,
+                ),
+                False,
+            )
         except jwt.InvalidTokenError as exc:
             raise AppError(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -192,6 +197,34 @@ async def list_snapshot_artifacts(
         owner_user_id=context.user.id,
         content_object_id=content_object_id,
     )
+
+
+@router.post(
+    "/reprocess",
+    response_model=ReprocessSnapshotsResponse,
+    summary="Reprocess snapshot jobs",
+    description=(
+        "Queues snapshot jobs for existing owned content or a specific source asset. "
+        "When job_types is omitted, Markdown extraction is queued."
+    ),
+    responses={
+        200: {"description": "Snapshot jobs queued."},
+        404: {"model": ErrorResponse, "description": "Content object or asset not found."},
+    },
+)
+async def reprocess_snapshots(
+    payload: ReprocessSnapshotsRequest,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[SnapshotService, Depends(get_snapshot_service)],
+) -> ReprocessSnapshotsResponse:
+    try:
+        return await service.reprocess(owner_user_id=context.user.id, payload=payload)
+    except SnapshotArtifactNotFoundError as exc:
+        raise AppError(
+            status_code=404,
+            code="snapshot_source_not_found",
+            message="Snapshot source not found.",
+        ) from exc
 
 
 @router.get(
