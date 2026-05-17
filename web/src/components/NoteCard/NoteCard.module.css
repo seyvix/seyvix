@@ -48,6 +48,7 @@
   flex-direction: column;
   color: inherit;
   overflow: hidden;
+  max-height: 460px;
 }
 
 .card:hover {
@@ -68,6 +69,8 @@
 
 .simpleImageMedia {
   width: 100%;
+  max-height: 420px;
+  object-fit: cover;
   display: block;
   border-radius: var(--radius-md);
   pointer-events: none;
@@ -87,6 +90,8 @@
 
 .cover {
   width: 100%;
+  max-height: 240px;
+  object-fit: cover;
   display: block;
   border-radius: var(--radius-sm);
   margin-bottom: var(--space-2);

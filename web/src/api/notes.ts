@@ -3,10 +3,16 @@ import type { Note, NotesParams, UploadJob } from '../types'
 
 const BASE = '/api/v1/notes'
 export const MERGE_NOTES_ENABLED = false
+export interface ReorderNoteItem {
+  slug: string
+  position: number
+}
 
 export async function fetchNotes(params: NotesParams = {}): Promise<Note[]> {
-  const url = new URL(BASE, window.location.origin)
+  const origin = typeof window === 'undefined' ? 'http://localhost' : window.location.origin
+  const url = new URL(BASE, origin)
   if (params.search) url.searchParams.set('search', params.search)
+  if (params.sort) url.searchParams.set('sort', params.sort)
   params.tags?.forEach(t => url.searchParams.append('tags', t))
   params.folders?.forEach(f => url.searchParams.append('folders', f))
 
@@ -15,6 +21,15 @@ export async function fetchNotes(params: NotesParams = {}): Promise<Note[]> {
   const data: unknown = await res.json()
   if (Array.isArray(data)) return data as Note[]
   return ((data as { items?: Note[] }).items ?? []) as Note[]
+}
+
+export async function reorderNotes(items: ReorderNoteItem[]): Promise<void> {
+  const res = await apiFetch(`${BASE}/order`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items }),
+  })
+  if (!res.ok) throw new Error('Failed to reorder notes')
 }
 
 export async function fetchTrashNotes(): Promise<Note[]> {

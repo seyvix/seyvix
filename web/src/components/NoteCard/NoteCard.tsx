@@ -36,15 +36,12 @@ import {
 } from 'lucide-react'
 import { useSyncLocalNote } from '../../hooks/useSyncLocalNote'
 import { useBulkSelect } from '../../contexts/BulkSelectContext'
-import { draggable, dropTargetForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter'
 import { dropTargetForExternal } from '@atlaskit/pragmatic-drag-and-drop/external/adapter'
 import { containsFiles, getFiles } from '@atlaskit/pragmatic-drag-and-drop/external/file'
 import AuthImage from '../AuthImage/AuthImage'
 import { LoaderSpinner } from '../LoaderSpinner'
 import type { Note, NoteObject, Tag } from '../../types'
 import { getTagColor } from '../../utils/tagColor'
-import { MERGE_NOTES_ENABLED } from '../../api/notes'
-import { useMergeNotes } from '../../hooks/useMergeNotes'
 import { useUploadFiles } from '../../hooks/useUploadFiles'
 import { useAddFilesToNote } from '../../hooks/useAddFilesToNote'
 import { useCreateNote } from '../../hooks/useCreateNote'
@@ -443,23 +440,14 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
 
 const HIGHLIGHT_MS = 5000
 
-export function NoteCard({ note, isNew, onTagClick }: { note: Note; isNew?: boolean; onTagClick?: (tag: string) => void }) {
+export function NoteCard({ note, isNew, isDragging, onTagClick }: { note: Note; isNew?: boolean; isDragging?: boolean; onTagClick?: (tag: string) => void }) {
   const wrapperRef = useRef<HTMLDivElement>(null)
-  const [isDragging,     setIsDragging]     = useState(false)
-  const [isOver,         setIsOver]         = useState(false)
   const [fileHoverState, setFileHoverState] = useState<'new' | 'merge' | null>(null)
 
   // Rename after merge
   const [renamePending, setRenamePending] = useState(false)
   const [renameValue,   setRenameValue]   = useState('')
   const { mutate: updateNote } = useUpdateNote()
-
-  // Стабильный ref для trigger-функции ренейма (используется внутри DnD useEffect)
-  const triggerRenameRef = useRef<((initialValue?: string) => void) | null>(null)
-  triggerRenameRef.current = (initialValue = '') => {
-    setRenameValue(initialValue)
-    setRenamePending(true)
-  }
 
   function handleRenameSubmit() {
     const title = renameValue.trim() || note.title
@@ -482,16 +470,13 @@ export function NoteCard({ note, isNew, onTagClick }: { note: Note; isNew?: bool
   const { isBulk, selectedSlugs, toggleSelect } = useBulkSelect()
   const isSelected = selectedSlugs.has(note.slug)
 
-  const { mutate: merge }    = useMergeNotes()
   const { mutate: upload }   = useUploadFiles()
   const { mutate: addFiles } = useAddFilesToNote()
   const { mutate: syncLocal, isPending: isSyncing } = useSyncLocalNote()
 
   // Стабильные рефы, чтобы useEffect не переподписывался на каждый рендер
-  const mergeRef    = useRef(merge)
   const uploadRef   = useRef(upload)
   const addFilesRef = useRef(addFiles)
-  useEffect(() => { mergeRef.current    = merge    })
   useEffect(() => { uploadRef.current   = upload   })
   useEffect(() => { addFilesRef.current = addFiles })
 
@@ -501,39 +486,6 @@ export function NoteCard({ note, isNew, onTagClick }: { note: Note; isNew?: bool
   useEffect(() => {
     const el = wrapperRef.current
     if (!el) return
-
-    const cleanupDrag = draggable({
-      element: el,
-      getInitialData: () => ({ type: 'note', noteId: note.id, noteSlug: note.slug, noteType: note.type, noteTitle: note.title }),
-      onDragStart: () => setIsDragging(true),
-      onDrop: () => setIsDragging(false),
-    })
-
-    const cleanupDrop = dropTargetForElements({
-      element: el,
-      canDrop: ({ source }) =>
-        MERGE_NOTES_ENABLED && source.data.type === 'note' && source.data.noteId !== note.id,
-      onDragEnter: () => setIsOver(true),
-      onDragLeave: () => setIsOver(false),
-      onDrop: ({ source }) => {
-        setIsOver(false)
-        if (!MERGE_NOTES_ENABLED) return
-        const sourceType  = source.data.noteType  as string
-        const sourceTitle = source.data.noteTitle as string
-        mergeRef.current(
-          { sourceSlug: source.data.noteSlug as string, targetSlug: note.slug },
-          {
-            onSuccess: () => {
-              const isMixed = (sourceType === 'collection') !== (note.type === 'collection')
-              const prefill = isMixed
-                ? (note.type === 'collection' ? note.title : sourceTitle)
-                : ''
-              triggerRenameRef.current?.(prefill)
-            },
-          },
-        )
-      },
-    })
 
     const cleanupFileDrop = dropTargetForExternal({
       element: el,
@@ -562,8 +514,6 @@ export function NoteCard({ note, isNew, onTagClick }: { note: Note; isNew?: bool
     })
 
     return () => {
-      cleanupDrag()
-      cleanupDrop()
       cleanupFileDrop()
     }
   }, [note.id])
@@ -571,7 +521,6 @@ export function NoteCard({ note, isNew, onTagClick }: { note: Note; isNew?: bool
   const cls = [
     styles.cardWrapper,
     isDragging                 ? styles.isDragging      : '',
-    isOver                     ? styles.isDropOver      : '',
     fileHoverState === 'new'   ? styles.isFileOverNew   : '',
     fileHoverState === 'merge' ? styles.isFileOverMerge : '',
     highlighted                ? styles.isHighlighted   : '',
