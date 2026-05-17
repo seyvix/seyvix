@@ -1,95 +1,85 @@
 import { useRef } from 'react'
-import type { CSSProperties } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import type { Note } from '../../types'
 import { NoteCard, AddNoteCard } from '../NoteCard/NoteCard'
 import { DragProvider } from '../../contexts/DragContext'
 import { useSettings } from '../../contexts/SettingsContext'
-import type { DropPlacement } from '../../utils/reorderNotes'
 import styles from './NoteGrid.module.css'
 
 interface NoteGridProps {
   notes: Note[]
   onAddNote?: () => void
   onTagClick?: (tag: string) => void
-  onMoveNote?: (sourceSlug: string, targetSlug: string, placement: DropPlacement) => void
 }
 
-export function NoteGrid({ notes, onAddNote, onTagClick, onMoveNote }: NoteGridProps) {
-  const knownKeysRef = useRef(new Set<string>())
+export function NoteGrid({ notes, onAddNote, onTagClick }: NoteGridProps) {
+  const columnMapRef  = useRef(new Map<string, number>())
+  const counterRef    = useRef(0)
+  const knownKeysRef  = useRef(new Set<string>())
+  const isFirstRender = useRef(true)
+  const prevColsRef   = useRef<number | null>(null)
+
   const { cols: COLS } = useSettings()
-  const tracks = COLS * 4
+
+  if (prevColsRef.current !== null && prevColsRef.current !== COLS) {
+    columnMapRef.current = new Map()
+    counterRef.current = 0
+  }
+  prevColsRef.current = COLS
+
+  if (isFirstRender.current) {
+    isFirstRender.current = false
+    notes.forEach(n => knownKeysRef.current.add(n.stableKey ?? n.id))
+  }
+
+  // Assign columns. stableKey is the permanent identity — survives tempId→serverId.
+  notes.forEach(note => {
+    const key = note.stableKey ?? note.id
+    if (!columnMapRef.current.has(key)) {
+      columnMapRef.current.set(key, counterRef.current % COLS)
+      counterRef.current++
+    }
+  })
+
+  const columns: Note[][] = Array.from({ length: COLS }, () => [])
+  notes.forEach(note => {
+    const key = note.stableKey ?? note.id
+    const colIdx = columnMapRef.current.get(key) ?? 0
+    columns[colIdx].push(note)
+  })
+
+  const STAGGER = [0, 24, 12, 18, 8]
 
   return (
     <DragProvider>
-      <div className={styles.grid} style={{ '--note-grid-tracks': tracks } as CSSProperties}>
-        <motion.div layout="position" className={`${styles.gridItem} ${styles.gridItemCompact} ${styles.gridItemWide}`}>
-          <AddNoteCard onClick={onAddNote} />
-        </motion.div>
+      <div className={styles.grid}>
+        {columns.map((col, colIdx) => (
+          <div key={colIdx} className={styles.column} style={{ marginTop: STAGGER[colIdx] ?? 0 }}>
+            {colIdx === 0 && <AddNoteCard onClick={onAddNote} />}
 
-        <AnimatePresence initial={false}>
-          {notes.map(note => {
-            const key = note.stableKey ?? note.id
-            const isNew = !knownKeysRef.current.has(key)
-            knownKeysRef.current.add(key)
+            <AnimatePresence initial={false}>
+              {col.map(note => {
+                const key = note.stableKey ?? note.id
+                const isNew = !knownKeysRef.current.has(key)
+                knownKeysRef.current.add(key)
 
-            return (
-              <motion.div
-                key={key}
-                className={gridItemClass(note)}
-                layout="position"
-                initial={isNew ? { opacity: 0, y: 32 } : false}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.85, transition: { duration: 0.18 } }}
-                transition={{ duration: 0.22, ease: [0.25, 0.46, 0.45, 0.94] }}
-              >
-                <NoteCard
-                  note={note}
-                  isNew={isNew}
-                  onTagClick={onTagClick}
-                  onMoveNote={onMoveNote}
-                  isReorderEnabled={Boolean(onMoveNote)}
-                />
-              </motion.div>
-            )
-          })}
-        </AnimatePresence>
+                return (
+                  <motion.div
+                    key={key}
+                    layout="position"
+                    initial={isNew ? { opacity: 0, y: 32 } : false}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.85, transition: { duration: 0.18 } }}
+                    transition={{ duration: 0.28, ease: [0.25, 0.46, 0.45, 0.94] }}
+                  >
+                    <NoteCard note={note} isNew={isNew} onTagClick={onTagClick} />
+                  </motion.div>
+                )
+              })}
+            </AnimatePresence>
+          </div>
+        ))}
       </div>
     </DragProvider>
   )
-}
-
-function gridItemClass(note: Note): string {
-  const classes = [styles.gridItem]
-  const image = note.objects.find(obj => obj.type === 'image')
-  const text = note.objects.find(obj => obj.type === 'text')
-  const mediaCount = note.objects.filter(obj => obj.type === 'image' || obj.type === 'video').length
-  const documentCount = note.objects.filter(obj => obj.type === 'document').length
-  const contentLength = `${note.title} ${text?.content ?? ''}`.length
-
-  if (note.type === 'collection') {
-    classes.push(styles.gridItemTall)
-    if (note.objects.length >= 4 || mediaCount >= 2) classes.push(styles.gridItemWide)
-    return classes.join(' ')
-  }
-
-  if (note.type === 'composite') {
-    classes.push(documentCount > 1 || mediaCount > 1 || contentLength > 420 ? styles.gridItemWide : styles.gridItemTall)
-    if (contentLength > 720) classes.push(styles.gridItemTall)
-    return classes.join(' ')
-  }
-
-  if (image && !text) {
-    const ratio = image.imageWidth && image.imageHeight ? image.imageWidth / image.imageHeight : 1
-    if (ratio >= 1.35) classes.push(styles.gridItemWide, styles.gridItemMedium)
-    else if (ratio <= 0.78) classes.push(styles.gridItemTall)
-    else classes.push(styles.gridItemMedium)
-    return classes.join(' ')
-  }
-
-  if (contentLength > 520) classes.push(styles.gridItemWide, styles.gridItemMedium)
-  else if (contentLength < 180) classes.push(styles.gridItemCompact)
-  else classes.push(styles.gridItemMedium)
-
-  return classes.join(' ')
 }
