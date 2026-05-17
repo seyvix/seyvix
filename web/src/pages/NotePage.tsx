@@ -34,6 +34,7 @@ import HtmlSnapshotViewer from '../components/HtmlSnapshotViewer/HtmlSnapshotVie
 import { LoaderSpinner } from '../components/LoaderSpinner'
 import { apiFetch } from '../lib/apiClient'
 import { deleteNotes } from '../api/notes'
+import { useAuthenticatedObjectUrl } from '../hooks/useAuthenticatedObjectUrl'
 import {
   acceptTagSuggestion,
   acceptTaxonomyAssignment,
@@ -984,34 +985,36 @@ function LinkObj({
 
 function MediaObj({ obj, isEditing, onDelete }: { obj: NoteObject; isEditing: boolean; onDelete: () => void }) {
   const [mediaReady, setMediaReady] = useState(false)
+  const media = useAuthenticatedObjectUrl(obj.content)
   useEffect(() => {
     setMediaReady(false)
-  }, [obj.content, obj.type])
+  }, [media.url, obj.type])
 
   return (
     <div className={styles.objWrapper}>
       <div className={styles.mediaBox}>
         <div className={styles.mediaPlayerWrap}>
-          {!mediaReady && (
+          {(!mediaReady || media.loading) && (
             <div className="appLoaderOverlay" aria-hidden>
               <LoaderSpinner />
             </div>
           )}
-          {obj.type === 'audio' ? (
+          {media.error && <div className={styles.mediaError}>Не удалось загрузить медиа</div>}
+          {media.url && obj.type === 'audio' ? (
             <audio
               controls
-              src={obj.content}
+              src={media.url}
               onLoadedData={() => setMediaReady(true)}
               onError={() => setMediaReady(true)}
             />
-          ) : (
+          ) : media.url ? (
             <video
               controls
-              src={obj.content}
+              src={media.url}
               onLoadedData={() => setMediaReady(true)}
               onError={() => setMediaReady(true)}
             />
-          )}
+          ) : null}
         </div>
         <div className={styles.mediaMeta}>
           <span>{obj.filename ?? (obj.type === 'audio' ? 'Аудио' : 'Видео')}</span>
@@ -1021,6 +1024,32 @@ function MediaObj({ obj, isEditing, onDelete }: { obj: NoteObject; isEditing: bo
       {isEditing && <button className={styles.objDeleteBtn} onClick={onDelete}><X size={12} /></button>}
     </div>
   )
+}
+
+function ProtectedVideo({ obj }: { obj: NoteObject }) {
+  const media = useAuthenticatedObjectUrl(obj.content)
+  if (media.error) return <div className={styles.mediaError}>Не удалось загрузить видео</div>
+  if (!media.url) {
+    return (
+      <div className="appLoaderOverlay" aria-hidden>
+        <LoaderSpinner />
+      </div>
+    )
+  }
+  return <video controls src={media.url} />
+}
+
+function ProtectedAudio({ obj }: { obj: NoteObject }) {
+  const media = useAuthenticatedObjectUrl(obj.content)
+  if (media.error) return <div className={styles.mediaError}>Не удалось загрузить аудио</div>
+  if (!media.url) {
+    return (
+      <div className="appLoaderOverlay" aria-hidden>
+        <LoaderSpinner />
+      </div>
+    )
+  }
+  return <audio controls src={media.url} />
 }
 
 // ─── Telegram detail post ─────────────────────────────────────────────────────
@@ -1036,7 +1065,7 @@ function TelegramDetailMediaTile({ obj }: { obj: NoteObject }) {
   if (obj.type === 'video') {
     return (
       <div className={styles.telegramDetailMediaTile}>
-        <video controls src={obj.content} />
+        <ProtectedVideo obj={obj} />
       </div>
     )
   }
@@ -1046,7 +1075,7 @@ function TelegramDetailMediaTile({ obj }: { obj: NoteObject }) {
         <div className={styles.telegramDetailAudioIcon}>
           <Mic2 size={26} />
         </div>
-        <audio controls src={obj.content} />
+        <ProtectedAudio obj={obj} />
         <span>{obj.filename ?? 'Голосовое сообщение'}</span>
       </div>
     )

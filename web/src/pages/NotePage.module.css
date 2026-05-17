@@ -1098,6 +1098,17 @@
   background: #080808;
 }
 
+.mediaError {
+  min-height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  text-align: center;
+}
+
 .mediaBox audio,
 .mediaBox video {
   display: block;
