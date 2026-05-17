@@ -501,6 +501,7 @@ class ContentService:
             and self._plain_url(content_object.source_filename) is not None
             else None
         )
+        object_source, _ = await self._source_metadata_for_object(content_object)
         return ContentClassificationInput(
             content_object_id=content_object.id,
             title=content_object.title,
@@ -525,6 +526,14 @@ class ContentService:
                 "mime_type": content_object.mime_type,
                 "size_bytes": content_object.size_bytes,
                 "is_favorite": content_object.is_favorite,
+                "content_created_at": content_object.created_at.isoformat(),
+                "content_updated_at": content_object.updated_at.isoformat(),
+                "content_source_provider": object_source.provider if object_source else None,
+                "source_original_created_at": (
+                    object_source.original_created_at.isoformat()
+                    if object_source and object_source.original_created_at
+                    else None
+                ),
             },
             created_at=content_object.created_at,
             updated_at=content_object.updated_at,

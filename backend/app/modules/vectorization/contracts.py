@@ -3,9 +3,10 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Protocol
 
-from app.shared.module_definitions import ModuleDefinition
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.shared.module_definitions import ModuleDefinition
 
 MODULE = ModuleDefinition(
     name="vectorization",
@@ -71,6 +72,30 @@ class VectorizedChunkSearchResult(BaseModel):
     score: float
 
 
+class VectorizedChunkFullTextSearchResult(BaseModel):
+    source: str
+    source_type: str
+    source_id: str
+    external_id: str
+    chunk_id: str
+    chunk_external_id: str
+    text: str
+    metadata: dict[str, Any]
+    full_text_score: float
+
+
+class VectorizedChunkSearchFilters(BaseModel):
+    source: str | None = None
+    source_type: str | None = None
+    source_id: str | None = None
+    content_types: list[str] = Field(default_factory=list)
+    content_source: str | None = None
+    created_at_from: datetime | None = None
+    created_at_to: datetime | None = None
+    updated_at_from: datetime | None = None
+    updated_at_to: datetime | None = None
+
+
 class VectorizedChunkSearchReader(Protocol):
     async def search_similar_chunks(
         self,
@@ -84,12 +109,31 @@ class VectorizedChunkSearchReader(Protocol):
         source: str | None = None,
         source_type: str | None = None,
         source_id: str | None = None,
+        filters: VectorizedChunkSearchFilters | None = None,
     ) -> list[VectorizedChunkSearchResult]:
         raise NotImplementedError
 
+    async def search_full_text_chunks(
+        self,
+        *,
+        owner_user_id: str,
+        query: str,
+        limit: int,
+        search_config: str,
+        source: str | None = None,
+        source_type: str | None = None,
+        source_id: str | None = None,
+        filters: VectorizedChunkSearchFilters | None = None,
+    ) -> list[VectorizedChunkFullTextSearchResult]:
+        raise NotImplementedError
 
-def build_vectorized_chunk_search_reader(session: AsyncSession) -> VectorizedChunkSearchReader:
-    from app.modules.vectorization.infrastructure.search_reader import PgVectorizedChunkSearchReader
+
+def build_vectorized_chunk_search_reader(
+    session: AsyncSession,
+) -> VectorizedChunkSearchReader:
+    from app.modules.vectorization.infrastructure.search_reader import (
+        PgVectorizedChunkSearchReader,
+    )
 
     return PgVectorizedChunkSearchReader(session)
 
