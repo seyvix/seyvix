@@ -10,6 +10,7 @@ import {
   fetchContentTagJobs,
   fetchSnapshotArtifacts,
   fetchTaxonomyClassificationJobs,
+  reprocessSnapshotMarkdown,
   triggerTaxonomyClassification,
 } from './enrichment.ts'
 
@@ -30,6 +31,28 @@ test('snapshot artifact lookup uses the backend content_object_id filter', async
   await fetchSnapshotArtifacts('object-1')
 
   assert.equal(calls[0].url, '/api/v1/snapshots/artifacts?content_object_id=object-1')
+})
+
+test('snapshot markdown reprocess queues one asset with backend payload shape', async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = []
+  globalThis.fetch = async (input, init) => {
+    calls.push({ url: String(input), init })
+    return jsonResponse({ queued_count: 1, job_ids: ['job-1'], source_asset_ids: ['asset-1'] })
+  }
+
+  await reprocessSnapshotMarkdown('object-1', 'asset-1')
+
+  assert.equal(calls[0].url, '/api/v1/snapshots/reprocess')
+  assert.equal(calls[0].init?.method, 'POST')
+  assert.equal(
+    calls[0].init?.body,
+    JSON.stringify({
+      content_object_id: 'object-1',
+      source_asset_id: 'asset-1',
+      job_types: ['markdown'],
+      force: true,
+    }),
+  )
 })
 
 test('enrichment job lookups use backend job-list endpoints', async () => {

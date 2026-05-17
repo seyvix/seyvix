@@ -186,6 +186,23 @@ export async function fetchSnapshotJobs(contentObjectId: string): Promise<Snapsh
   return data.items
 }
 
+export async function reprocessSnapshotMarkdown(
+  contentObjectId: string,
+  sourceAssetId: string,
+): Promise<{ queued_count: number; job_ids: string[]; source_asset_ids: string[] }> {
+  const res = await apiFetch(`${API}/snapshots/reprocess`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      content_object_id: contentObjectId,
+      source_asset_id: sourceAssetId,
+      job_types: ['markdown'],
+      force: true,
+    }),
+  })
+  return readJson(res, 'Failed to queue snapshot reprocess')
+}
+
 export async function fetchTags(): Promise<TagDetail[]> {
   const res = await apiFetch(`${API}/tags`)
   return readJson<TagDetail[]>(res, 'Failed to fetch tags')

@@ -714,6 +714,10 @@
   pointer-events: none;
 }
 
+.extractionCompanion {
+  margin-top: 8px;
+}
+
 /* Telegram detail */
 .telegramDetailPost {
   margin: 0 32px;
@@ -1268,6 +1272,11 @@
 .assetAction:hover {
   color: var(--color-text-primary);
   background: var(--color-surface-hover);
+}
+
+.assetAction:disabled {
+  opacity: 0.45;
+  cursor: wait;
 }
 
 .assetBody {
