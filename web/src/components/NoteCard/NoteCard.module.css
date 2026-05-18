@@ -18,7 +18,7 @@
 
 .isDropOver .card {
   border-color: var(--color-accent);
-  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.25), var(--shadow-sm);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.25), 0 12px 28px rgba(0, 0, 0, 0.28);
   transition: border-color 0.1s, box-shadow 0.1s;
 }
 
@@ -38,27 +38,149 @@
 
 /* === Base card === */
 .card {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-surface) 78%, transparent);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
   cursor: pointer;
-  transition: border-color var(--duration-fast), box-shadow var(--duration-fast);
+  transition: border-color var(--duration-fast), box-shadow var(--duration-fast), transform var(--duration-fast), background var(--duration-fast);
   text-decoration: none;
   display: flex;
   flex-direction: column;
   color: inherit;
   overflow: hidden;
-  max-height: 460px;
+  max-height: 540px;
 }
 
 .card:hover {
-  border-color: #3a3a3a;
-  box-shadow: var(--shadow-sm);
+  background: color-mix(in srgb, var(--color-surface) 88%, #202334 12%);
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.24);
+  transform: translateY(-1px);
 }
 
 /* === Simple — content-driven height === */
 .cardSimple {
-  padding: var(--space-3);
+  gap: 8px;
+  padding: 12px;
+}
+
+.cardSoft {
+  padding: 0;
+}
+
+.cardTextHead {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.savedDate {
+  color: rgba(202, 206, 216, 0.62);
+  font-size: 10px;
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.08em;
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+
+.savedDateOverlay {
+  color: rgba(255, 255, 255, 0.78);
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.55);
+}
+
+.cardMedia {
+  --note-card-visual-ratio: 1;
+  position: relative;
+  min-height: 172px;
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.cardMedia:hover {
+  background: transparent;
+}
+
+.cardSoft .cardTextHead,
+.cardSoft > .excerpt,
+.cardSoft > .tags {
+  margin-left: 12px;
+  margin-right: 12px;
+}
+
+.cardSoft > .tags {
+  margin-bottom: 12px;
+}
+
+.softOverlay {
+  position: absolute;
+  inset: auto 0 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-height: 46%;
+  padding: 58px 12px 12px;
+  color: #fff;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(5, 6, 9, 0) 0%, rgba(5, 6, 9, 0.34) 29%, rgba(5, 6, 9, 0.82) 78%, rgba(5, 6, 9, 0.96) 100%),
+    radial-gradient(circle at 18% 92%, rgba(255, 255, 255, 0.1), transparent 34%);
+}
+
+.softOverlay::before {
+  content: '';
+  position: absolute;
+  inset: 42px 8px 8px;
+  z-index: -1;
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(10, 11, 14, 0.04), rgba(10, 11, 14, 0.32));
+  backdrop-filter: blur(1.5px);
+  mask-image: linear-gradient(180deg, transparent 0%, #000 42%, #000 100%);
+}
+
+.softOverlayTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.softOverlay .title {
+  color: #fff;
+  font-size: 15px;
+  line-height: 1.28;
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.72);
+  -webkit-line-clamp: 4;
+}
+
+.softOverlay .tags {
+  margin-top: 0;
+  pointer-events: auto;
+}
+
+.softOverlay .tag {
+  background: rgba(255, 255, 255, 0.14) !important;
+  color: rgba(255, 255, 255, 0.88) !important;
+  backdrop-filter: blur(8px);
+}
+
+.softOverlay .sourceTag {
+  border-color: rgba(139, 200, 255, 0.34);
+  background: rgba(18, 38, 55, 0.66);
+  backdrop-filter: blur(8px);
+}
+
+.mediaTypeLabel {
+  color: rgba(255, 255, 255, 0.66);
+  font-size: 10px;
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.08em;
+  line-height: 1;
+  text-transform: uppercase;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.55);
 }
 
 /* Simple с картинкой — без padding, изображение в край */
@@ -69,11 +191,22 @@
 
 .simpleImageMedia {
   width: 100%;
-  max-height: 420px;
+  aspect-ratio: var(--note-card-visual-ratio);
+  min-height: 180px;
+  max-height: 520px;
   object-fit: cover;
   display: block;
-  border-radius: var(--radius-md);
+  border-radius: 8px;
   pointer-events: none;
+}
+
+.inlineCover {
+  width: 100%;
+  aspect-ratio: var(--note-card-visual-ratio);
+  max-height: 268px;
+  overflow: hidden;
+  border-radius: 8px;
+  margin-bottom: 2px;
 }
 
 .imageOnlyMeta {
@@ -90,11 +223,12 @@
 
 .cover {
   width: 100%;
-  max-height: 240px;
+  height: 100%;
   object-fit: cover;
   display: block;
-  border-radius: var(--radius-sm);
-  margin-bottom: var(--space-2);
+  border-radius: inherit;
+  margin-bottom: 0;
+  pointer-events: none;
 }
 
 .title {
@@ -112,11 +246,12 @@
   font-size: var(--font-size-xs);
   color: var(--color-text-secondary);
   line-height: 1.5;
-  margin-bottom: var(--space-2);
   display: -webkit-box;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 4;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  overflow-wrap: anywhere;
+  mask-image: linear-gradient(180deg, #000 72%, transparent 100%);
 }
 
 .tags {
@@ -124,15 +259,20 @@
   gap: var(--space-1);
   flex-wrap: wrap;
   margin-top: auto;
+  min-width: 0;
 }
 
 .tag {
   font-size: 12px;
-  padding: 3px 10px;
+  padding: 3px 8px;
   border-radius: 20px;
   cursor: pointer;
   transition: opacity var(--duration-fast);
   line-height: 1.4;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tag:hover {
@@ -181,30 +321,25 @@
   color: rgba(139, 200, 255, 0.55);
 }
 
-/* === Collection — fixed 3:4, depth (слои со смещением) === */
+/* === Collection — content-driven soft mask === */
 .cardCollection {
-  aspect-ratio: 3 / 4;
   position: relative;
+  min-height: 230px;
 }
 
-/* Книжный язычок — свешивается сверху вниз, V-вырез снизу */
 .cardCollection::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  right: 20px;
-  width: 30px;
-  height: 45px;
-  background: #d13030;
-  border-radius: 0 0 2px 2px;
-  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 60%, 0 100%);
-  z-index: 10;
+  content: none;
 }
 
 .collectionVisual {
-  flex: 1;
+  width: 100%;
+  aspect-ratio: var(--note-card-visual-ratio);
+  min-height: 230px;
+  max-height: 520px;
   position: relative;
   overflow: hidden;
+  border-radius: 8px;
+  background: linear-gradient(160deg, #12151c 0%, #191b23 60%, #151117 100%);
 }
 
 /* 1 image — fills entire cover */
@@ -245,9 +380,9 @@
 
 .collectionLayer {
   position: absolute;
-  border-radius: var(--radius-sm);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.44);
   overflow: hidden;
 }
 
@@ -320,12 +455,17 @@
 }
 
 .cardFooter {
-  padding: 12px 14px;
+  padding: 11px 12px 12px;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  border-top: 1px solid var(--color-border);
   flex-shrink: 0;
+  border-top: 0;
+  background: color-mix(in srgb, var(--color-surface) 72%, transparent);
+}
+
+.cardFooter:empty {
+  display: none;
 }
 
 /* Rename after merge */
@@ -391,8 +531,8 @@
 .collectionStats {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 2px;
+  gap: 6px;
+  margin-bottom: 0;
 }
 
 .collectionStat {
@@ -400,7 +540,7 @@
   align-items: center;
   gap: 4px;
   font-size: 12px;
-  color: var(--color-text-secondary);
+  color: rgba(255, 255, 255, 0.78);
   font-weight: var(--font-weight-semibold);
   letter-spacing: 0.03em;
 }
@@ -413,13 +553,17 @@
 
 /* === Composite === */
 .cardComposite {
-  aspect-ratio: 3 / 4;
+  min-height: 238px;
 }
 
 .compositeCover {
-  flex: 1;
+  width: 100%;
+  aspect-ratio: var(--note-card-visual-ratio);
+  min-height: 170px;
+  max-height: 360px;
+  position: relative;
   overflow: hidden;
-  min-height: 0;
+  border-radius: 8px;
 }
 
 .compositeCoverImg {
@@ -438,6 +582,7 @@
   align-items: center;
   justify-content: center;
   padding: 20px;
+  min-height: 180px;
 }
 
 .compositeCoverText {
