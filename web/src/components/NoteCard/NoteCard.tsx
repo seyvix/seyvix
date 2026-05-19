@@ -1,5 +1,6 @@
 import { useRef, useState, useEffect, useCallback, type CSSProperties } from 'react'
 import { Link } from 'react-router-dom'
+import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { EditorContent, useEditor, type Editor } from '@tiptap/react'
 import { BubbleMenu } from '@tiptap/react/menus'
@@ -78,11 +79,14 @@ function SourceChipList({ note }: { note: Note }) {
   )
 }
 
-function TagList({ tags, onTagClick }: { tags: Tag[]; onTagClick?: (name: string) => void }) {
+function TagList({ tags, onTagClick, max = 4 }: { tags: Tag[]; onTagClick?: (name: string) => void; max?: number }) {
   if (tags.length === 0) return null
+  const visibleTags = tags.slice(0, max)
+  const hiddenCount = Math.max(0, tags.length - visibleTags.length)
+
   return (
     <>
-      {tags.map(tag => {
+      {visibleTags.map(tag => {
         const { bg, text } = getTagColor(tag.name)
         return (
           <span
@@ -95,23 +99,24 @@ function TagList({ tags, onTagClick }: { tags: Tag[]; onTagClick?: (name: string
           </span>
         )
       })}
+      {hiddenCount > 0 && <span className={styles.moreTag}>+{hiddenCount}</span>}
     </>
   )
 }
 
-function CardMeta({ note, onTagClick }: { note: Note; onTagClick?: (name: string) => void }) {
+function CardMeta({ note, onTagClick, maxTags = 4 }: { note: Note; onTagClick?: (name: string) => void; maxTags?: number }) {
   const hasSources = collectSourceChips(note).length > 0
   if (!hasSources && note.tags.length === 0) return null
   return (
     <div className={styles.tags}>
       <SourceChipList note={note} />
-      <TagList tags={note.tags} onTagClick={onTagClick} />
+      <TagList tags={note.tags} onTagClick={onTagClick} max={maxTags} />
     </div>
   )
 }
 
 function SavedDate({ note, tone = 'muted' }: { note: Note; tone?: 'muted' | 'overlay' }) {
-  const label = getSavedDateLabel(note.updatedAt)
+  const label = getSavedDateLabel(note.createdAt)
   if (!label) return null
   return <span className={`${styles.savedDate} ${tone === 'overlay' ? styles.savedDateOverlay : ''}`}>{label}</span>
 }
@@ -129,14 +134,23 @@ function visualRatioStyle(obj: NoteObject | undefined, fallbackRatio: number): C
   return { '--note-card-visual-ratio': String(getObjectAspectRatio(obj) ?? fallbackRatio) } as CSSProperties
 }
 
+function textDensityClass(text: string | null | undefined): string {
+  const length = (text ?? '').trim().length
+  if (length < 90) return styles.cardTextShort
+  if (length > 280) return styles.cardTextLong
+  return styles.cardTextMedium
+}
+
 function SoftOverlay({
   note,
   titleNode,
+  description,
   children,
   onTagClick,
 }: {
   note: Note
   titleNode?: React.ReactNode
+  description?: React.ReactNode
   children?: React.ReactNode
   onTagClick?: (name: string) => void
 }) {
@@ -147,7 +161,8 @@ function SoftOverlay({
         {children}
       </div>
       {titleNode ?? <div className={styles.title}>{note.title}</div>}
-      <CardMeta note={note} onTagClick={onTagClick} />
+      {description && <div className={styles.overlayExcerpt}>{description}</div>}
+      <CardMeta note={note} onTagClick={onTagClick} maxTags={2} />
     </div>
   )
 }
@@ -157,7 +172,7 @@ function SoftOverlay({
 function SimpleCard({ note, onTagClick }: { note: Note; onTagClick?: (name: string) => void }) {
   const imageObj = note.objects.find(o => o.type === 'image')
   const textObj  = note.objects.find(o => o.type === 'text')
-  const hasMeta = note.tags.length > 0 || collectSourceChips(note).length > 0
+  const text = textObj ? getObjectDisplayText(textObj) : null
 
   // Только картинка — без заголовка, изображение в край
   if (imageObj && !textObj) {
@@ -173,57 +188,46 @@ function SimpleCard({ note, onTagClick }: { note: Note; onTagClick?: (name: stri
           src={getObjectPreviewSource(imageObj)}
           alt={note.title}
         />
-        <SoftOverlay note={note} onTagClick={onTagClick}>
-          {hasMeta ? null : <span className={styles.mediaTypeLabel}>Изображение</span>}
-        </SoftOverlay>
+        <SoftOverlay note={note} onTagClick={onTagClick} />
+      </Link>
+    )
+  }
+
+  if (imageObj && textObj) {
+    return (
+      <Link
+        draggable={false}
+        to={notePageHref(note)}
+        className={`${styles.card} ${styles.cardMedia} ${styles.cardSimpleImage} ${styles.cardImageText} ${textDensityClass(text)}`}
+        style={visualRatioStyle(imageObj, text && text.length > 220 ? 0.92 : 1.08)}
+      >
+        <AuthImage
+          className={styles.simpleImageMedia}
+          src={getObjectPreviewSource(imageObj)}
+          alt={note.title}
+        />
+        <SoftOverlay note={note} description={text} onTagClick={onTagClick} />
       </Link>
     )
   }
 
   return (
-    <Link draggable={false} to={notePageHref(note)} className={`${styles.card} ${styles.cardSimple} ${imageObj ? styles.cardSoft : ''}`}>
-      {imageObj && (
-        <div className={styles.inlineCover} style={visualRatioStyle(imageObj, 1.18)}>
-          <AuthImage className={styles.cover} src={getObjectPreviewSource(imageObj)} alt="" />
-        </div>
-      )}
+    <Link
+      draggable={false}
+      to={notePageHref(note)}
+      className={`${styles.card} ${styles.cardSimple} ${styles.cardTextOnly} ${textDensityClass(text)}`}
+    >
       <div className={styles.cardTextHead}>
         <SavedDate note={note} />
         <div className={styles.title}>{note.title}</div>
       </div>
-      {textObj && <div className={styles.excerpt}>{getObjectDisplayText(textObj)}</div>}
+      {textObj && <div className={styles.excerpt}>{text}</div>}
       <CardMeta note={note} onTagClick={onTagClick} />
     </Link>
   )
 }
 
 // ─── Collection ───────────────────────────────────────────────────────────────
-
-// Стопка всегда занимает одну и ту же площадь (STACK_W × STACK_H).
-// При меньшем количестве слоёв каждая карточка становится крупнее.
-// index 0 = задний слой, index layerCount-1 = передний.
-function buildLayerPositions(layerCount: number) {
-  const STACK_W = 92
-  const STACK_H = 92
-  const DX      = 3
-  const DY      = 3
-  const cardW   = STACK_W - (layerCount - 1) * DX
-  const cardH   = STACK_H - (layerCount - 1) * DY
-  const stackLeft = (100 - STACK_W) / 2
-  const stackTop  = (100 - STACK_H) / 2
-
-  return Array.from({ length: layerCount }, (_, i) => {
-    const depth = layerCount - 1 - i
-    return {
-      left:    `${stackLeft + depth * DX}%`,
-      top:     `${stackTop  + depth * DY}%`,
-      width:   `${cardW}%`,
-      height:  `${cardH}%`,
-      zIndex:  i + 1,
-      opacity: layerCount === 1 ? 1 : 0.6 + (i / (layerCount - 1)) * 0.4,
-    }
-  })
-}
 
 const FALLBACK_COLORS = ['#1e3a2a', '#1e2a3a', '#2e1e3a', '#3a2e1e']
 
@@ -304,6 +308,8 @@ function CollectionStats({ objects }: { objects: Note['objects'] }) {
 
 function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClick?: (name: string) => void; titleNode?: React.ReactNode }) {
   const visualObjs = note.objects.filter(o => o.type === 'image' || o.type === 'document' || o.type === 'link').slice(0, 5)
+  const textObj = note.objects.find(o => o.type === 'text')
+  const description = textObj ? getObjectDisplayText(textObj) : null
   const fallback   = FALLBACK_COLORS[note.id.charCodeAt(0) % FALLBACK_COLORS.length]
 
   let visual: React.ReactNode
@@ -335,24 +341,26 @@ function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClic
         ))}
       </div>
     )
+  } else if (visualObjs.length > 2) {
+    const visible = visualObjs.slice(0, 4)
+    visual = (
+      <div className={styles.collectionMosaic}>
+        {visible.map((obj, index) => (
+          <div key={obj.id} className={index === 0 ? styles.collectionMosaicMain : styles.collectionMosaicCell}>
+            <LayerContent obj={obj} fallback={fallback} />
+          </div>
+        ))}
+        {visualObjs.length > visible.length && (
+          <span className={styles.collectionMoreBadge}>+{visualObjs.length - visible.length}</span>
+        )}
+      </div>
+    )
   } else {
-    const layerCount = Math.min(5, Math.max(1, visualObjs.length))
-    const positions  = buildLayerPositions(layerCount)
-
-    visual = positions.map((pos, i) => {
-      const obj     = visualObjs[layerCount - 1 - i]
-      const isFront = i === layerCount - 1
-
-      return (
-        <div
-          key={i}
-          className={styles.collectionLayer}
-          style={{ width: pos.width, height: pos.height, left: pos.left, top: pos.top, zIndex: pos.zIndex }}
-        >
-          <LayerContent obj={obj} fallback={fallback} />
-        </div>
-      )
-    })
+    visual = (
+      <div className={styles.collectionSingleNonImage}>
+        <LayerContent obj={undefined} fallback={fallback} />
+      </div>
+    )
   }
 
   const primaryVisual = visualObjs[0]
@@ -362,13 +370,15 @@ function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClic
       draggable={false}
       to={notePageHref(note)}
       className={`${styles.card} ${styles.cardMedia} ${styles.cardCollection}`}
-      style={visualRatioStyle(primaryVisual, visualObjs.length > 2 ? 0.82 : 1.05)}
+      style={visualRatioStyle(primaryVisual, visualObjs.length > 2 ? 1.12 : 1.05)}
     >
       <div className={styles.collectionVisual}>
         {visual}
       </div>
-      <SoftOverlay note={note} titleNode={titleNode} onTagClick={onTagClick}>
-        <CollectionStats objects={note.objects} />
+      <SoftOverlay note={note} titleNode={titleNode} description={description} onTagClick={onTagClick}>
+        <div className={styles.overlayMetaCluster}>
+          <CollectionStats objects={note.objects} />
+        </div>
       </SoftOverlay>
     </Link>
   )
@@ -427,6 +437,9 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
   const firstLink = links[0]
   const firstLinkThumb = firstLink?.thumbnailUrl ?? null
   const visualObject = imageObj ?? (docThumb ? firstDoc : undefined) ?? (firstLinkThumb ? firstLink : undefined)
+  const text = textObj ? getObjectDisplayText(textObj) : null
+  const hasAttachmentFooter = links.length > 0 || docs.length > 0
+  const shouldOverlayText = Boolean(visualObject && text && !/^https?:\/\//.test(textObj?.content ?? ''))
 
   return (
     <Link
@@ -465,31 +478,38 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
                     {textObj && <span className={styles.compositeCoverText}>{getObjectDisplayText(textObj, 240)}</span>}
                   </div>
         }
-        <SoftOverlay note={note} titleNode={titleNode} onTagClick={onTagClick}>
-          <span className={styles.mediaTypeLabel}>{docs.length > 0 ? 'Документ' : links.length > 0 ? 'Ссылка' : 'Заметка'}</span>
+        <SoftOverlay
+          note={note}
+          titleNode={titleNode}
+          description={shouldOverlayText ? text : undefined}
+          onTagClick={onTagClick}
+        >
         </SoftOverlay>
       </div>
 
-      {/* Footer */}
-      <div className={styles.cardFooter}>
-        {/* Ссылки */}
+      {hasAttachmentFooter && (
+      <div className={`${styles.cardFooter} ${styles.attachmentFooter}`}>
         {links.length > 0 && (
           <div className={styles.compositeChips}>
-            {links.map(o => <LinkChip key={o.id} obj={o} />)}
+            {links.slice(0, 2).map(o => <LinkChip key={o.id} obj={o} />)}
+            {links.length > 2 && <span className={styles.moreTag}>+{links.length - 2}</span>}
           </div>
         )}
 
-        {/* Документы */}
         {docs.length > 0 && (
           <div className={styles.compositeChips}>
-            {docs.map(o => <DocChip key={o.id} obj={o} />)}
+            {docs.slice(0, 2).map(o => <DocChip key={o.id} obj={o} />)}
+            {docs.length > 2 && <span className={styles.moreTag}>+{docs.length - 2}</span>}
           </div>
         )}
-
-        {textObj && !/^https?:\/\//.test(textObj.content) && (
-          <div className={styles.excerpt}>{getObjectDisplayText(textObj)}</div>
-        )}
       </div>
+      )}
+
+      {!shouldOverlayText && textObj && text && !/^https?:\/\//.test(textObj.content) && (
+        <div className={`${styles.cardFooter} ${textDensityClass(text)}`}>
+          <div className={styles.excerpt}>{text}</div>
+        </div>
+      )}
     </Link>
   )
 }
@@ -664,6 +684,7 @@ export function NoteCard({ note, isNew, isDragging, onTagClick }: { note: Note; 
 
 export function AddNoteCard({ onClick }: { onClick?: () => void }) {
   const dropRef = useRef<HTMLDivElement>(null)
+  const modalDropRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const editorRef = useRef<Editor | null>(null)
   const blobNamesRef = useRef(new Map<string, string>())
@@ -713,7 +734,7 @@ export function AddNoteCard({ onClick }: { onClick?: () => void }) {
     const $from = selection.$from
     const textBeforeCursor = $from.parent.textBetween(0, $from.parentOffset, '\n', '\n')
     const match = /^\/([\p{L}\p{N}_-]*)?$/u.exec(textBeforeCursor)
-    const root = dropRef.current
+    const root = modalDropRef.current ?? dropRef.current
     if (!match || !root) {
       setSlashMenu(prev => prev.visible ? { ...prev, visible: false } : prev)
       return
@@ -820,14 +841,27 @@ export function AddNoteCard({ onClick }: { onClick?: () => void }) {
         setIsOver(false)
         const dropped = getFiles({ source })
         if (dropped.length === 0) return
-        if (isEditing) {
-          attachFiles(dropped, true)
-        } else {
-          upload({ files: dropped })
-        }
+        upload({ files: dropped })
       },
     })
-  }, [attachFiles, isEditing, upload])
+  }, [upload])
+
+  useEffect(() => {
+    if (!isEditing) return
+    const el = modalDropRef.current
+    if (!el) return
+    return dropTargetForExternal({
+      element: el,
+      canDrop: containsFiles,
+      onDragEnter: () => setIsOver(true),
+      onDragLeave: () => setIsOver(false),
+      onDrop: ({ source }) => {
+        setIsOver(false)
+        const dropped = getFiles({ source })
+        if (dropped.length > 0) attachFiles(dropped, true)
+      },
+    })
+  }, [attachFiles, isEditing])
 
   function handleOpen() {
     setIsEditing(true)
@@ -918,7 +952,6 @@ export function AddNoteCard({ onClick }: { onClick?: () => void }) {
 
   const wrapperCls = [
     styles.addCard,
-    isEditing                    ? styles.addCardEditing   : '',
     isOver && !isEditing         ? styles.addCardOver      : '',
     isFileDragging && !isEditing ? styles.addCardFileDrag  : '',
   ].filter(Boolean).join(' ')
@@ -934,11 +967,10 @@ export function AddNoteCard({ onClick }: { onClick?: () => void }) {
     { id: 'ordered', label: 'Нумерованный список', icon: <ListOrdered size={18} />, keywords: 'ordered number список' },
   ].filter(item => !slashMenu.query || item.keywords.includes(slashMenu.query) || item.label.toLowerCase().includes(slashMenu.query))
 
-  return (
+  const editorDialog = isEditing ? createPortal(
     <>
-    {isEditing && <div className={styles.addCardBackdrop} onClick={handleCancel} />}
-    <div ref={dropRef} className={wrapperCls}>
-      {isEditing ? (
+      <div className={styles.addCardBackdrop} onClick={handleCancel} />
+      <div ref={modalDropRef} className={`${styles.addCard} ${styles.addCardEditing}`}>
         <>
           <div className={styles.addCardEditorShell}>
             <div className={styles.addCardKicker}>Новая заметка</div>
@@ -992,7 +1024,14 @@ export function AddNoteCard({ onClick }: { onClick?: () => void }) {
             <button className={styles.addCardSubmitBtn} disabled={isEditorEmpty && files.length === 0} onClick={handleSubmit}>Создать</button>
           </div>
         </>
-      ) : (
+      </div>
+    </>,
+    document.body,
+  ) : null
+
+  return (
+    <>
+      <div ref={dropRef} className={wrapperCls}>
         <button className={styles.addCardTrigger} onClick={handleOpen}>
           {showFileMode
             ? <UploadCloud size={28} className={styles.addIcon} />
@@ -1003,8 +1042,8 @@ export function AddNoteCard({ onClick }: { onClick?: () => void }) {
             <span>{showFileMode ? 'Создать из файлов' : 'Markdown, вставка из Word, / команды'}</span>
           </span>
         </button>
-      )}
-    </div>
+      </div>
+      {editorDialog}
     </>
   )
 }

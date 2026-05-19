@@ -397,6 +397,22 @@ def test_favorite_and_custom_order_are_exposed_in_note_list(
     ]
 
 
+def test_custom_order_defaults_new_notes_to_top(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client)
+    first = _create_text_note(content_client, headers, title="First", text="First body")
+    second = _create_text_note(content_client, headers, title="Second", text="Second body")
+
+    list_response = content_client.get("/api/v1/notes?sort=custom", headers=headers)
+
+    assert list_response.status_code == 200
+    assert [item["slug"] for item in list_response.json()["items"]][:2] == [
+        second["slug"],
+        first["slug"],
+    ]
+
+
 def test_upload_file_without_object_id_stays_temporary_until_note_creation(
     content_client: TestClient,
 ) -> None:

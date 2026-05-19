@@ -27,8 +27,8 @@ export interface MasonryLayoutResult {
   height: number
 }
 
-const MIN_CARD_WIDTH = 248
-const MAX_CARD_WIDTH = 320
+const MIN_CARD_WIDTH = 220
+const MAX_CARD_WIDTH = 300
 const GRID_GAP = 8
 const DESKTOP_PADDING = 32
 const MOBILE_PADDING = 24

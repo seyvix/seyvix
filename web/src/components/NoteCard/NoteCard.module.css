@@ -38,9 +38,9 @@
 
 /* === Base card === */
 .card {
-  background: color-mix(in srgb, var(--color-surface) 78%, transparent);
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-surface) 72%, transparent);
+  border: 1px solid rgba(255, 255, 255, 0.035);
+  border-radius: 14px;
   cursor: pointer;
   transition: border-color var(--duration-fast), box-shadow var(--duration-fast), transform var(--duration-fast), background var(--duration-fast);
   text-decoration: none;
@@ -48,51 +48,81 @@
   flex-direction: column;
   color: inherit;
   overflow: hidden;
-  max-height: 540px;
+  max-height: 420px;
 }
 
 .card:hover {
-  background: color-mix(in srgb, var(--color-surface) 88%, #202334 12%);
-  border-color: rgba(255, 255, 255, 0.12);
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.24);
+  background: color-mix(in srgb, var(--color-surface) 82%, #202334 18%);
+  border-color: rgba(255, 255, 255, 0.09);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
   transform: translateY(-1px);
 }
 
 /* === Simple — content-driven height === */
 .cardSimple {
-  gap: 8px;
-  padding: 12px;
+  gap: 7px;
+  padding: 13px;
 }
 
-.cardSoft {
-  padding: 0;
+.cardTextOnly {
+  border-color: rgba(255, 255, 255, 0.035);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(113, 104, 255, 0.16), transparent 36%),
+    radial-gradient(circle at 0% 100%, rgba(255, 114, 168, 0.08), transparent 34%),
+    linear-gradient(155deg, rgba(255, 255, 255, 0.046), rgba(255, 255, 255, 0.014));
+}
+
+.cardTextOnly:hover {
+  background:
+    radial-gradient(circle at 100% 0%, rgba(113, 104, 255, 0.2), transparent 36%),
+    radial-gradient(circle at 0% 100%, rgba(255, 114, 168, 0.1), transparent 34%),
+    linear-gradient(155deg, rgba(255, 255, 255, 0.058), rgba(255, 255, 255, 0.018));
+}
+
+.card.cardTextShort {
+  min-height: 104px;
+}
+
+.card.cardTextMedium {
+  min-height: 142px;
+}
+
+.card.cardTextLong {
+  min-height: 188px;
 }
 
 .cardTextHead {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 8px;
   min-width: 0;
 }
 
 .savedDate {
-  color: rgba(202, 206, 216, 0.62);
+  width: max-content;
+  max-width: 100%;
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(225, 229, 238, 0.68);
   font-size: 10px;
   font-weight: var(--font-weight-semibold);
-  letter-spacing: 0.08em;
+  letter-spacing: 0.03em;
   line-height: 1.1;
-  text-transform: uppercase;
 }
 
 .savedDateOverlay {
-  color: rgba(255, 255, 255, 0.78);
+  background: rgba(0, 0, 0, 0.42);
+  color: rgba(255, 255, 255, 0.9);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(14px) saturate(140%);
   text-shadow: 0 1px 8px rgba(0, 0, 0, 0.55);
 }
 
 .cardMedia {
   --note-card-visual-ratio: 1;
   position: relative;
-  min-height: 172px;
+  min-height: 148px;
   background: transparent;
   border-color: transparent;
   box-shadow: none;
@@ -102,37 +132,27 @@
   background: transparent;
 }
 
-.cardSoft .cardTextHead,
-.cardSoft > .excerpt,
-.cardSoft > .tags {
-  margin-left: 12px;
-  margin-right: 12px;
-}
-
-.cardSoft > .tags {
-  margin-bottom: 12px;
-}
-
 .softOverlay {
   position: absolute;
   inset: auto 0 0;
   z-index: 2;
   display: flex;
   flex-direction: column;
-  gap: 7px;
-  min-height: 46%;
-  padding: 58px 12px 12px;
+  gap: 6px;
+  min-height: 38%;
+  padding: 42px 12px 12px;
   color: #fff;
   pointer-events: none;
   background:
-    linear-gradient(180deg, rgba(5, 6, 9, 0) 0%, rgba(5, 6, 9, 0.34) 29%, rgba(5, 6, 9, 0.82) 78%, rgba(5, 6, 9, 0.96) 100%),
-    radial-gradient(circle at 18% 92%, rgba(255, 255, 255, 0.1), transparent 34%);
+    linear-gradient(180deg, rgba(5, 6, 9, 0) 0%, rgba(5, 6, 9, 0.22) 24%, rgba(5, 6, 9, 0.76) 72%, rgba(5, 6, 9, 0.98) 100%),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.3), transparent 58%),
+    radial-gradient(circle at 18% 92%, rgba(255, 255, 255, 0.09), transparent 34%);
 }
 
 .softOverlay::before {
   content: '';
   position: absolute;
-  inset: 42px 8px 8px;
+  inset: 34px 8px 8px;
   z-index: -1;
   border-radius: 8px;
   background: linear-gradient(180deg, rgba(10, 11, 14, 0.04), rgba(10, 11, 14, 0.32));
@@ -151,9 +171,27 @@
 .softOverlay .title {
   color: #fff;
   font-size: 15px;
-  line-height: 1.28;
+  line-height: 1.24;
   text-shadow: 0 1px 12px rgba(0, 0, 0, 0.72);
-  -webkit-line-clamp: 4;
+  -webkit-line-clamp: 3;
+}
+
+.overlayExcerpt {
+  color: rgba(255, 255, 255, 0.74);
+  font-size: 12px;
+  line-height: 1.42;
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.72);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.overlayMetaCluster {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .softOverlay .tags {
@@ -173,16 +211,6 @@
   backdrop-filter: blur(8px);
 }
 
-.mediaTypeLabel {
-  color: rgba(255, 255, 255, 0.66);
-  font-size: 10px;
-  font-weight: var(--font-weight-semibold);
-  letter-spacing: 0.08em;
-  line-height: 1;
-  text-transform: uppercase;
-  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.55);
-}
-
 /* Simple с картинкой — без padding, изображение в край */
 .cardSimpleImage {
   padding: 0;
@@ -192,66 +220,54 @@
 .simpleImageMedia {
   width: 100%;
   aspect-ratio: var(--note-card-visual-ratio);
-  min-height: 180px;
-  max-height: 520px;
+  min-height: 150px;
+  max-height: 380px;
   object-fit: cover;
   display: block;
-  border-radius: 8px;
+  border-radius: 14px;
   pointer-events: none;
 }
 
-.inlineCover {
-  width: 100%;
-  aspect-ratio: var(--note-card-visual-ratio);
-  max-height: 268px;
-  overflow: hidden;
-  border-radius: 8px;
-  margin-bottom: 2px;
-}
-
-.imageOnlyMeta {
-  position: absolute;
-  left: 8px;
-  right: 8px;
-  bottom: 8px;
-  z-index: 2;
-}
-
-.imageOnlyMeta .tags {
-  margin: 0;
-}
-
-.cover {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-  border-radius: inherit;
-  margin-bottom: 0;
-  pointer-events: none;
+.cardImageText .simpleImageMedia {
+  min-height: 170px;
+  max-height: 360px;
 }
 
 .title {
-  font-size: var(--font-size-base);
+  font-size: 15px;
   font-weight: var(--font-weight-semibold);
   color: var(--color-text-primary);
-  line-height: 1.4;
+  line-height: 1.32;
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  overflow-wrap: anywhere;
 }
 
 .excerpt {
   font-size: var(--font-size-xs);
   color: var(--color-text-secondary);
-  line-height: 1.5;
+  line-height: 1.45;
   display: -webkit-box;
   -webkit-line-clamp: 4;
   -webkit-box-orient: vertical;
   overflow: hidden;
   overflow-wrap: anywhere;
   mask-image: linear-gradient(180deg, #000 72%, transparent 100%);
+}
+
+.cardTextShort .excerpt {
+  -webkit-line-clamp: 2;
+  mask-image: none;
+}
+
+.cardTextMedium .excerpt {
+  -webkit-line-clamp: 5;
+}
+
+.cardTextLong .excerpt {
+  -webkit-line-clamp: 7;
 }
 
 .tags {
@@ -263,8 +279,8 @@
 }
 
 .tag {
-  font-size: 12px;
-  padding: 3px 8px;
+  font-size: 11px;
+  padding: 3px 7px;
   border-radius: 20px;
   cursor: pointer;
   transition: opacity var(--duration-fast);
@@ -273,6 +289,20 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.moreTag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  color: rgba(215, 219, 231, 0.64);
+  font-size: 11px;
+  font-weight: var(--font-weight-semibold);
+  line-height: 1.4;
 }
 
 .tag:hover {
@@ -285,12 +315,12 @@
   gap: 5px;
   max-width: 100%;
   min-width: 0;
-  padding: 3px 8px;
+  padding: 3px 7px;
   border: 1px solid rgba(45, 152, 219, 0.28);
   border-radius: 20px;
   background: rgba(45, 152, 219, 0.12);
   color: #8bc8ff;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: var(--font-weight-semibold);
   line-height: 1.4;
 }
@@ -324,7 +354,7 @@
 /* === Collection — content-driven soft mask === */
 .cardCollection {
   position: relative;
-  min-height: 230px;
+  min-height: 188px;
 }
 
 .cardCollection::before {
@@ -334,11 +364,11 @@
 .collectionVisual {
   width: 100%;
   aspect-ratio: var(--note-card-visual-ratio);
-  min-height: 230px;
-  max-height: 520px;
+  min-height: 188px;
+  max-height: 360px;
   position: relative;
   overflow: hidden;
-  border-radius: 8px;
+  border-radius: 14px;
   background: linear-gradient(160deg, #12151c 0%, #191b23 60%, #151117 100%);
 }
 
@@ -356,6 +386,7 @@
   width: 100%;
   height: 100%;
   display: flex;
+  position: relative;
 }
 
 .collectionSingleNonImage > * {
@@ -368,6 +399,7 @@
   height: 100%;
   display: flex;
   gap: 2px;
+  position: relative;
 }
 
 .collectionPairImg {
@@ -376,14 +408,6 @@
   object-fit: cover;
   display: block;
   pointer-events: none;
-}
-
-.collectionLayer {
-  position: absolute;
-  border-radius: 7px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.44);
-  overflow: hidden;
 }
 
 .collectionLayerImg {
@@ -434,34 +458,82 @@
   height: 100%;
 }
 
-/* Счётчик на верхней карточке — верхний правый угол */
-.collectionBadge {
+.collectionMosaic {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  grid-template-columns: 1.35fr 1fr;
+  grid-template-rows: repeat(3, minmax(0, 1fr));
+  gap: 2px;
+  background: #101116;
+}
+
+.collectionMosaicMain,
+.collectionMosaicCell {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.collectionMosaicMain {
+  grid-row: 1 / -1;
+}
+
+.collectionMosaicMain > *,
+.collectionMosaicCell > * {
+  width: 100%;
+  height: 100%;
+}
+
+.collectionMosaic::after,
+.collectionPair::after,
+.collectionSingleNonImage::after {
+  content: '';
   position: absolute;
-  top: 6px;
-  right: 6px;
-  min-width: 20px;
-  height: 20px;
-  padding: 0 5px;
-  border-radius: 10px;
-  background: rgba(0, 0, 0, 0.65);
-  backdrop-filter: blur(4px);
-  color: #fff;
-  font-size: 10px;
-  font-weight: var(--font-weight-semibold);
-  display: flex;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(5, 6, 9, 0.08) 0%, rgba(5, 6, 9, 0.08) 40%, rgba(5, 6, 9, 0.58) 100%),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.18), transparent 62%);
+}
+
+.collectionMoreBadge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  line-height: 1;
+  background: rgba(0, 0, 0, 0.42);
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 11px;
+  font-weight: var(--font-weight-semibold);
+  backdrop-filter: blur(12px);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 
 .cardFooter {
-  padding: 11px 12px 12px;
+  padding: 9px 11px 11px;
   display: flex;
   flex-direction: column;
   gap: 6px;
   flex-shrink: 0;
   border-top: 0;
   background: color-mix(in srgb, var(--color-surface) 72%, transparent);
+}
+
+.attachmentFooter {
+  gap: 5px;
+  padding-top: 8px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.028), rgba(255, 255, 255, 0.012)),
+    color-mix(in srgb, var(--color-surface) 74%, transparent);
 }
 
 .cardFooter:empty {
@@ -539,10 +611,14 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 12px;
+  font-size: 11px;
   color: rgba(255, 255, 255, 0.78);
   font-weight: var(--font-weight-semibold);
   letter-spacing: 0.03em;
+}
+
+.collectionStat svg {
+  opacity: 0.78;
 }
 
 .footerMeta {
@@ -553,17 +629,17 @@
 
 /* === Composite === */
 .cardComposite {
-  min-height: 238px;
+  min-height: 196px;
 }
 
 .compositeCover {
   width: 100%;
   aspect-ratio: var(--note-card-visual-ratio);
-  min-height: 170px;
-  max-height: 360px;
+  min-height: 168px;
+  max-height: 320px;
   position: relative;
   overflow: hidden;
-  border-radius: 8px;
+  border-radius: 14px;
 }
 
 .compositeCoverImg {
@@ -582,7 +658,7 @@
   align-items: center;
   justify-content: center;
   padding: 20px;
-  min-height: 180px;
+  min-height: 168px;
 }
 
 .compositeCoverText {
@@ -599,8 +675,8 @@
 .compositeChips {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-  margin-bottom: 2px;
+  gap: 5px;
+  min-width: 0;
 }
 
 /* Чип ссылки */
@@ -608,23 +684,23 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  background: rgba(20, 22, 42, 0.95);
-  border: 1px solid rgba(99, 102, 241, 0.22);
-  border-radius: 6px;
-  padding: 4px 8px 4px 4px;
-  max-width: 180px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  border-radius: 999px;
+  padding: 3px 7px 3px 4px;
+  max-width: 160px;
   overflow: hidden;
 }
 
 .linkChipIcon {
-  width: 22px;
-  height: 22px;
-  border-radius: 4px;
-  background: rgba(99, 102, 241, 0.12);
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: rgba(139, 200, 255, 0.12);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--color-accent);
+  color: #8bc8ff;
   flex-shrink: 0;
 }
 
@@ -637,8 +713,8 @@
 }
 
 .linkChipDomain {
-  font-size: 12px;
-  color: rgba(165, 168, 255, 0.85);
+  font-size: 11px;
+  color: rgba(215, 229, 242, 0.78);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -647,7 +723,7 @@
 }
 
 .linkChipArrow {
-  color: rgba(99, 102, 241, 0.45);
+  color: rgba(215, 229, 242, 0.35);
   flex-shrink: 0;
 }
 
@@ -656,18 +732,18 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  background: rgba(28, 18, 10, 0.95);
-  border: 1px solid rgba(180, 110, 40, 0.22);
-  border-radius: 6px;
-  padding: 4px 8px 4px 4px;
-  max-width: 180px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  border-radius: 999px;
+  padding: 3px 7px 3px 4px;
+  max-width: 160px;
   overflow: hidden;
 }
 
 .docChipCover {
-  width: 18px;
-  height: 18px;
-  border-radius: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
   object-fit: cover;
   display: block;
   pointer-events: none;
@@ -675,20 +751,20 @@
 }
 
 .docChipIconWrap {
-  width: 22px;
-  height: 22px;
-  border-radius: 4px;
-  background: rgba(180, 110, 40, 0.15);
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: rgba(226, 166, 91, 0.12);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #c47830;
+  color: #e2a65b;
   flex-shrink: 0;
 }
 
 .docChipName {
-  font-size: 12px;
-  color: rgba(200, 155, 90, 0.85);
+  font-size: 11px;
+  color: rgba(235, 217, 190, 0.78);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -699,8 +775,8 @@
 .docChipExt {
   font-size: 9px;
   font-weight: var(--font-weight-semibold);
-  background: rgba(180, 110, 40, 0.18);
-  color: #c47830;
+  background: rgba(226, 166, 91, 0.12);
+  color: #e2a65b;
   padding: 1px 4px;
   border-radius: 3px;
   text-transform: uppercase;

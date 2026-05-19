@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
+import { flushSync } from 'react-dom'
 import Muuri, { type Item as MuuriItem } from 'muuri'
 import { useQueryClient } from '@tanstack/react-query'
 import type { Note } from '../../types'
@@ -31,6 +32,8 @@ export function NoteGrid({ notes, onAddNote, onTagClick }: NoteGridProps) {
   const muuriRef = useRef<Muuri | null>(null)
   const itemResizeObserverRef = useRef<ResizeObserver | null>(null)
   const dragStartOrderRef = useRef<Note[] | null>(null)
+  const isDraggingRef = useRef(false)
+  const pendingNotesRef = useRef<Note[] | null>(null)
   const orderedNotesRef = useRef<Note[]>(notes)
   const gridMetricsRef = useRef<MasonryGridMetrics | null>(null)
   const [orderedNotes, setOrderedNotes] = useState<Note[]>(notes)
@@ -41,19 +44,33 @@ export function NoteGrid({ notes, onAddNote, onTagClick }: NoteGridProps) {
 
   gridMetricsRef.current = gridMetrics
 
-  useEffect(() => {
+  function mergeIncomingNotes(incomingNotes: Note[]) {
     setOrderedNotes(current => {
-      if (current.length === 0) return notes
+      if (current.length === 0) {
+        orderedNotesRef.current = incomingNotes
+        return incomingNotes
+      }
 
-      const incomingById = new Map(notes.map(note => [note.id, note]))
+      const incomingById = new Map(incomingNotes.map(note => [note.id, note]))
       const currentIds = new Set(current.map(note => note.id))
-      const added = notes.filter(note => !currentIds.has(note.id))
+      const added = incomingNotes.filter(note => !currentIds.has(note.id))
       const kept = current
         .map(note => incomingById.get(note.id))
         .filter((note): note is Note => Boolean(note))
+      const next = [...added, ...kept]
 
-      return [...added, ...kept]
+      orderedNotesRef.current = next
+      return next
     })
+  }
+
+  useEffect(() => {
+    if (isDraggingRef.current) {
+      pendingNotesRef.current = notes
+      return
+    }
+
+    mergeIncomingNotes(notes)
   }, [notes])
 
   useEffect(() => {
@@ -128,6 +145,11 @@ export function NoteGrid({ notes, onAddNote, onTagClick }: NoteGridProps) {
         minDragDistance: 8,
         minBounceBackAngle: 1,
       },
+      dragSortPredicate: {
+        threshold: 65,
+        action: 'swap',
+        migrateAction: 'swap',
+      },
       dragRelease: {
         duration: 180,
         easing: 'ease',
@@ -150,13 +172,15 @@ export function NoteGrid({ notes, onAddNote, onTagClick }: NoteGridProps) {
 
     if (typeof ResizeObserver !== 'undefined') {
       itemResizeObserverRef.current = new ResizeObserver(() => {
+        if (isDraggingRef.current) return
         window.requestAnimationFrame(() => {
-          if (muuriRef.current === grid) grid.refreshItems().layout()
+          if (!isDraggingRef.current && muuriRef.current === grid) grid.refreshItems().layout()
         })
       })
     }
 
     const handleDragStart = () => {
+      isDraggingRef.current = true
       dragStartOrderRef.current = orderedNotesRef.current
     }
 
@@ -165,14 +189,29 @@ export function NoteGrid({ notes, onAddNote, onTagClick }: NoteGridProps) {
       dragStartOrderRef.current = null
       const nextIds = getNoteIdsFromGrid(grid)
       const next = orderNotesByIds(orderedNotesRef.current, nextIds)
+      const finishDrag = () => {
+        window.requestAnimationFrame(() => {
+          isDraggingRef.current = false
+          const pendingNotes = pendingNotesRef.current
+          pendingNotesRef.current = null
+          if (pendingNotes) mergeIncomingNotes(pendingNotes)
+          if (muuriRef.current === grid) grid.refreshItems().layout()
+        })
+      }
 
-      if (sameNoteOrder(orderedNotesRef.current, next)) return
+      if (sameNoteOrder(orderedNotesRef.current, next)) {
+        finishDrag()
+        return
+      }
 
       orderedNotesRef.current = next
-      setOrderedNotes(next)
+      flushSync(() => setOrderedNotes(next))
 
       const persisted = next.filter(note => !note.isLocal && !note.isLoading)
-      if (persisted.length === 0) return
+      if (persisted.length === 0) {
+        finishDrag()
+        return
+      }
 
       void reorderNotes(toReorderPayload(persisted))
         .then(() => queryClient.invalidateQueries({ queryKey: ['notes'] }))
@@ -183,6 +222,8 @@ export function NoteGrid({ notes, onAddNote, onTagClick }: NoteGridProps) {
           }
           void queryClient.invalidateQueries({ queryKey: ['notes'] })
         })
+
+      finishDrag()
     }
 
     grid.on('dragStart', handleDragStart)
@@ -202,6 +243,7 @@ export function NoteGrid({ notes, onAddNote, onTagClick }: NoteGridProps) {
     const grid = muuriRef.current
     const gridElement = gridRef.current
     if (!grid || !gridElement || !gridMetrics) return
+    if (isDraggingRef.current) return
 
     syncMuuriItems(grid, gridElement)
     observeMuuriItems(itemResizeObserverRef.current, gridElement)

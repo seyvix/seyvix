@@ -33,16 +33,16 @@ test('toReorderPayload stores sparse custom positions by slug', () => {
 test('calculateMasonryGridMetrics keeps multiple columns when space allows', () => {
   assert.deepEqual(calculateMasonryGridMetrics(1600, 5), {
     cols: 5,
-    itemWidth: 307,
-    contentWidth: 1567,
+    itemWidth: 300,
+    contentWidth: 1532,
   })
 })
 
 test('calculateMasonryGridMetrics collapses predictably on narrow screens', () => {
   assert.deepEqual(calculateMasonryGridMetrics(390, 5), {
     cols: 1,
-    itemWidth: 320,
-    contentWidth: 320,
+    itemWidth: 300,
+    contentWidth: 300,
   })
 })
 

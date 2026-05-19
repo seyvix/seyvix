@@ -178,6 +178,10 @@ class ContentRepository:
         objects = await self.list_all(owner_user_id=owner_user_id)
         return max((content_object.sort_order for content_object in objects), default=0)
 
+    async def get_min_sort_order(self, *, owner_user_id: str) -> int:
+        objects = await self.list_all(owner_user_id=owner_user_id)
+        return min((content_object.sort_order for content_object in objects), default=0)
+
 
 class TagRepository:
     def __init__(self, session: AsyncSession) -> None:
