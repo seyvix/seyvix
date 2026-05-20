@@ -33,16 +33,32 @@ test('toReorderPayload stores sparse custom positions by slug', () => {
 test('calculateMasonryGridMetrics keeps multiple columns when space allows', () => {
   assert.deepEqual(calculateMasonryGridMetrics(1600, 5), {
     cols: 5,
-    itemWidth: 300,
-    contentWidth: 1532,
+    itemWidth: 307,
+    contentWidth: 1567,
   })
 })
 
-test('calculateMasonryGridMetrics collapses predictably on narrow screens', () => {
+test('calculateMasonryGridMetrics grows cards when fewer columns are selected', () => {
+  assert.deepEqual(calculateMasonryGridMetrics(1600, 2), {
+    cols: 2,
+    itemWidth: 780,
+    contentWidth: 1568,
+  })
+})
+
+test('calculateMasonryGridMetrics honors dense column selections when cards remain readable', () => {
+  assert.deepEqual(calculateMasonryGridMetrics(1600, 7), {
+    cols: 7,
+    itemWidth: 217,
+    contentWidth: 1567,
+  })
+})
+
+test('calculateMasonryGridMetrics only reduces columns when cards would become too narrow', () => {
   assert.deepEqual(calculateMasonryGridMetrics(390, 5), {
-    cols: 1,
-    itemWidth: 300,
-    contentWidth: 300,
+    cols: 2,
+    itemWidth: 179,
+    contentWidth: 366,
   })
 })
 

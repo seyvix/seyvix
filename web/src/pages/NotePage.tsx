@@ -6,7 +6,9 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft,
+  CalendarDays,
   ExternalLink,
+  File,
   FileText,
   FileDown,
   Globe,
@@ -15,13 +17,19 @@ import {
   X,
   ChevronRight,
   Check,
+  Clock3,
   FolderTree,
+  Image as ImageIcon,
+  Layers3,
+  Link2,
   Mic2,
   Plus,
   Search,
   Send,
   Tag as TagIcon,
   Trash2,
+  Type,
+  Video,
 } from 'lucide-react'
 import { useNote } from '../hooks/useNote'
 import { useUpdateNote } from '../hooks/useUpdateNote'
@@ -134,6 +142,72 @@ function sourceDateLabel(source?: SourceMetadata | null): string | null {
   })
 }
 
+function formatDetailDate(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 'нет даты'
+  return date.toLocaleString('ru-RU', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function objectDomId(id: string): string {
+  return `note-object-${id.replace(/[^a-zA-Z0-9_-]/g, '-')}`
+}
+
+function noteTypeLabel(note: Note): string {
+  if (note.type === 'collection') return 'Коллекция'
+  if (note.type === 'composite') return 'Составная заметка'
+  return 'Заметка'
+}
+
+function objectKindLabel(type: NoteObject['type']): string {
+  if (type === 'text') return 'Текст'
+  if (type === 'image') return 'Изображение'
+  if (type === 'link') return 'Ссылка'
+  if (type === 'document') return 'Документ'
+  if (type === 'audio') return 'Аудио'
+  return 'Видео'
+}
+
+function objectKindIcon(type: NoteObject['type']) {
+  if (type === 'text') return <Type size={14} />
+  if (type === 'image') return <ImageIcon size={14} />
+  if (type === 'link') return <Link2 size={14} />
+  if (type === 'document') return <File size={14} />
+  if (type === 'audio') return <Mic2 size={14} />
+  return <Video size={14} />
+}
+
+function objectNavTitle(obj: NoteObject, index: number): string {
+  if (obj.type === 'text') {
+    const firstLine = obj.content.split('\n').find(line => line.trim())?.trim()
+    return firstLine ? firstLine.replace(/^#+\s*/, '').slice(0, 64) : `Текст ${index + 1}`
+  }
+  if (obj.type === 'link') {
+    try {
+      return new URL(obj.content).hostname.replace(/^www\./, '')
+    } catch {
+      return obj.content.slice(0, 64)
+    }
+  }
+  if (obj.caption?.trim()) return obj.caption.trim().slice(0, 64)
+  if (obj.filename) return obj.filename
+  return `${objectKindLabel(obj.type)} ${index + 1}`
+}
+
+function objectCountSummary(objects: NoteObject[]): Array<{ type: NoteObject['type']; count: number }> {
+  const order: NoteObject['type'][] = ['text', 'image', 'link', 'document', 'audio', 'video']
+  const counts = new Map<NoteObject['type'], number>()
+  objects.forEach(obj => counts.set(obj.type, (counts.get(obj.type) ?? 0) + 1))
+  return order
+    .map(type => ({ type, count: counts.get(type) ?? 0 }))
+    .filter(item => item.count > 0)
+}
+
 async function authDownload(url: string, filename?: string) {
   try {
     const res = await apiFetch(url)
@@ -177,6 +251,81 @@ function TagList({ tags }: { tags: Tag[] }) {
         )
       })}
     </>
+  )
+}
+
+function NoteOverview({ note, objects }: { note: Note; objects: NoteObject[] }) {
+  const source = notePrimarySource(note, objects)
+  const sourceDate = sourceDateLabel(source)
+  const counts = objectCountSummary(objects)
+
+  return (
+    <div className={styles.overviewPanel}>
+      <div className={styles.overviewHeader}>
+        <span>{noteTypeLabel(note)}</span>
+        <strong>{objects.length}</strong>
+      </div>
+
+      <div className={styles.overviewFacts}>
+        <div className={styles.overviewFact}>
+          <CalendarDays size={14} />
+          <div>
+            <span>Создано</span>
+            <strong>{formatDetailDate(note.createdAt)}</strong>
+          </div>
+        </div>
+        <div className={styles.overviewFact}>
+          <Clock3 size={14} />
+          <div>
+            <span>Изменено</span>
+            <strong>{formatDetailDate(note.updatedAt)}</strong>
+          </div>
+        </div>
+        {source && (
+          <div className={styles.overviewFact}>
+            <Send size={14} />
+            <div>
+              <span>{source.providerLabel}</span>
+              {source.url ? (
+                <a href={source.url} target="_blank" rel="noreferrer">
+                  {sourceOriginLabel(source) ?? source.url}
+                  <ExternalLink size={11} />
+                </a>
+              ) : (
+                <strong>{sourceOriginLabel(source) ?? 'Источник'}</strong>
+              )}
+              {sourceDate && <small>{sourceDate}</small>}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {counts.length > 0 && (
+        <div className={styles.objectCounts}>
+          {counts.map(item => (
+            <span key={item.type} title={objectKindLabel(item.type)}>
+              {objectKindIcon(item.type)}
+              {item.count}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {objects.length > 1 && (
+        <nav className={styles.objectNav} aria-label="Содержимое заметки">
+          <div className={styles.objectNavTitle}>
+            <Layers3 size={14} />
+            <span>Содержимое</span>
+          </div>
+          {objects.map((obj, index) => (
+            <a key={obj.id} href={`#${objectDomId(obj.id)}`}>
+              {objectKindIcon(obj.type)}
+              <span>{objectNavTitle(obj, index)}</span>
+            </a>
+          ))}
+        </nav>
+      )}
+    </div>
   )
 }
 
@@ -1359,7 +1508,11 @@ function CollectionStream({
           : null
 
         if (obj.type === 'image') return (
-          <div key={obj.id} className={`${styles.objWrapper} ${styles.objImage} ${obj.caption ? styles.objImageWithCaption : ''}`}>
+          <section
+            key={obj.id}
+            id={objectDomId(obj.id)}
+            className={`${styles.objectSection} ${styles.objWrapper} ${styles.objImage} ${obj.caption ? styles.objImageWithCaption : ''}`}
+          >
             <AuthImage
               src={obj.content}
               alt=""
@@ -1370,11 +1523,11 @@ function CollectionStream({
             {obj.caption && <MarkdownText className={styles.objImageCaption} text={obj.caption} source={obj.source} />}
             {hint}
             {removeBtn}
-          </div>
+          </section>
         )
 
         if (obj.type === 'document') return (
-          <div key={obj.id} className={styles.objWrapper}>
+          <section key={obj.id} id={objectDomId(obj.id)} className={`${styles.objectSection} ${styles.objWrapper}`}>
             <DocViewer
               obj={obj}
               noteId={obj.id}
@@ -1384,11 +1537,11 @@ function CollectionStream({
               onDelete={() => onRemove(obj.id, obj.slug)}
             />
             {hint}
-          </div>
+          </section>
         )
 
         if (obj.type === 'link') return (
-          <div key={obj.id} className={styles.objWrapper}>
+          <section key={obj.id} id={objectDomId(obj.id)} className={`${styles.objectSection} ${styles.objWrapper}`}>
             <LinkObj
               obj={obj}
               noteId={obj.id}
@@ -1398,20 +1551,20 @@ function CollectionStream({
               onDelete={() => onRemove(obj.id, obj.slug)}
             />
             {hint}
-          </div>
+          </section>
         )
 
         if (obj.type === 'text') return (
-          <div key={obj.id} className={styles.objWrapper}>
+          <section key={obj.id} id={objectDomId(obj.id)} className={`${styles.objectSection} ${styles.objWrapper}`}>
             <ObjectSource source={obj.source} />
             <MarkdownText className={styles.objText} text={obj.content} source={obj.source} />
             {hint}
             {removeBtn}
-          </div>
+          </section>
         )
 
         if (obj.type === 'audio' || obj.type === 'video') return (
-          <div key={obj.id} className={styles.objWrapper}>
+          <section key={obj.id} id={objectDomId(obj.id)} className={`${styles.objectSection} ${styles.objWrapper}`}>
             <MediaObj
               obj={obj}
               noteId={obj.id}
@@ -1422,7 +1575,7 @@ function CollectionStream({
               showExtraction={false}
             />
             {hint}
-          </div>
+          </section>
         )
 
         return null
@@ -1525,9 +1678,7 @@ export default function NotePage() {
   const telegramDetailModel = !isEditing
     ? getTelegramCardModel({ ...note, objects: visibleObjects })
     : null
-  const formattedDate  = new Date(note.updatedAt).toLocaleDateString('ru-RU', {
-    day: 'numeric', month: 'long', year: 'numeric',
-  })
+  const formattedDate = formatDetailDate(note.createdAt)
 
   return (
     <div className={styles.page}>
@@ -1576,99 +1727,117 @@ export default function NotePage() {
 
       {/* Content */}
       <div className={styles.content}>
-        {/* Meta */}
-        <div className={styles.meta}>
-          {isEditing
-            ? <input
-                autoFocus
-                className={styles.titleInput}
-                value={editTitle}
-                onChange={e => setEditTitle(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') saveEdit() }}
-              />
-            : <h1 className={styles.title}>{note.title}</h1>
-          }
-          <div className={styles.metaRow}>
-            <TagList tags={note.tags} />
-            <span className={styles.date}>{formattedDate}</span>
-            {note.type === 'collection' && (
-              <span className={styles.countBadge}>{visibleObjects.length} элементов</span>
+        <div className={styles.detailLayout}>
+          <main className={styles.detailMain}>
+            <div className={styles.meta}>
+              <div className={styles.metaKicker}>
+                <span>{noteTypeLabel(note)}</span>
+                <span>{formattedDate}</span>
+              </div>
+              {isEditing
+                ? <input
+                    autoFocus
+                    className={styles.titleInput}
+                    value={editTitle}
+                    onChange={e => setEditTitle(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') saveEdit() }}
+                  />
+                : <h1 className={styles.title}>{note.title}</h1>
+              }
+              <div className={styles.metaRow}>
+                <TagList tags={note.tags} />
+                {note.taxonomyCategory && (
+                  <span className={styles.countBadge}>{note.taxonomyCategory.path}</span>
+                )}
+                {note.type === 'collection' && (
+                  <span className={styles.countBadge}>{visibleObjects.length} элементов</span>
+                )}
+              </div>
+            </div>
+
+            {telegramDetailModel && (
+              <TelegramDetailPost note={note} objects={visibleObjects} model={telegramDetailModel} />
             )}
-          </div>
+
+            {!telegramDetailModel && note.type === 'collection' && (
+              <CollectionStream
+                objects={visibleObjects}
+                isEditing={isEditing}
+                openViewerId={openViewerId}
+                onOpenViewer={setOpenViewerId}
+                onRemove={(id, slug) => {
+                  setDeletedObjs(p => new Set([...p, id]))
+                  if (slug) setRemovedSlugs(p => new Set([...p, slug]))
+                }}
+              />
+            )}
+
+            {!telegramDetailModel && note.type !== 'collection' && (
+              <div className={styles.stream}>
+                {visibleObjects.map(obj => {
+                  if (obj.type === 'image') return (
+                    <section key={obj.id} id={objectDomId(obj.id)} className={styles.objectSection}>
+                      <ImageObj
+                        obj={obj} noteId={note.id} isEditing={isEditing}
+                        isOpen={openViewerId === obj.id}
+                        onOpen={() => setOpenViewerId(obj.id)}
+                        onDelete={() => setDeletedObjs(p => new Set([...p, obj.id]))}
+                      />
+                    </section>
+                  )
+                  if (obj.type === 'link') return (
+                    <section key={obj.id} id={objectDomId(obj.id)} className={styles.objectSection}>
+                      <LinkObj
+                        obj={obj} noteId={note.id} isEditing={isEditing}
+                        isOpen={openViewerId === obj.id}
+                        onOpen={() => setOpenViewerId(obj.id)}
+                        onDelete={() => setDeletedObjs(p => new Set([...p, obj.id]))}
+                      />
+                    </section>
+                  )
+                  if (obj.type === 'document') return (
+                    <section key={obj.id} id={objectDomId(obj.id)} className={styles.objectSection}>
+                      <DocViewer
+                        obj={obj}
+                        noteId={note.id}
+                        isEditing={isEditing}
+                        isOpen={openViewerId === obj.id}
+                        onOpen={() => setOpenViewerId(obj.id)}
+                        onDelete={() => setDeletedObjs(p => new Set([...p, obj.id]))}
+                      />
+                    </section>
+                  )
+                  if (obj.type === 'text') return (
+                    <section key={obj.id} id={objectDomId(obj.id)} className={styles.objectSection}>
+                      <TextObj
+                        obj={obj} isEditing={isEditing}
+                        editValue={editTexts[obj.id] ?? obj.content}
+                        onChangeEdit={v => setEditTexts(p => ({ ...p, [obj.id]: v }))}
+                        onDelete={() => setDeletedObjs(p => new Set([...p, obj.id]))}
+                      />
+                    </section>
+                  )
+                  if (obj.type === 'audio' || obj.type === 'video') return (
+                    <section key={obj.id} id={objectDomId(obj.id)} className={styles.objectSection}>
+                      <MediaObj
+                        obj={obj} noteId={note.id} isEditing={isEditing}
+                        isOpen={openViewerId === obj.id}
+                        onOpen={() => setOpenViewerId(obj.id)}
+                        onDelete={() => setDeletedObjs(p => new Set([...p, obj.id]))}
+                      />
+                    </section>
+                  )
+                  return null
+                })}
+              </div>
+            )}
+          </main>
+
+          <aside className={styles.detailSidebar}>
+            <NoteOverview note={note} objects={visibleObjects} />
+            <EnrichmentPanel note={note} />
+          </aside>
         </div>
-
-        <EnrichmentPanel note={note} />
-
-        {telegramDetailModel && (
-          <TelegramDetailPost note={note} objects={visibleObjects} model={telegramDetailModel} />
-        )}
-
-        {/* Collection → article stream */}
-        {!telegramDetailModel && note.type === 'collection' && (
-          <CollectionStream
-            objects={visibleObjects}
-            isEditing={isEditing}
-            openViewerId={openViewerId}
-            onOpenViewer={setOpenViewerId}
-            onRemove={(id, slug) => {
-              setDeletedObjs(p => new Set([...p, id]))
-              if (slug) setRemovedSlugs(p => new Set([...p, slug]))
-            }}
-          />
-        )}
-
-        {/* Simple / Composite → stream */}
-        {!telegramDetailModel && note.type !== 'collection' && (
-          <div className={styles.stream}>
-            {visibleObjects.map(obj => {
-              if (obj.type === 'image') return (
-                <ImageObj
-                  key={obj.id} obj={obj} noteId={note.id} isEditing={isEditing}
-                  isOpen={openViewerId === obj.id}
-                  onOpen={() => setOpenViewerId(obj.id)}
-                  onDelete={() => setDeletedObjs(p => new Set([...p, obj.id]))}
-                />
-              )
-              if (obj.type === 'link') return (
-                <LinkObj
-                  key={obj.id} obj={obj} noteId={note.id} isEditing={isEditing}
-                  isOpen={openViewerId === obj.id}
-                  onOpen={() => setOpenViewerId(obj.id)}
-                  onDelete={() => setDeletedObjs(p => new Set([...p, obj.id]))}
-                />
-              )
-              if (obj.type === 'document') return (
-                <DocViewer
-                  key={obj.id}
-                  obj={obj}
-                  noteId={note.id}
-                  isEditing={isEditing}
-                  isOpen={openViewerId === obj.id}
-                  onOpen={() => setOpenViewerId(obj.id)}
-                  onDelete={() => setDeletedObjs(p => new Set([...p, obj.id]))}
-                />
-              )
-              if (obj.type === 'text') return (
-                <TextObj
-                  key={obj.id} obj={obj} isEditing={isEditing}
-                  editValue={editTexts[obj.id] ?? obj.content}
-                  onChangeEdit={v => setEditTexts(p => ({ ...p, [obj.id]: v }))}
-                  onDelete={() => setDeletedObjs(p => new Set([...p, obj.id]))}
-                />
-              )
-              if (obj.type === 'audio' || obj.type === 'video') return (
-                <MediaObj
-                  key={obj.id} obj={obj} noteId={note.id} isEditing={isEditing}
-                  isOpen={openViewerId === obj.id}
-                  onOpen={() => setOpenViewerId(obj.id)}
-                  onDelete={() => setDeletedObjs(p => new Set([...p, obj.id]))}
-                />
-              )
-              return null
-            })}
-          </div>
-        )}
-
       </div>
     </div>
   )

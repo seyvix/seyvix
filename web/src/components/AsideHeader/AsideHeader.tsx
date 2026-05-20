@@ -143,7 +143,7 @@ export default function AsideHeader() {
             <div className={styles.settingsRow}>
               <span className={styles.settingsLabel}>Колонки</span>
               <div className={styles.colsPicker}>
-                {[3, 4, 5, 6, 7].map(n => (
+                {[1, 2, 3, 4, 5, 6, 7].map(n => (
                   <button
                     key={n}
                     className={[styles.colsBtn, cols === n ? styles.colsBtnActive : ''].filter(Boolean).join(' ')}
