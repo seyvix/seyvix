@@ -8,6 +8,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
 
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.contracts.events import EventEnvelope, SnapshotTextRepresentationCompletedPayload
 from app.core.config import get_settings
 from app.core.logging import get_logger
@@ -26,10 +29,9 @@ from app.modules.snapshots.models import SnapshotArtifact, SnapshotJob
 from app.modules.snapshots.service import SnapshotService
 from app.platform.events.idempotency import EventAlreadyProcessedError, ProcessedEventStore
 from app.platform.events.outbox import EventOutboxRepository
+from app.platform.storage.factory import build_storage_backend
 from app.platform.storage.repositories import StorageObjectRepository
-from app.platform.storage.service import LocalVolumeStorage, StorageBackend, StorageKeyBuilder
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from app.platform.storage.service import StorageBackend, StorageKeyBuilder
 
 logger = get_logger(__name__)
 
@@ -57,9 +59,9 @@ class SnapshotWorker:
     ) -> None:
         self.session = session
         self.storage_root = storage_root or Path("data/content")
-        self.storage_backend = storage_backend or LocalVolumeStorage(
-            root=self.storage_root,
-            bucket=get_settings().s3_bucket,
+        self.storage_backend = storage_backend or build_storage_backend(
+            get_settings(),
+            local_root=self.storage_root,
         )
         self.jobs = SnapshotJobRepository(session)
         self.artifacts = SnapshotArtifactRepository(session)

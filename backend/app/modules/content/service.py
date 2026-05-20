@@ -56,6 +56,7 @@ from app.modules.tags.service import TagsService
 from app.modules.taxonomy.models import TaxonomyCategory, TaxonomyContentAssignment
 from app.modules.taxonomy.service import TaxonomyService
 from app.platform.events.outbox import EventOutboxRepository
+from app.platform.storage.factory import build_storage_backend
 from app.platform.storage.repositories import StorageObjectRepository
 from app.platform.storage.service import StorageBackend, StoredObject
 
@@ -135,7 +136,12 @@ class ContentService:
         self.tag_service = TagsService(session)
         self.taxonomy = TaxonomyService(session)
         self.file_uploads = FileUploadRepository(session)
-        self.storage = ContentStorage(storage_root or Path("data/content"), backend=storage_backend)
+        storage_root = storage_root or Path("data/content")
+        storage_backend = storage_backend or build_storage_backend(
+            get_settings(),
+            local_root=storage_root,
+        )
+        self.storage = ContentStorage(storage_root, backend=storage_backend)
         self.storage_objects = StorageObjectRepository(session)
         self.outbox = EventOutboxRepository(session)
         self.snapshots = SnapshotService(session, self.storage.root, self.storage.backend)

@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.modules.content.models import ContentAsset, ContentObject
@@ -28,8 +30,8 @@ from app.modules.snapshots.schemas import (
     SnapshotSettingsResponse,
     UpdateSnapshotSettingsRequest,
 )
-from app.platform.storage.service import LocalVolumeStorage, StorageBackend
-from sqlalchemy.ext.asyncio import AsyncSession
+from app.platform.storage.factory import build_storage_backend
+from app.platform.storage.service import StorageBackend
 
 logger = get_logger(__name__)
 
@@ -159,9 +161,9 @@ class SnapshotService:
     ) -> None:
         self.session = session
         self.storage_root = storage_root or Path("data/content")
-        self.storage_backend = storage_backend or LocalVolumeStorage(
-            root=self.storage_root,
-            bucket=get_settings().s3_bucket,
+        self.storage_backend = storage_backend or build_storage_backend(
+            get_settings(),
+            local_root=self.storage_root,
         )
         self.settings = SnapshotSettingsRepository(session)
         self.jobs = SnapshotJobRepository(session)

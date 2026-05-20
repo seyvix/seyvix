@@ -8,6 +8,9 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
+
 from app.contracts.events import (
     ContentObjectChangedPayload,
     ContentTagsCompletedPayload,
@@ -15,6 +18,7 @@ from app.contracts.events import (
     SnapshotRequestedPayload,
     SnapshotTextRepresentationCompletedPayload,
 )
+from app.core.config import get_settings
 from app.core.database import Base, build_session_factory
 from app.modules.auth.models import User
 from app.modules.content.models import ContentAsset, ContentObject
@@ -24,6 +28,7 @@ from app.modules.snapshots.infrastructure.repositories import (
     SnapshotSettingsRepository,
 )
 from app.modules.snapshots.models import SnapshotArtifact, SnapshotJob, SnapshotUserSettings
+from app.modules.snapshots.service import SnapshotService
 from app.modules.snapshots.worker import SnapshotWorker
 from app.modules.tags.models import TaggingJob
 from app.modules.tags.worker import TagsEventConsumer
@@ -37,9 +42,12 @@ from app.platform.events.models import EventOutbox
 from app.platform.events.outbox import EventOutboxRepository
 from app.platform.storage.models import StorageObject
 from app.platform.storage.repositories import StorageObjectRepository
-from app.platform.storage.service import LocalVolumeStorage, StorageKeyBuilder, StoredObject
-from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
+from app.platform.storage.service import (
+    LocalVolumeStorage,
+    S3CompatibleStorage,
+    StorageKeyBuilder,
+    StoredObject,
+)
 
 
 async def _prepare_database(database_url: str) -> async_sessionmaker:
@@ -191,6 +199,24 @@ def test_local_storage_backend_returns_s3_style_storage_reference(tmp_path: Path
     assert stored.size_bytes == 5
     assert stored.checksum.startswith("sha256:")
     assert storage.get_bytes(stored.storage_key) == b"hello"
+
+
+def test_content_and_snapshot_services_default_to_configured_storage_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("STORAGE_BACKEND", "s3")
+    monkeypatch.setenv("S3_ENDPOINT_URL", "http://minio:9000")
+    get_settings.cache_clear()
+    try:
+        session = object()
+        content_service = ContentService(session)  # type: ignore[arg-type]
+        snapshot_service = SnapshotService(session)  # type: ignore[arg-type]
+
+        assert isinstance(content_service.storage.backend, S3CompatibleStorage)
+        assert isinstance(content_service.snapshots.storage_backend, S3CompatibleStorage)
+        assert isinstance(snapshot_service.storage_backend, S3CompatibleStorage)
+    finally:
+        get_settings.cache_clear()
 
 
 def test_storage_object_repository_upserts_existing_storage_key() -> None:

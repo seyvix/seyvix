@@ -105,7 +105,7 @@ class Settings(BaseSettings):
     snapshot_extraction_timeout_seconds: int = 120
     snapshot_extraction_max_pdf_pages: int = 100
     snapshot_extraction_max_media_seconds: int = 1800
-    vector_embedding_provider: Literal["fake", "http", "ollama"] = "fake"
+    vector_embedding_provider: Literal["fake", "http", "ollama", "yandex"] = "fake"
     vector_embedding_base_url: str | None = None
     vector_embedding_api_key: str | None = None
     vector_embedding_model: str = "fake-embedding"
