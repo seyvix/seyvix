@@ -3,7 +3,6 @@ from __future__ import annotations
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-
 from telegram_bot.application.use_cases import BotUseCases
 from telegram_bot.presentation.telegram.factory import build_dispatcher
 

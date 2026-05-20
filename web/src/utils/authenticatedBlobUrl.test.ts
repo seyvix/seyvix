@@ -29,4 +29,3 @@ test('protected media assets are fetched with auth and cached as object URLs', a
   assert.equal(calls[0].url, '/api/v1/notes/note/asset/audio')
   assert.equal(calls[0].headers.get('Authorization'), 'Bearer access-token')
 })
-

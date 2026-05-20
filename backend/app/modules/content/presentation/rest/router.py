@@ -329,7 +329,9 @@ async def get_note(
     service: Annotated[ContentService, Depends(get_content_service)],
 ) -> AppNote:
     try:
-        return note_card_to_app_note(await service.get_note(owner_user_id=context.user.id, slug=note_slug))
+        return note_card_to_app_note(
+            await service.get_note(owner_user_id=context.user.id, slug=note_slug)
+        )
     except NoteNotFoundError as exc:
         raise _not_found(exc) from exc
 
@@ -350,7 +352,9 @@ async def restore_note(
     service: Annotated[ContentService, Depends(get_content_service)],
 ) -> AppNote:
     try:
-        return note_card_to_app_note(await service.restore_note(owner_user_id=context.user.id, slug=note_slug))
+        return note_card_to_app_note(
+            await service.restore_note(owner_user_id=context.user.id, slug=note_slug)
+        )
     except NoteNotFoundError as exc:
         raise _not_found(exc) from exc
 

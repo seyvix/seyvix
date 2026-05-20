@@ -2,14 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from faststream.rabbit import RabbitBroker
-
 from app.core.config import Settings
 from app.platform.events.topology import (
     RabbitTopology,
     build_rabbit_topology,
     declare_rabbit_topology,
 )
+from faststream.rabbit import RabbitBroker
 
 
 @dataclass(frozen=True, slots=True)

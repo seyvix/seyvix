@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from sqlalchemy.dialects.postgresql import insert as postgresql_insert
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.platform.storage.models import StorageObject
 from app.platform.storage.service import StoredObject
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class StorageObjectRepository:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 import json
+from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 from tests.test_content import TELEGRAM_BOT_TOKEN, _auth_headers

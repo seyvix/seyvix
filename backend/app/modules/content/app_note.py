@@ -5,8 +5,6 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
-
 from app.modules.content.schemas import (
     FileUploadResponse,
     FolderResponse,
@@ -16,6 +14,7 @@ from app.modules.content.schemas import (
     TagResponse,
     UploadedFileResponse,
 )
+from pydantic import BaseModel, ConfigDict, Field
 
 NoteObjectType = Literal["text", "image", "link", "document", "audio", "video"]
 NoteAppKind = Literal["simple", "composite", "collection"]

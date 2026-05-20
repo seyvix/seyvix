@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 
 from aiogram import Dispatcher, Router
-
 from telegram_bot.application.use_cases import BotUseCases
 from telegram_bot.domain.models import InboundMaterial, MaterialType
 from telegram_bot.presentation.telegram.factory import build_dispatcher

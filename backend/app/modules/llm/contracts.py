@@ -4,10 +4,9 @@ import json
 from typing import Any, Protocol
 
 import httpx
-from pydantic import BaseModel, Field
-
 from app.core.config import get_settings
 from app.shared.module_definitions import ModuleDefinition
+from pydantic import BaseModel, Field
 
 MODULE = ModuleDefinition(
     name="llm",

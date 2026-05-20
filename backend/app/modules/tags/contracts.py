@@ -4,9 +4,8 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, Field
-
 from app.shared.module_definitions import ModuleDefinition
+from pydantic import BaseModel, Field
 
 MODULE = ModuleDefinition(
     name="tags",

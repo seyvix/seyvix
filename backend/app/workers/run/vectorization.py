@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import asyncio
 
-from faststream import FastStream
-
 from app.contracts.events import EventEnvelope
 from app.core.logging import get_logger
 from app.modules.vectorization.worker import VectorizationEventConsumer, VectorizationWorker
 from app.workers.polling import poll_worker_forever
 from app.workers.rabbit import build_worker_rabbit, declare_worker_rabbit_topology
 from app.workers.runtime import build_worker_runtime
+from faststream import FastStream
 
 logger = get_logger(__name__)
 

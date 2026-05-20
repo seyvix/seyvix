@@ -231,9 +231,7 @@ def extract_image(
     ocr_text, ocr_warning = _safe_ocr_text(ocr_provider, source_path)
     description, description_warning = _safe_image_description(vision_provider, source_path)
     blocks: list[str] = []
-    warnings = [
-        warning for warning in (ocr_warning, description_warning) if warning is not None
-    ]
+    warnings = [warning for warning in (ocr_warning, description_warning) if warning is not None]
     methods: list[str] = []
 
     if description:
@@ -250,8 +248,7 @@ def extract_image(
             plain_text="",
             source_kind="image",
             method="vision+ocr",
-            warnings=warnings
-            or ["Vision/OCR providers are disabled or returned no text."],
+            warnings=warnings or ["Vision/OCR providers are disabled or returned no text."],
             quality=0.0,
         )
     return ExtractionResult(
@@ -282,9 +279,7 @@ def extract_media(
             max_seconds=max_description_seconds,
         )
     blocks: list[str] = []
-    warnings = [
-        warning for warning in (stt_warning, description_warning) if warning is not None
-    ]
+    warnings = [warning for warning in (stt_warning, description_warning) if warning is not None]
     methods: list[str] = []
 
     if description:
@@ -303,9 +298,11 @@ def extract_media(
             method="vision+stt" if source_kind == "video" else "stt",
             warnings=warnings
             or [
-                "Vision/speech-to-text providers are disabled or returned no text."
-                if source_kind == "video"
-                else "Speech-to-text provider is disabled or returned no text."
+                (
+                    "Vision/speech-to-text providers are disabled or returned no text."
+                    if source_kind == "video"
+                    else "Speech-to-text provider is disabled or returned no text."
+                )
             ],
             quality=0.0,
         )
@@ -341,9 +338,7 @@ def _safe_stt_text(provider: SttProvider, media_path: Path) -> tuple[str, str | 
         return "", f"Speech-to-text provider failed: {exc}"
 
 
-def _safe_image_description(
-    provider: VisionProvider, image_path: Path
-) -> tuple[str, str | None]:
+def _safe_image_description(provider: VisionProvider, image_path: Path) -> tuple[str, str | None]:
     try:
         return normalize_blank_lines(provider.describe_image(image_path) or ""), None
     except Exception as exc:  # noqa: BLE001

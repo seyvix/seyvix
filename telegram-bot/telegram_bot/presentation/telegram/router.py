@@ -9,9 +9,8 @@ import httpx
 from aiogram import Bot, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.types import Message, Sticker
-
-from telegram_bot.domain.models import InboundMaterial
 from telegram_bot.application.use_cases import BotUseCases
+from telegram_bot.domain.models import InboundMaterial
 from telegram_bot.presentation.telegram.keyboards import web_app_keyboard
 from telegram_bot.presentation.telegram.media_group_buffer import MediaGroupBuffer
 from telegram_bot.presentation.telegram.message_mapper import material_from_message

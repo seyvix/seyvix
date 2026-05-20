@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
 from app.modules.taxonomy.service import TaxonomyService
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = get_logger(__name__)
 

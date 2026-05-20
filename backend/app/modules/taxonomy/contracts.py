@@ -3,9 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel
-
 from app.shared.module_definitions import ModuleDefinition
+from pydantic import BaseModel
 
 MODULE = ModuleDefinition(
     name="taxonomy",

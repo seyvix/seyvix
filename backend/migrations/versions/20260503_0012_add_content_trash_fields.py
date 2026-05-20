@@ -17,8 +17,12 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("content_objects", sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True))
-    op.add_column("content_objects", sa.Column("delete_after", sa.DateTime(timezone=True), nullable=True))
+    op.add_column(
+        "content_objects", sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True)
+    )
+    op.add_column(
+        "content_objects", sa.Column("delete_after", sa.DateTime(timezone=True), nullable=True)
+    )
     op.create_index(
         op.f("ix_content_objects_deleted_at"),
         "content_objects",

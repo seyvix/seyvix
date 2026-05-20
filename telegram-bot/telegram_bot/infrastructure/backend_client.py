@@ -4,7 +4,6 @@ import json
 from datetime import UTC, datetime
 
 import httpx
-
 from telegram_bot.domain.models import InboundMaterial
 
 

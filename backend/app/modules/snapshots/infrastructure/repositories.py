@@ -3,13 +3,12 @@ from __future__ import annotations
 from typing import cast
 from uuid import uuid4
 
+from app.modules.content.models import ContentAsset, ContentObject
+from app.modules.snapshots.models import SnapshotArtifact, SnapshotJob, SnapshotUserSettings
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-
-from app.modules.content.models import ContentAsset, ContentObject
-from app.modules.snapshots.models import SnapshotArtifact, SnapshotJob, SnapshotUserSettings
 
 
 class SnapshotSettingsRepository:

@@ -3,8 +3,6 @@ from typing import cast
 
 import httpx
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.core.config import Settings
 from app.modules.llm.contracts import (
     HttpStructuredLLMGenerator,
@@ -15,6 +13,7 @@ from app.modules.llm.contracts import (
 )
 from app.modules.tags.service import TagsService
 from app.modules.taxonomy.service import TaxonomyService
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @pytest.mark.asyncio

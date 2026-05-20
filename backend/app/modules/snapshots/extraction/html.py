@@ -6,15 +6,14 @@ from html import unescape
 from typing import Any
 from urllib.parse import urljoin
 
-from bs4 import BeautifulSoup
-from bs4.element import NavigableString, Tag
-
 from app.modules.snapshots.extraction.core import (
     ExtractionResult,
     ExtractionSection,
     normalize_blank_lines,
     plain_text_from_markdown,
 )
+from bs4 import BeautifulSoup
+from bs4.element import NavigableString, Tag
 
 BOILERPLATE_PATTERN = re.compile(
     r"(?:^|[-_\s])("
