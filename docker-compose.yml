@@ -14,6 +14,8 @@ x-backend-env: &backend-env
     RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
     STORAGE_BACKEND: s3
     S3_ENDPOINT_URL: http://minio:9000
+    SEARCH_ENGINE: meilisearch
+    SEARCH_MEILISEARCH_URL: http://meilisearch:7700
 
 x-backend-depends: &backend-depends
   postgres:
@@ -26,6 +28,8 @@ x-backend-depends: &backend-depends
     condition: service_healthy
   minio-init:
     condition: service_completed_successfully
+  meilisearch:
+    condition: service_healthy
 
 x-telegram-bot-env: &telegram-bot-env
   env_file:
@@ -112,6 +116,8 @@ services:
       postgres:
         condition: service_healthy
       rabbitmq:
+        condition: service_healthy
+      meilisearch:
         condition: service_healthy
     command: python -m app.workers.run.vectorization
 
@@ -216,8 +222,22 @@ services:
       mc mb --ignore-existing local/$${S3_BUCKET};
       "
 
+  meilisearch:
+    image: getmeili/meilisearch:v1.15
+    restart: unless-stopped
+    environment:
+      MEILI_ENV: development
+    volumes:
+      - meilisearch_data:/meili_data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:7700/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
 volumes:
   postgres_data:
   redis_data:
   rabbitmq_data:
   minio_data:
+  meilisearch_data:

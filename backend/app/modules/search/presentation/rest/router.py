@@ -10,6 +10,7 @@ from app.api.errors import AppError
 from app.api.schemas import ErrorResponse
 from app.modules.auth.presentation.rest.router import get_auth_context
 from app.modules.auth.service import AuthContext
+from app.modules.search.infrastructure.meilisearch import MeilisearchUnavailableError
 from app.modules.search.schemas import (
     HybridSearchRequest,
     HybridSearchResponse,
@@ -58,7 +59,7 @@ async def semantic_search(
             code="validation_error",
             message="Search query must not be empty.",
         ) from exc
-    except ValueError as exc:
+    except (ValueError, MeilisearchUnavailableError) as exc:
         raise AppError(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             code="semantic_search_unavailable",
@@ -92,6 +93,7 @@ async def hybrid_search(
             source_id=payload.source_id,
             filters=payload.filters,
             expand_query=payload.expand_query,
+            mode=payload.mode,
         )
     except SearchValidationError as exc:
         raise AppError(
@@ -99,7 +101,7 @@ async def hybrid_search(
             code="validation_error",
             message="Search query must not be empty.",
         ) from exc
-    except ValueError as exc:
+    except (ValueError, MeilisearchUnavailableError) as exc:
         raise AppError(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             code="hybrid_search_unavailable",

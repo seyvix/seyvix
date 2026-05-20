@@ -50,6 +50,7 @@ from app.modules.content.schemas import (
     UploadedFileResponse,
 )
 from app.modules.content.storage import ContentStorage, StoredFile, slugify
+from app.modules.search.schemas import SearchContentMatch
 from app.modules.snapshots.service import SnapshotArtifactReference, SnapshotService
 from app.modules.tags.models import Tag
 from app.modules.tags.service import TagsService
@@ -329,12 +330,19 @@ class ContentService:
         *,
         owner_user_id: str,
         search: str | None,
+        search_result_ids: list[str] | None = None,
+        search_matches_by_object_id: dict[str, list[SearchContentMatch]] | None = None,
         tag_slugs: list[str],
         folder_path: str | None,
         sort: str,
     ) -> NoteListResponse:
         objects = await self.content.list_all(owner_user_id=owner_user_id)
         normalized_search = search.casefold().strip() if search else None
+        search_rank = (
+            {content_object_id: index for index, content_object_id in enumerate(search_result_ids)}
+            if search_result_ids is not None
+            else None
+        )
         normalized_tags = {slugify(tag) for tag in tag_slugs}
         assignment_by_object_id = await self._current_assignment_map(owner_user_id)
         tags_by_object_id = await self.tag_service.list_active_tags_for_contents(
@@ -344,6 +352,8 @@ class ContentService:
         items: list[ContentObject] = []
 
         for content_object in objects:
+            if search_rank is not None and content_object.id not in search_rank:
+                continue
             assignment = assignment_by_object_id.get(content_object.id)
             if folder_path and (
                 assignment is None
@@ -357,18 +367,24 @@ class ContentService:
                 {tag.slug for tag in tags_by_object_id.get(content_object.id, [])},
             ):
                 continue
-            if normalized_search:
+            if normalized_search and search_rank is None:
                 if content_object.kind == "collection":
                     continue
                 if not self._matches_search(content_object, normalized_search):
                     continue
                 items.append(content_object)
                 continue
-            if content_object.kind != "collection" and content_object.collection_memberships:
+            if (
+                search_rank is None
+                and content_object.kind != "collection"
+                and content_object.collection_memberships
+            ):
                 continue
             items.append(content_object)
 
-        if sort == "custom":
+        if search_rank is not None:
+            items.sort(key=lambda item: search_rank[item.id])
+        elif sort == "custom":
             items.sort(key=lambda item: (item.sort_order, item.created_at))
         elif folder_path:
             items.sort(
@@ -382,7 +398,15 @@ class ContentService:
 
         return NoteListResponse(
             items=[
-                await self._to_card(item, active_tags=tags_by_object_id.get(item.id, []))
+                await self._to_card(
+                    item,
+                    active_tags=tags_by_object_id.get(item.id, []),
+                    search_matches=(
+                        search_matches_by_object_id.get(item.id, [])
+                        if search_matches_by_object_id is not None
+                        else None
+                    ),
+                )
                 for item in items
             ]
         )
@@ -538,6 +562,45 @@ class ContentService:
                 "source_original_created_at": (
                     object_source.original_created_at.isoformat()
                     if object_source and object_source.original_created_at
+                    else None
+                ),
+                "source_kind": (
+                    str(object_source.origin.get("type"))
+                    if object_source and isinstance(object_source.origin, dict)
+                    else None
+                ),
+                "source_title": (
+                    str(
+                        object_source.title
+                        or (object_source.origin or {}).get("title")
+                        or (object_source.origin or {}).get("name")
+                        or (object_source.origin or {}).get("username")
+                    )
+                    if object_source
+                    and (
+                        object_source.title
+                        or (object_source.origin or {}).get("title")
+                        or (object_source.origin or {}).get("name")
+                        or (object_source.origin or {}).get("username")
+                    )
+                    else None
+                ),
+                "telegram_chat_id": (
+                    object_source.external_id.split(":", 1)[0]
+                    if object_source and object_source.provider == "telegram"
+                    else None
+                ),
+                "telegram_chat_type": (
+                    self._telegram_chat_type(object_source.origin)
+                    if object_source and object_source.provider == "telegram"
+                    else None
+                ),
+                "telegram_author_id": (
+                    str(object_source.author.get("id"))
+                    if object_source
+                    and object_source.provider == "telegram"
+                    and isinstance(object_source.author, dict)
+                    and object_source.author.get("id") is not None
                     else None
                 ),
             },
@@ -1850,6 +1913,7 @@ class ContentService:
         content_object: ContentObject,
         *,
         active_tags: list[Tag] | None = None,
+        search_matches: list[SearchContentMatch] | None = None,
     ) -> NoteCardResponse:
         collection_parent = None
         if content_object.collection_memberships:
@@ -1967,6 +2031,7 @@ class ContentService:
             download_url=f"{self.api_prefix}/notes/{content_object.slug}/download",
             collection=collection_parent,
             source=object_source,
+            search_matches=search_matches or [],
             assets=asset_responses,
             items=items,
         )
@@ -2083,6 +2148,19 @@ class ContentService:
             *(asset.text_content or "" for asset in content_object.assets),
         ]
         return any(search in value.casefold() for value in haystack)
+
+    @staticmethod
+    def _telegram_chat_type(origin: dict[str, Any] | None) -> str | None:
+        if not isinstance(origin, dict):
+            return None
+        origin_type = origin.get("type")
+        if origin_type == "user":
+            return "private"
+        if origin_type == "chat":
+            return "group"
+        if origin_type == "channel":
+            return "channel"
+        return str(origin_type) if origin_type else None
 
     async def _classification_text_excerpt(
         self,

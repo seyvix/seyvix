@@ -5,6 +5,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from app.modules.search.schemas import SearchContentMatch
+
 ContentKind = Literal["simple", "complex", "collection"]
 ContentMediaType = Literal["text", "image", "audio", "video", "link", "document"]
 SnapshotViewKind = Literal["webpage_html", "pdf", "markdown"]
@@ -106,6 +108,7 @@ class NoteCardResponse(BaseModel):
     download_url: str
     collection: CollectionParentResponse | None = None
     source: SourceMetadataResponse | None = None
+    search_matches: list[SearchContentMatch] = Field(default_factory=list)
     assets: list[NoteAssetResponse] = Field(default_factory=list)
     items: list[NoteCardResponse] = Field(default_factory=list)
 

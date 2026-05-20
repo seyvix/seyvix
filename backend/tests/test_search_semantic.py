@@ -12,7 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings
 from app.core.database import build_session_factory
 from app.modules.content.service import ContentService
-from app.modules.search.service import SemanticSearchService
+from app.modules.search.infrastructure.meilisearch import (
+    MeilisearchSearchBackend,
+    build_meilisearch_filter_expression,
+)
+from app.modules.search.schemas import HybridSearchResult, SearchFilters
+from app.modules.search.service import SemanticSearchService, build_search_matches_by_source_id
 from app.modules.vectorization.contracts import (
     VectorizedChunkFullTextSearchResult,
     VectorizedChunkSearchResult,
@@ -39,19 +44,13 @@ def _telegram_payload(telegram_id: int = 100500) -> dict[str, object]:
 
 
 def _auth_headers(client: TestClient, telegram_id: int = 100500) -> dict[str, str]:
-    response = client.post(
-        "/api/v1/auth/telegram-login", json=_telegram_payload(telegram_id)
-    )
+    response = client.post("/api/v1/auth/telegram-login", json=_telegram_payload(telegram_id))
     assert response.status_code == 200, response.text
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
-def _auth_session(
-    client: TestClient, telegram_id: int = 100500
-) -> tuple[dict[str, str], str]:
-    response = client.post(
-        "/api/v1/auth/telegram-login", json=_telegram_payload(telegram_id)
-    )
+def _auth_session(client: TestClient, telegram_id: int = 100500) -> tuple[dict[str, str], str]:
+    response = client.post("/api/v1/auth/telegram-login", json=_telegram_payload(telegram_id))
     assert response.status_code == 200, response.text
     body = response.json()
     return {"Authorization": f"Bearer {body['access_token']}"}, str(body["user"]["id"])
@@ -311,10 +310,167 @@ class _FakeQueryExpansionLLM:
         schema: dict[str, Any],
         model_config: dict[str, Any],
     ) -> dict[str, Any]:
-        self.calls.append(
-            {"prompt": prompt, "schema": schema, "model_config": model_config}
-        )
+        self.calls.append({"prompt": prompt, "schema": schema, "model_config": model_config})
         return {"queries": ["semantic retrieval", "postgres fts", "vector search"]}
+
+
+class _FakeMeilisearchClient:
+    def __init__(self) -> None:
+        self.search_payloads: list[dict[str, Any]] = []
+
+    async def search(self, *, index_uid: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self.search_payloads.append({"index_uid": index_uid, "payload": payload})
+        return {
+            "hits": [
+                {
+                    "id": "chunk-1",
+                    "source": "content",
+                    "source_type": "content_object",
+                    "source_id": "note-1",
+                    "external_id": "content_object:note-1",
+                    "chunk_external_id": "content_object:note-1:chunk:0",
+                    "text": "Meilisearch hybrid result",
+                    "metadata": {"media_type": "text"},
+                    "_rankingScore": 0.75,
+                }
+            ]
+        }
+
+
+def test_meilisearch_filter_builder_scopes_owner_and_useful_metadata() -> None:
+    expression = build_meilisearch_filter_expression(
+        owner_user_id="user-1",
+        filters=SearchFilters(
+            content_types=["link", "pdf"],
+            content_source="telegram",
+            telegram_chat_type="group",
+            telegram_chat_id="chat-42",
+            telegram_author_id="author-7",
+            tags=["ai", "research"],
+            folder_path="work/research",
+            created_at_from=datetime(2026, 5, 1, tzinfo=UTC),
+            created_at_to=datetime(2026, 5, 31, 23, 59, tzinfo=UTC),
+        ),
+        source="content",
+        source_type="content_object",
+        source_id=None,
+    )
+
+    assert expression == (
+        'owner_user_id = "user-1" AND source = "content" AND '
+        'source_type = "content_object" AND (content_type = "link" OR content_type = "pdf") '
+        'AND source_provider = "telegram" AND telegram_chat_type = "group" '
+        'AND telegram_chat_id = "chat-42" AND telegram_author_id = "author-7" '
+        'AND tags = "ai" AND tags = "research" AND folder_path = "work/research" '
+        "AND content_created_ts >= 1777593600 AND content_created_ts <= 1780271940"
+    )
+
+
+def test_search_matches_group_content_chunks_and_highlight_query_terms() -> None:
+    results = [
+        HybridSearchResult(
+            source="content",
+            source_type="content_object",
+            source_id="note-1",
+            external_id="content_object:note-1",
+            chunk_id="chunk-1",
+            chunk_external_id="content_object:note-1:chunk:0",
+            text="A semantic chunk finds Vector search inside the saved note.",
+            metadata={"media_type": "text"},
+            score=0.9,
+        ),
+        HybridSearchResult(
+            source="content",
+            source_type="content_object",
+            source_id="note-1",
+            external_id="content_object:note-1",
+            chunk_id="chunk-2",
+            chunk_external_id="content_object:note-1:chunk:1",
+            text="A second matching passage for vector retrieval.",
+            metadata={"media_type": "text"},
+            score=0.7,
+        ),
+        HybridSearchResult(
+            source="taxonomy",
+            source_type="category_profile",
+            source_id="category-1",
+            external_id="taxonomy_category_profile:category-1",
+            chunk_id="chunk-3",
+            chunk_external_id="taxonomy_category_profile:category-1:chunk:0",
+            text="Ignored taxonomy result.",
+            metadata={},
+            score=0.95,
+        ),
+    ]
+
+    matches = build_search_matches_by_source_id(
+        query="vector search",
+        results=results,
+        max_matches_per_note=1,
+    )
+
+    assert list(matches) == ["note-1"]
+    assert len(matches["note-1"]) == 1
+    assert matches["note-1"][0].text == results[0].text
+    highlighted = [
+        results[0].text[item.start : item.end] for item in matches["note-1"][0].highlight_ranges
+    ]
+    assert highlighted == ["Vector", "search"]
+
+
+@pytest.mark.asyncio
+async def test_meilisearch_backend_uses_selected_search_mode() -> None:
+    client = _FakeMeilisearchClient()
+    embeddings = _FakeEmbeddingProvider()
+    backend = MeilisearchSearchBackend(
+        client=client,
+        embedding_provider=embeddings,
+        settings=Settings(
+            search_meilisearch_index_uid="content_chunks",
+            search_meilisearch_embedder="content",
+            vector_embedding_dimensions=3,
+        ),
+    )
+
+    await backend.search(
+        owner_user_id="user-1",
+        query="hybrid typo",
+        limit=5,
+        mode="full_text",
+        filters=SearchFilters(content_source="telegram"),
+    )
+    await backend.search(
+        owner_user_id="user-1",
+        query="hybrid typo",
+        limit=5,
+        mode="semantic",
+        filters=SearchFilters(content_source="telegram"),
+    )
+    await backend.search(
+        owner_user_id="user-1",
+        query="hybrid typo",
+        limit=5,
+        mode="hybrid",
+        filters=SearchFilters(content_source="telegram"),
+    )
+
+    full_text_payload = client.search_payloads[0]["payload"]
+    semantic_payload = client.search_payloads[1]["payload"]
+    hybrid_payload = client.search_payloads[2]["payload"]
+
+    assert full_text_payload["q"] == "hybrid typo"
+    assert "vector" not in full_text_payload
+    assert "hybrid" not in full_text_payload
+    assert semantic_payload["vector"] == [1.0, 1.0, 1.0]
+    assert semantic_payload["hybrid"] == {
+        "embedder": "content",
+        "semanticRatio": 1.0,
+    }
+    assert hybrid_payload["vector"] == [1.0, 1.0, 1.0]
+    assert hybrid_payload["hybrid"] == {
+        "embedder": "content",
+        "semanticRatio": 0.5,
+    }
 
 
 @pytest.mark.asyncio
@@ -346,9 +502,7 @@ async def test_hybrid_search_expands_query_and_merges_vector_and_fts_with_rrf() 
         "semantic retrieval",
         "postgres fts",
     ]
-    assert embeddings.text_batches == [
-        ["vector search", "semantic retrieval", "postgres fts"]
-    ]
+    assert embeddings.text_batches == [["vector search", "semantic retrieval", "postgres fts"]]
     assert chunk_reader.full_text_queries == [
         "vector search",
         "semantic retrieval",
@@ -396,10 +550,7 @@ def test_semantic_search_returns_owner_scoped_vectorized_chunks(
     assert body["results"][0]["source"] == "taxonomy"
     assert body["results"][0]["source_type"] == "category_profile"
     assert body["results"][0]["source_id"] == category["id"]
-    assert (
-        body["results"][0]["external_id"]
-        == f"taxonomy_category_profile:{category['id']}"
-    )
+    assert body["results"][0]["external_id"] == f"taxonomy_category_profile:{category['id']}"
     assert "Semantic Search" in body["results"][0]["text"]
     assert body["results"][0]["score"] <= 1
 
@@ -473,18 +624,12 @@ def test_semantic_search_source_filters_scope_results(
         "content",
     }
     assert taxonomy_only.status_code == 200, taxonomy_only.text
-    assert {result["source"] for result in taxonomy_only.json()["results"]} == {
-        "taxonomy"
-    }
+    assert {result["source"] for result in taxonomy_only.json()["results"]} == {"taxonomy"}
     assert taxonomy_only.json()["results"][0]["source_id"] == taxonomy_category["id"]
     assert content_only.status_code == 200, content_only.text
-    assert {result["source"] for result in content_only.json()["results"]} == {
-        "content"
-    }
+    assert {result["source"] for result in content_only.json()["results"]} == {"content"}
     assert one_source.status_code == 200, one_source.text
-    assert {result["source_id"] for result in one_source.json()["results"]} == {
-        content_note["id"]
-    }
+    assert {result["source_id"] for result in one_source.json()["results"]} == {content_note["id"]}
 
 
 def test_hybrid_search_filters_by_metadata_before_ranking(
@@ -547,13 +692,9 @@ def test_hybrid_search_filters_by_metadata_before_ranking(
     )
 
     assert link_response.status_code == 200, link_response.text
-    assert {result["source_id"] for result in link_response.json()["results"]} == {
-        link["id"]
-    }
+    assert {result["source_id"] for result in link_response.json()["results"]} == {link["id"]}
     assert link_response.json()["results"][0]["full_text_rank"] == 1
     assert note_response.status_code == 200, note_response.text
-    assert {result["source_id"] for result in note_response.json()["results"]} == {
-        note["id"]
-    }
+    assert {result["source_id"] for result in note_response.json()["results"]} == {note["id"]}
     assert stale_date_response.status_code == 200, stale_date_response.text
     assert stale_date_response.json()["results"] == []

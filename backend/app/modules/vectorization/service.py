@@ -5,7 +5,13 @@ import json
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.config import Settings, get_settings
+from app.modules.search.infrastructure.meilisearch import (
+    delete_meilisearch_source,
+    sync_meilisearch_source,
+)
 from app.modules.vectorization.contracts import VectorizationDocumentInput
 from app.modules.vectorization.infrastructure.chunking import (
     ChunkingLimits,
@@ -22,7 +28,6 @@ from app.modules.vectorization.infrastructure.embedding_providers import (
 )
 from app.modules.vectorization.infrastructure.repositories import VectorizationRepository
 from app.modules.vectorization.models import VectorizationJob
-from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class VectorizationProviderNotFoundError(Exception):
@@ -153,6 +158,7 @@ class VectorizationService:
         )
         if source_record is None:
             return "deleted"
+        await delete_meilisearch_source(settings=self.settings, source_record=source_record)
         await self.repository.delete_source_vectors(source_record)
         await self.session.commit()
         return source_record.status
@@ -192,6 +198,7 @@ class VectorizationService:
             and source_record.provider == self.settings.vector_embedding_provider
             and source_record.model == self.settings.vector_embedding_model
             and source_record.dimensions == self.settings.vector_embedding_dimensions
+            and self.settings.search_engine != "meilisearch"
         ):
             self._succeed_job(job)
             return
@@ -241,6 +248,12 @@ class VectorizationService:
             model=self.settings.vector_embedding_model,
             dimensions=self.settings.vector_embedding_dimensions,
             embedding_hashes=embedding_hashes,
+        )
+        await sync_meilisearch_source(
+            settings=self.settings,
+            source_record=source_record,
+            chunks=chunks,
+            embeddings=embeddings,
         )
         source_record.source_hash = source_hash
         source_record.status = "synced"

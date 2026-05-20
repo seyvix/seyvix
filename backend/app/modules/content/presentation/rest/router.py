@@ -3,6 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated
 
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile, status
+from fastapi.responses import FileResponse, Response
+from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.background import BackgroundTask
+
 from app.api.dependencies import get_db_session
 from app.api.errors import AppError
 from app.api.schemas import ErrorResponse
@@ -35,10 +40,9 @@ from app.modules.content.service import (
     ThumbnailUnavailableError,
     UploadedContent,
 )
-from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile, status
-from fastapi.responses import FileResponse, Response
-from sqlalchemy.ext.asyncio import AsyncSession
-from starlette.background import BackgroundTask
+from app.modules.search.infrastructure.meilisearch import MeilisearchUnavailableError
+from app.modules.search.schemas import SearchFilters, SearchMode
+from app.modules.search.service import SearchValidationError, SemanticSearchService
 
 router = APIRouter(tags=["content"])
 
@@ -109,7 +113,10 @@ async def create_note(
     ),
     responses={
         201: {
-            "description": "Temporary upload metadata or created object returned (camelCase App note when object is present).",
+            "description": (
+                "Temporary upload metadata or created object returned "
+                "(camelCase App note when object is present)."
+            ),
             "model": FileUploadAppResponse,
         },
         401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
@@ -190,14 +197,48 @@ async def list_notes(
     context: Annotated[AuthContext, Depends(get_auth_context)],
     service: Annotated[ContentService, Depends(get_content_service)],
     search: Annotated[str | None, Query(max_length=512)] = None,
+    search_mode: Annotated[SearchMode, Query()] = "hybrid",
     tags: Annotated[list[str] | None, Query()] = None,
     folder: Annotated[str | None, Query(max_length=1024)] = None,
     folders: Annotated[str | None, Query(max_length=1024)] = None,
     sort: Annotated[NoteSort, Query()] = "newest",
 ) -> AppNoteListResponse:
+    search_result_ids: list[str] | None = None
+    search_matches_by_object_id = None
+    normalized_search = search.strip() if search else None
+    search_service = SemanticSearchService(service.session)
+    if normalized_search and (
+        search_service.settings.search_engine == "meilisearch" or search_mode != "hybrid"
+    ):
+        try:
+            search_matches_by_object_id = await search_service.search_content_object_matches(
+                owner_user_id=context.user.id,
+                query=normalized_search,
+                limit=200,
+                mode=search_mode,
+                filters=SearchFilters(
+                    tags=tags or [],
+                    folder_path=folders or folder,
+                ),
+            )
+            search_result_ids = list(search_matches_by_object_id)
+        except SearchValidationError as exc:
+            raise AppError(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                code="validation_error",
+                message="Search query must not be empty.",
+            ) from exc
+        except (ValueError, MeilisearchUnavailableError) as exc:
+            raise AppError(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                code="search_unavailable",
+                message="Search provider is not available.",
+            ) from exc
     lst = await service.list_notes(
         owner_user_id=context.user.id,
         search=search,
+        search_result_ids=search_result_ids,
+        search_matches_by_object_id=search_matches_by_object_id,
         tag_slugs=tags or [],
         folder_path=folders or folder,
         sort=sort,

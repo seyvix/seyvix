@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+SearchMode = Literal["full_text", "semantic", "hybrid"]
 
 
 class SearchFilters(BaseModel):
@@ -12,6 +15,16 @@ class SearchFilters(BaseModel):
     content_type: str | None = Field(default=None, min_length=1, max_length=64)
     content_types: list[str] = Field(default_factory=list, max_length=20)
     content_source: str | None = Field(default=None, min_length=1, max_length=64)
+    source_provider: str | None = Field(default=None, min_length=1, max_length=64)
+    source_kind: str | None = Field(default=None, min_length=1, max_length=64)
+    telegram_chat_id: str | None = Field(default=None, min_length=1, max_length=255)
+    telegram_chat_type: str | None = Field(default=None, min_length=1, max_length=64)
+    telegram_author_id: str | None = Field(default=None, min_length=1, max_length=255)
+    tags: list[str] = Field(default_factory=list, max_length=50)
+    folder_path: str | None = Field(default=None, min_length=1, max_length=1024)
+    is_favorite: bool | None = None
+    date_from: datetime | None = None
+    date_to: datetime | None = None
     created_at_from: datetime | None = None
     created_at_to: datetime | None = None
     updated_at_from: datetime | None = None
@@ -47,6 +60,7 @@ class SemanticSearchResponse(BaseModel):
 
 class HybridSearchRequest(SemanticSearchRequest):
     expand_query: bool | None = None
+    mode: SearchMode = "hybrid"
 
 
 class HybridSearchResult(BaseModel):
@@ -70,3 +84,16 @@ class HybridSearchResponse(BaseModel):
     query: str
     expanded_queries: list[str] = Field(default_factory=list)
     results: list[HybridSearchResult]
+
+
+class SearchHighlightRange(BaseModel):
+    start: int = Field(ge=0)
+    end: int = Field(ge=0)
+
+
+class SearchContentMatch(BaseModel):
+    chunk_id: str
+    chunk_external_id: str
+    text: str
+    score: float
+    highlight_ranges: list[SearchHighlightRange] = Field(default_factory=list)

@@ -24,7 +24,7 @@ MODULE = ModuleDefinition(
 class VectorizationSubject(BaseModel):
     external_id: str
     source_text: str
-    metadata: dict[str, str | int]
+    metadata: dict[str, Any]
     source_updated_at: datetime
     dirty_key: str
 
@@ -196,7 +196,7 @@ def build_content_object_vector_subject(
     tags: list[str],
     taxonomy_category: str | None,
     content: str | None,
-    metadata: dict[str, str | int | bool | None],
+    metadata: dict[str, Any],
     source_updated_at: datetime,
 ) -> VectorizationSubject:
     lines = [
@@ -210,15 +210,17 @@ def build_content_object_vector_subject(
     if content:
         lines.append(content)
     source_text = "\n".join(lines).strip()
-    subject_metadata: dict[str, str | int] = {
+    subject_metadata: dict[str, Any] = {
         "content_object_id": content_object_id,
+        "content_title": title,
         "source": "content",
+        "tags": tags,
     }
     for key, value in metadata.items():
-        if isinstance(value, str | int):
+        if isinstance(value, bool):
             subject_metadata[key] = value
-        elif isinstance(value, bool):
-            subject_metadata[key] = int(value)
+        elif isinstance(value, str | int | list | dict):
+            subject_metadata[key] = value
     if taxonomy_category is not None:
         subject_metadata["taxonomy_category"] = taxonomy_category
     return VectorizationSubject(

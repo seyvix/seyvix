@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -11,10 +12,17 @@ from app.modules.llm.contracts import (
     StructuredLLMGenerator,
     build_structured_llm_generator,
 )
+from app.modules.search.infrastructure.meilisearch import (
+    MeilisearchSearchBackend,
+    build_meilisearch_client,
+)
 from app.modules.search.schemas import (
     HybridSearchResponse,
     HybridSearchResult,
+    SearchContentMatch,
     SearchFilters,
+    SearchHighlightRange,
+    SearchMode,
     SemanticSearchResult,
 )
 from app.modules.vectorization.contracts import (
@@ -88,9 +96,7 @@ class SemanticSearchService:
             api_key=self.settings.vector_embedding_api_key,
             timeout_seconds=self.settings.vector_embedding_timeout_seconds,
         )
-        self.chunk_reader = chunk_reader or build_vectorized_chunk_search_reader(
-            session
-        )
+        self.chunk_reader = chunk_reader or build_vectorized_chunk_search_reader(session)
         self.llm_generator = llm_generator
 
     async def semantic_search(
@@ -127,9 +133,7 @@ class SemanticSearchService:
             limit=limit,
             filters=vector_filters,
         )
-        return [
-            SemanticSearchResult.model_validate(match.model_dump()) for match in matches
-        ]
+        return [SemanticSearchResult.model_validate(match.model_dump()) for match in matches]
 
     async def hybrid_search(
         self,
@@ -142,8 +146,32 @@ class SemanticSearchService:
         source_id: str | None = None,
         filters: SearchFilters | None = None,
         expand_query: bool | None = None,
+        mode: SearchMode = "hybrid",
     ) -> HybridSearchResponse:
         normalized_query = _normalize_query(query)
+        if self._should_use_meilisearch():
+            candidate_limit = max(limit, limit * self.settings.search_hybrid_candidate_multiplier)
+            backend = MeilisearchSearchBackend(
+                client=build_meilisearch_client(self.settings),
+                embedding_provider=self.embedding_provider,
+                settings=self.settings,
+            )
+            results = await backend.search(
+                owner_user_id=owner_user_id,
+                query=normalized_query,
+                limit=candidate_limit,
+                mode=mode,
+                filters=filters,
+                source=source,
+                source_type=source_type,
+                source_id=source_id,
+            )
+            return HybridSearchResponse(
+                query=normalized_query,
+                expanded_queries=[normalized_query],
+                results=results[:limit],
+            )
+
         vector_filters = _to_vector_filters(
             filters=filters,
             source=source,
@@ -154,9 +182,7 @@ class SemanticSearchService:
             normalized_query,
             expand_query=expand_query,
         )
-        candidate_limit = max(
-            limit, limit * self.settings.search_hybrid_candidate_multiplier
-        )
+        candidate_limit = max(limit, limit * self.settings.search_hybrid_candidate_multiplier)
         query_embeddings = await self.embedding_provider.embed_texts(
             expanded_queries,
             model=self.settings.vector_embedding_model,
@@ -181,9 +207,7 @@ class SemanticSearchService:
                 )
                 candidate.score += _rrf(rank, self.settings.search_rrf_k)
                 candidate.vector_rank = _best_rank(candidate.vector_rank, rank)
-                candidate.vector_score = _best_score(
-                    candidate.vector_score, match.score
-                )
+                candidate.vector_score = _best_score(candidate.vector_score, match.score)
                 candidate.distance = _best_distance(candidate.distance, match.distance)
 
         for expanded_query in expanded_queries:
@@ -220,6 +244,99 @@ class SemanticSearchService:
             query=normalized_query,
             expanded_queries=expanded_queries,
             results=[candidate.to_result() for candidate in ranked[:limit]],
+        )
+
+    async def search_content_object_ids(
+        self,
+        *,
+        owner_user_id: str,
+        query: str,
+        limit: int,
+        mode: SearchMode,
+        filters: SearchFilters | None = None,
+    ) -> list[str]:
+        matches_by_source_id = await self.search_content_object_matches(
+            owner_user_id=owner_user_id,
+            query=query,
+            limit=limit,
+            mode=mode,
+            filters=filters,
+        )
+        return list(matches_by_source_id)
+
+    async def search_content_object_matches(
+        self,
+        *,
+        owner_user_id: str,
+        query: str,
+        limit: int,
+        mode: SearchMode,
+        filters: SearchFilters | None = None,
+    ) -> dict[str, list[SearchContentMatch]]:
+        normalized_query = _normalize_query(query)
+        if self._should_use_meilisearch():
+            backend = MeilisearchSearchBackend(
+                client=build_meilisearch_client(self.settings),
+                embedding_provider=self.embedding_provider,
+                settings=self.settings,
+            )
+            results = await backend.search(
+                owner_user_id=owner_user_id,
+                query=normalized_query,
+                limit=limit * self.settings.search_hybrid_candidate_multiplier,
+                mode=mode,
+                filters=filters,
+                source="content",
+                source_type="content_object",
+            )
+        elif mode == "full_text":
+            vector_filters = _to_vector_filters(
+                filters=filters,
+                source="content",
+                source_type="content_object",
+                source_id=None,
+            )
+            results = [
+                _candidate_from_full_text(item).to_result()
+                for item in await self.chunk_reader.search_full_text_chunks(
+                    owner_user_id=owner_user_id,
+                    query=normalized_query,
+                    limit=limit * self.settings.search_hybrid_candidate_multiplier,
+                    search_config=self.settings.search_fts_config,
+                    filters=vector_filters,
+                )
+            ]
+        elif mode == "semantic":
+            results = [
+                HybridSearchResult.model_validate(item.model_dump())
+                for item in await self.semantic_search(
+                    owner_user_id=owner_user_id,
+                    query=normalized_query,
+                    limit=limit * self.settings.search_hybrid_candidate_multiplier,
+                    source="content",
+                    source_type="content_object",
+                    filters=filters,
+                )
+            ]
+        else:
+            results = (
+                await self.hybrid_search(
+                    owner_user_id=owner_user_id,
+                    query=normalized_query,
+                    limit=limit * self.settings.search_hybrid_candidate_multiplier,
+                    source="content",
+                    source_type="content_object",
+                    filters=filters,
+                    expand_query=False,
+                    mode="hybrid",
+                )
+            ).results
+
+        return build_search_matches_by_source_id(
+            query=normalized_query,
+            results=results,
+            max_matches_per_note=2,
+            max_notes=limit,
         )
 
     async def _expanded_queries(
@@ -270,12 +387,83 @@ class SemanticSearchService:
             return [query]
         return _dedupe_queries(query, raw.get("queries"), max_queries=max_queries)
 
+    def _should_use_meilisearch(self) -> bool:
+        return (
+            self.settings.search_engine == "meilisearch"
+            and self.settings.search_meilisearch_url is not None
+        )
+
 
 def _normalize_query(query: str) -> str:
     normalized_query = query.strip()
     if not normalized_query:
         raise SearchValidationError("Search query must not be empty.")
     return normalized_query
+
+
+def build_search_matches_by_source_id(
+    *,
+    query: str,
+    results: list[HybridSearchResult],
+    max_matches_per_note: int,
+    max_notes: int | None = None,
+) -> dict[str, list[SearchContentMatch]]:
+    terms = _highlight_terms(query)
+    matches: dict[str, list[SearchContentMatch]] = {}
+    for result in results:
+        if result.source != "content" or result.source_type != "content_object":
+            continue
+        if result.source_id not in matches:
+            if max_notes is not None and len(matches) >= max_notes:
+                break
+            matches[result.source_id] = []
+        if len(matches[result.source_id]) >= max_matches_per_note:
+            continue
+        matches[result.source_id].append(
+            SearchContentMatch(
+                chunk_id=result.chunk_id,
+                chunk_external_id=result.chunk_external_id,
+                text=result.text.strip(),
+                score=result.score,
+                highlight_ranges=_highlight_ranges(result.text, terms),
+            )
+        )
+    return matches
+
+
+def _highlight_terms(query: str) -> list[str]:
+    terms = []
+    seen: set[str] = set()
+    for term in re.findall(r"[0-9A-Za-zА-Яа-яЁё_]{2,}", query):
+        normalized = term.casefold()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        terms.append(normalized)
+    return sorted(terms, key=len, reverse=True)
+
+
+def _highlight_ranges(text: str, terms: list[str]) -> list[SearchHighlightRange]:
+    if not terms:
+        return []
+    lowered = text.casefold()
+    raw_ranges: list[tuple[int, int]] = []
+    for term in terms:
+        start = 0
+        while True:
+            index = lowered.find(term, start)
+            if index == -1:
+                break
+            raw_ranges.append((index, index + len(term)))
+            start = index + len(term)
+    ranges: list[SearchHighlightRange] = []
+    occupied_until = -1
+    for start, end in sorted(raw_ranges):
+        if start < occupied_until:
+            continue
+        ranges.append(SearchHighlightRange(start=start, end=end))
+        occupied_until = end
+    return ranges
 
 
 def _to_vector_filters(

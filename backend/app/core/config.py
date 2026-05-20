@@ -74,18 +74,14 @@ class Settings(BaseSettings):
     snapshot_archive_org_enabled: bool = False
     snapshot_worker_batch_size: int = 10
     snapshot_worker_poll_interval_seconds: int = 10
-    snapshot_ocr_provider: Literal[
-        "disabled", "local", "http", "openai_compatible"
-    ] = "disabled"
+    snapshot_ocr_provider: Literal["disabled", "local", "http", "openai_compatible"] = "disabled"
     snapshot_ocr_http_url: str | None = None
     snapshot_ocr_languages: str = "eng+rus"
     snapshot_ocr_openai_base_url: str | None = None
     snapshot_ocr_openai_api_key: str | None = None
     snapshot_ocr_openai_model: str = "gpt-4o-mini"
     snapshot_ocr_max_image_bytes: int = 10_000_000
-    snapshot_stt_provider: Literal[
-        "disabled", "local", "http", "openai_compatible"
-    ] = "disabled"
+    snapshot_stt_provider: Literal["disabled", "local", "http", "openai_compatible"] = "disabled"
     snapshot_stt_http_url: str | None = None
     snapshot_stt_model: str = "base"
     snapshot_stt_openai_base_url: str | None = None
@@ -126,6 +122,13 @@ class Settings(BaseSettings):
     search_query_expansion_enabled: bool = False
     search_query_expansion_model: str = "qwen3:4b-thinking"
     search_query_expansion_max_queries: int = 3
+    search_engine: Literal["postgres", "meilisearch"] = "postgres"
+    search_meilisearch_url: str | None = None
+    search_meilisearch_api_key: str | None = None
+    search_meilisearch_index_uid: str = "content_chunks"
+    search_meilisearch_embedder: str = "content"
+    search_meilisearch_timeout_seconds: int = 5
+    search_meilisearch_hybrid_semantic_ratio: float = 0.5
     taxonomy_classification_high_threshold: float = 0.80
     taxonomy_classification_medium_threshold: float = 0.60
     taxonomy_llm_classification_accept_threshold: float = 0.80

@@ -1,9 +1,14 @@
-"""Web-facing note JSON: camelCase + flattened ``objects`` (same contract the SPA used via ``mapBackendNote``)."""
+"""Web-facing note JSON.
+
+Uses camelCase and flattened ``objects`` matching the SPA contract.
+"""
 
 from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.modules.content.schemas import (
     FileUploadResponse,
@@ -14,7 +19,7 @@ from app.modules.content.schemas import (
     TagResponse,
     UploadedFileResponse,
 )
-from pydantic import BaseModel, ConfigDict, Field
+from app.modules.search.schemas import SearchContentMatch
 
 NoteObjectType = Literal["text", "image", "link", "document", "audio", "video"]
 NoteAppKind = Literal["simple", "composite", "collection"]
@@ -111,6 +116,10 @@ class AppNote(BaseModel):
     isFavorite: bool = Field(default=False, serialization_alias="isFavorite")
     collection: AppCollectionParent | None = None
     source: AppSourceMetadata | None = None
+    searchMatches: list[SearchContentMatch] = Field(
+        default_factory=list,
+        serialization_alias="searchMatches",
+    )
 
 
 class AppNoteListResponse(BaseModel):
@@ -275,6 +284,7 @@ def note_card_to_app_note(card: NoteCardResponse) -> AppNote:
             else None
         ),
         source=_source(card.source),
+        searchMatches=card.search_matches,
     )
 
 
