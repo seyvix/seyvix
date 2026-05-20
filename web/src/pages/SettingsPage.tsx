@@ -8,6 +8,7 @@ import {
   type SnapshotFormatKey,
 } from '../api/snapshots'
 import { fetchTaxonomySettings, updateTaxonomySettings } from '../api/folders'
+import { useSettings } from '../contexts/SettingsContext'
 import styles from './SettingsPage.module.css'
 
 type TabKey = 'profile' | 'snapshots' | 'taxonomy' | 'sessions'
@@ -50,6 +51,7 @@ function describeSession(userAgent: string | null): string {
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<TabKey>('profile')
   const { user, logout } = useAuth()
+  const { cols, setCols } = useSettings()
   const queryClient = useQueryClient()
 
   const snapshotSettings = useQuery({
@@ -141,8 +143,27 @@ export default function SettingsPage() {
               </div>
 
               <p className={styles.profileHint}>
-                Количество колонок в сетке осталось в быстром блоке сайдбара.
+                Профиль подтягивается из Telegram. Параметры отображения сохраняются локально на устройстве.
               </p>
+
+              <div className={styles.settingBlock}>
+                <div>
+                  <h3>Колонки в сетке</h3>
+                  <p>Настройка плотности ленты для широких экранов. На телефоне лента остаётся в один читаемый столбец.</p>
+                </div>
+                <div className={styles.segmented} aria-label="Количество колонок">
+                  {[1, 2, 3, 4, 5, 6, 7].map((value) => (
+                    <button
+                      key={value}
+                      className={cols === value ? styles.segmentActive : ''}
+                      onClick={() => setCols(value)}
+                      aria-pressed={cols === value}
+                    >
+                      {value}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
           )}
 

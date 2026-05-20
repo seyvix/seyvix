@@ -255,6 +255,11 @@
   opacity: 1;
 }
 
+.mobileProfileCard,
+.mobileLogoutCard {
+  display: none;
+}
+
 .columnsCard {
   padding: 10px 12px;
 }
@@ -345,6 +350,8 @@
     width: auto;
     height: calc(64px + env(safe-area-inset-bottom));
     padding-bottom: env(safe-area-inset-bottom);
+    flex-direction: row;
+    align-items: stretch;
     border-right: none;
     border-top: 1px solid rgba(255, 255, 255, 0.08);
     background: rgba(26, 26, 26, 0.96);
@@ -355,7 +362,6 @@
   }
 
   .top,
-  .bottom,
   .toggleBtn {
     display: none;
   }
@@ -365,6 +371,18 @@
     padding: 6px 10px 8px;
     flex-direction: row;
     align-items: stretch;
+    gap: 6px;
+    overflow: visible;
+  }
+
+  .bottom {
+    position: static;
+    display: flex;
+    flex: 0 0 74px;
+    height: 100%;
+    padding: 6px 10px 8px 0;
+    border-top: 0;
+    flex-direction: row;
     gap: 6px;
     overflow: visible;
   }
@@ -382,6 +400,10 @@
     line-height: 1.1;
     text-align: center;
     white-space: normal;
+  }
+
+  .desktopLogout {
+    display: none;
   }
 
   .navIcon {
@@ -407,5 +429,102 @@
 
   .navItem.active .navDot {
     opacity: 1;
+  }
+
+  .moreMenu {
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    bottom: calc(76px + env(safe-area-inset-bottom));
+    z-index: 70;
+    max-height: min(68vh, 460px);
+    padding: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 18px;
+    background: rgba(22, 22, 22, 0.98);
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.48);
+    backdrop-filter: blur(18px);
+    opacity: 0;
+    overflow: auto;
+    pointer-events: none;
+    transform: translateY(10px) scale(0.98);
+    transition:
+      opacity var(--duration-fast) var(--ease-default),
+      transform var(--duration-normal) var(--ease-spring);
+  }
+
+  .moreMenuOpen {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0) scale(1);
+  }
+
+  .mobileProfileCard {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 54px;
+    padding: 8px 10px 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .mobileProfileCard .avatar {
+    width: 38px;
+    height: 38px;
+  }
+
+  .mobileProfileCard .userInfo {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .moreCard,
+  .columnsCard {
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.055);
+  }
+
+  .moreCard {
+    min-height: 46px;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 11px 12px;
+  }
+
+  .moreCardText {
+    opacity: 1;
+  }
+
+  .columnsCard {
+    padding: 12px;
+  }
+
+  .settingsRow {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .settingsLabel {
+    font-size: 13px;
+    color: var(--color-text-primary);
+  }
+
+  .colsPicker {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 5px;
+  }
+
+  .colsBtn {
+    width: auto;
+    min-width: 0;
+    height: 36px;
+  }
+
+  .mobileLogoutCard {
+    display: flex;
+    color: #fca5a5;
   }
 }

@@ -101,6 +101,7 @@ export default function AsideHeader() {
       <nav className={styles.nav}>
         <NavLink
           to="/notes"
+          onClick={() => setSettingsOpen(false)}
           className={({ isActive }) =>
             [styles.navItem, isActive ? styles.active : ''].filter(Boolean).join(' ')
           }
@@ -112,6 +113,7 @@ export default function AsideHeader() {
 
         <NavLink
           to="/categories"
+          onClick={() => setSettingsOpen(false)}
           className={({ isActive }) =>
             [styles.navItem, isActive ? styles.active : ''].filter(Boolean).join(' ')
           }
@@ -123,6 +125,7 @@ export default function AsideHeader() {
 
         <NavLink
           to="/trash"
+          onClick={() => setSettingsOpen(false)}
           className={({ isActive }) =>
             [styles.navItem, isActive ? styles.active : ''].filter(Boolean).join(' ')
           }
@@ -135,9 +138,30 @@ export default function AsideHeader() {
 
       <div className={styles.bottom}>
         <div className={[styles.moreMenu, settingsOpen ? styles.moreMenuOpen : ''].filter(Boolean).join(' ')}>
-          <NavLink to="/settings" className={styles.moreCard}>
+          <div className={styles.mobileProfileCard}>
+            <div className={styles.avatar}>
+              <span className={styles.avatarInitials}>{initials}</span>
+              {user?.telegram_photo_url && (
+                <img
+                  className={styles.avatarImage}
+                  src={user.avatar_url ?? user.telegram_photo_url}
+                  alt=""
+                  referrerPolicy="no-referrer"
+                  onError={event => { event.currentTarget.hidden = true }}
+                />
+              )}
+            </div>
+            <div className={styles.userInfo}>
+              <span className={styles.logoText}>{user?.display_name ?? 'Пользователь'}</span>
+              {user?.telegram_username && (
+                <span className={styles.username}>@{user.telegram_username}</span>
+              )}
+            </div>
+          </div>
+
+          <NavLink to="/settings" className={styles.moreCard} onClick={() => setSettingsOpen(false)}>
             <span className={styles.moreCardIcon}><IconSettings /></span>
-            <span className={styles.moreCardText}>Настройки</span>
+            <span className={styles.moreCardText}>Профиль и настройки</span>
           </NavLink>
           <div className={styles.columnsCard}>
             <div className={styles.settingsRow}>
@@ -145,6 +169,7 @@ export default function AsideHeader() {
               <div className={styles.colsPicker}>
                 {[1, 2, 3, 4, 5, 6, 7].map(n => (
                   <button
+                    type="button"
                     key={n}
                     className={[styles.colsBtn, cols === n ? styles.colsBtnActive : ''].filter(Boolean).join(' ')}
                     onClick={() => setCols(n)}
@@ -155,10 +180,17 @@ export default function AsideHeader() {
               </div>
             </div>
           </div>
+
+          <button type="button" className={[styles.moreCard, styles.mobileLogoutCard].filter(Boolean).join(' ')} onClick={() => void logout()}>
+            <span className={styles.moreCardIcon}><IconLogout /></span>
+            <span className={styles.moreCardText}>Выйти</span>
+          </button>
         </div>
 
         <button
+          type="button"
           className={[styles.navItem, settingsOpen ? styles.active : ''].filter(Boolean).join(' ')}
+          aria-expanded={settingsOpen}
           onClick={() => {
             if (!expanded) setExpanded(true)
             setSettingsOpen(v => !v)
@@ -168,7 +200,7 @@ export default function AsideHeader() {
           <span className={styles.navLabel}>Ещё</span>
         </button>
 
-        <button className={styles.navItem} onClick={() => void logout()}>
+        <button type="button" className={[styles.navItem, styles.desktopLogout].filter(Boolean).join(' ')} onClick={() => void logout()}>
           <span className={styles.navIcon}><IconLogout /></span>
           <span className={styles.navLabel}>Выйти</span>
         </button>
