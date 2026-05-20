@@ -17,7 +17,9 @@ from sqlalchemy.ext.asyncio import create_async_engine
 def _test_database_url() -> str:
     database_url = os.getenv("TEST_DATABASE_URL")
     if not database_url:
-        pytest.skip("Set TEST_DATABASE_URL to a disposable database for migration tests.")
+        pytest.skip(
+            "Set TEST_DATABASE_URL to a disposable database for migration tests."
+        )
     return database_url
 
 
@@ -30,7 +32,9 @@ async def _reset_public_schema(database_url: str) -> None:
     await engine.dispose()
 
 
-async def _database_state(database_url: str) -> tuple[set[str], str | None, bool]:
+async def _database_state(
+    database_url: str,
+) -> tuple[set[str], str | None, bool, dict[str, str]]:
     engine = create_async_engine(database_url)
     async with engine.connect() as connection:
         tables = set(
@@ -41,15 +45,32 @@ async def _database_state(database_url: str) -> tuple[set[str], str | None, bool
                 )
             )
         )
-        current_revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-        vector_extension = bool(
-            await connection.scalar(text("SELECT 1 FROM pg_extension WHERE extname = 'vector'"))
+        current_revision = await connection.scalar(
+            text("SELECT version_num FROM alembic_version")
         )
+        vector_extension = bool(
+            await connection.scalar(
+                text("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
+            )
+        )
+        indexes = {
+            row.indexname: row.indexdef
+            for row in (
+                await connection.execute(
+                    text(
+                        "SELECT indexname, indexdef FROM pg_indexes "
+                        "WHERE schemaname = 'public'"
+                    )
+                )
+            )
+        }
     await engine.dispose()
-    return tables, current_revision, vector_extension
+    return tables, current_revision, vector_extension, indexes
 
 
-def test_alembic_upgrade_head_builds_current_schema(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_alembic_upgrade_head_builds_current_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     database_url = _test_database_url()
     url = make_url(database_url)
     monkeypatch.setenv("POSTGRES_HOST", str(url.host or "localhost"))
@@ -66,7 +87,9 @@ def test_alembic_upgrade_head_builds_current_schema(monkeypatch: pytest.MonkeyPa
     try:
         asyncio.run(_reset_public_schema(database_url))
         command.upgrade(config, "head")
-        tables, current_revision, vector_extension = asyncio.run(_database_state(database_url))
+        tables, current_revision, vector_extension, indexes = asyncio.run(
+            _database_state(database_url)
+        )
     finally:
         asyncio.run(_reset_public_schema(database_url))
         get_settings.cache_clear()
@@ -85,3 +108,17 @@ def test_alembic_upgrade_head_builds_current_schema(monkeypatch: pytest.MonkeyPa
         "vectorization_sources",
         "vectorization_embeddings",
     } <= tables
+    embedding_384_index = indexes["ix_vectorization_embeddings_embedding_384_hnsw"]
+    embedding_1024_index = indexes["ix_vectorization_embeddings_embedding_1024_hnsw"]
+    assert "USING hnsw" in embedding_384_index
+    assert "::vector(384)" in embedding_384_index
+    assert "vector_cosine_ops" in embedding_384_index
+    assert "dimensions = 384" in embedding_384_index
+    assert "USING hnsw" in embedding_1024_index
+    assert "::vector(1024)" in embedding_1024_index
+    assert "vector_cosine_ops" in embedding_1024_index
+    assert "dimensions = 1024" in embedding_1024_index
+    assert (
+        "to_tsvector('simple'::regconfig, text)"
+        in indexes["ix_vectorization_chunks_text_fts"]
+    )
