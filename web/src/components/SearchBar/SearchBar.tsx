@@ -1,17 +1,44 @@
-import { Search, X } from 'lucide-react'
+import { useState } from 'react'
+import { Clock3, Search, Settings, X } from 'lucide-react'
 import { getTagColor } from '../../utils/tagColor'
 import styles from './SearchBar.module.css'
+
+export type SearchMode = 'full_text' | 'semantic' | 'hybrid'
 
 interface SearchBarProps {
   search: string
   activeTags: string[]
+  searchMode: SearchMode
+  searchHistory: string[]
   onSearchChange: (value: string) => void
+  onSearchModeChange: (value: SearchMode) => void
+  onHistorySelect: (value: string) => void
   onTagRemove: (tag: string) => void
   onClear: () => void
 }
 
-export function SearchBar({ search, activeTags, onSearchChange, onTagRemove, onClear }: SearchBarProps) {
+const SEARCH_MODES: Array<{ value: SearchMode; label: string }> = [
+  { value: 'hybrid', label: 'Гибридный' },
+  { value: 'semantic', label: 'Семантический' },
+  { value: 'full_text', label: 'Полнотекстовый' },
+]
+
+export function SearchBar({
+  search,
+  activeTags,
+  searchMode,
+  searchHistory,
+  onSearchChange,
+  onSearchModeChange,
+  onHistorySelect,
+  onTagRemove,
+  onClear,
+}: SearchBarProps) {
   const hasContent = search.length > 0 || activeTags.length > 0
+  const [isModeMenuOpen, setModeMenuOpen] = useState(false)
+  const [isHistoryOpen, setHistoryOpen] = useState(false)
+  const activeMode = SEARCH_MODES.find(mode => mode.value === searchMode) ?? SEARCH_MODES[0]
+  const visibleHistory = searchHistory.filter(item => item.trim())
 
   return (
     <label className={styles.bar}>
@@ -37,12 +64,69 @@ export function SearchBar({ search, activeTags, onSearchChange, onTagRemove, onC
           placeholder="Поиск…"
           value={search}
           onChange={e => onSearchChange(e.target.value)}
+          onFocus={() => setHistoryOpen(true)}
+          onBlur={() => {
+            window.setTimeout(() => setHistoryOpen(false), 120)
+          }}
           onKeyDown={e => {
             if ((e.key === 'Backspace' || e.key === 'Delete') && search === '' && activeTags.length > 0) {
               onTagRemove(activeTags[activeTags.length - 1])
             }
           }}
         />
+        {isHistoryOpen && visibleHistory.length > 0 && (
+          <div className={styles.historyMenu}>
+            {visibleHistory.map(item => (
+              <button
+                key={item}
+                type="button"
+                className={styles.historyItem}
+                onMouseDown={e => e.preventDefault()}
+                onClick={e => {
+                  e.preventDefault()
+                  onHistorySelect(item)
+                  setHistoryOpen(false)
+                }}
+              >
+                <Clock3 size={13} />
+                <span>{item}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className={styles.mode}>
+        <button
+          type="button"
+          className={styles.modeButton}
+          title={`Режим поиска: ${activeMode.label}`}
+          aria-label={`Режим поиска: ${activeMode.label}`}
+          aria-expanded={isModeMenuOpen}
+          onClick={e => {
+            e.preventDefault()
+            setModeMenuOpen(value => !value)
+          }}
+        >
+          <Settings size={18} />
+        </button>
+        {isModeMenuOpen && (
+          <div className={styles.modeMenu}>
+            {SEARCH_MODES.map(mode => (
+              <button
+                key={mode.value}
+                type="button"
+                className={mode.value === searchMode ? styles.modeItemActive : styles.modeItem}
+                onClick={e => {
+                  e.preventDefault()
+                  onSearchModeChange(mode.value)
+                  setModeMenuOpen(false)
+                }}
+              >
+                {mode.label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
       {hasContent && (
         <button

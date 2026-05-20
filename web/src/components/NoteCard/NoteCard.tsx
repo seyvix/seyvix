@@ -50,6 +50,7 @@ import { useUpdateNote } from '../../hooks/useUpdateNote'
 import { useDragContext } from '../../contexts/DragContext'
 import { getObjectDisplayText, getObjectPreviewSource } from '../../utils/notePreview'
 import { collectSourceChips, getSavedDateLabel } from '../../utils/noteCardPresentation'
+import { normalizedHighlightRanges } from '../../utils/searchHighlight'
 import { htmlToMarkdown, makeMarkdownTitle, replaceBlobImageSources } from '../../utils/markdownPaste'
 import { useFavicon } from '../../hooks/useFavicon'
 import styles from './NoteCard.module.css'
@@ -141,6 +142,25 @@ function textDensityClass(text: string | null | undefined): string {
   return styles.cardTextMedium
 }
 
+function SearchMatchSnippet({ note }: { note: Note }) {
+  const match = note.searchMatches?.[0]
+  if (!match?.text) return null
+  const ranges = normalizedHighlightRanges(match)
+  const parts: React.ReactNode[] = []
+  let cursor = 0
+
+  for (const range of ranges.slice(0, 6)) {
+    if (range.start > cursor) {
+      parts.push(match.text.slice(cursor, range.start))
+    }
+    parts.push(<mark key={`${range.start}-${range.end}`}>{match.text.slice(range.start, range.end)}</mark>)
+    cursor = range.end
+  }
+  if (cursor < match.text.length) parts.push(match.text.slice(cursor))
+
+  return <div className={styles.searchSnippet}>{parts.length ? parts : match.text}</div>
+}
+
 function SoftOverlay({
   note,
   titleNode,
@@ -221,6 +241,7 @@ function SimpleCard({ note, onTagClick }: { note: Note; onTagClick?: (name: stri
         <SavedDate note={note} />
         <div className={styles.title}>{note.title}</div>
       </div>
+      <SearchMatchSnippet note={note} />
       {textObj && <div className={styles.excerpt}>{text}</div>}
       <CardMeta note={note} onTagClick={onTagClick} />
     </Link>
@@ -380,6 +401,11 @@ function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClic
           <CollectionStats objects={note.objects} />
         </div>
       </SoftOverlay>
+      {note.searchMatches?.length ? (
+        <div className={styles.cardFooter}>
+          <SearchMatchSnippet note={note} />
+        </div>
+      ) : null}
     </Link>
   )
 }
@@ -487,6 +513,12 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
         </SoftOverlay>
       </div>
 
+      {note.searchMatches?.length ? (
+        <div className={styles.cardFooter}>
+          <SearchMatchSnippet note={note} />
+        </div>
+      ) : null}
+
       {hasAttachmentFooter && (
       <div className={`${styles.cardFooter} ${styles.attachmentFooter}`}>
         {links.length > 0 && (
@@ -507,6 +539,7 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
 
       {!shouldOverlayText && textObj && text && !/^https?:\/\//.test(textObj.content) && (
         <div className={`${styles.cardFooter} ${textDensityClass(text)}`}>
+          <SearchMatchSnippet note={note} />
           <div className={styles.excerpt}>{text}</div>
         </div>
       )}

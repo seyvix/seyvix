@@ -19,6 +19,7 @@
 }
 
 .content {
+  position: relative;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -70,6 +71,107 @@
   opacity: 1;
 }
 
+.historyMenu {
+  position: absolute;
+  top: calc(100% + 7px);
+  left: 0;
+  z-index: 45;
+  width: min(360px, calc(100vw - 96px));
+  padding: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 18%);
+}
+
+.historyItem {
+  all: unset;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  box-sizing: border-box;
+  padding: 0 10px;
+  border-radius: 6px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 1.25;
+  cursor: pointer;
+}
+
+.historyItem span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.historyItem:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.mode {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.modeButton {
+  all: unset;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition:
+    background var(--duration-fast),
+    color var(--duration-fast);
+}
+
+.modeButton:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.modeMenu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 50;
+  width: 178px;
+  padding: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 18%);
+}
+
+.modeItem,
+.modeItemActive {
+  all: unset;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 34px;
+  box-sizing: border-box;
+  padding: 0 10px;
+  border-radius: 6px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.modeItem:hover,
+.modeItemActive {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
 .clearBtn {
   all: unset;
   display: flex;
@@ -108,6 +210,10 @@
     padding: 8px 0;
   }
 
+  .historyMenu {
+    width: min(320px, calc(100vw - 72px));
+  }
+
   .input {
     min-width: 84px;
     font-size: 16px;
@@ -131,6 +237,16 @@
     min-width: 22px;
     min-height: 22px;
     justify-content: center;
+  }
+
+  .modeButton {
+    width: 32px;
+    height: 32px;
+  }
+
+  .modeMenu {
+    right: -6px;
+    width: 164px;
   }
 
   .clearBtn {

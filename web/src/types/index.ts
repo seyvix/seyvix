@@ -131,6 +131,22 @@ export interface NoteCollectionRef {
   title: string
 }
 
+export interface SearchHighlightRange {
+  start: number
+  end: number
+}
+
+export interface SearchMatch {
+  chunk_id?: string
+  chunkId?: string
+  chunk_external_id?: string
+  chunkExternalId?: string
+  text: string
+  score: number
+  highlight_ranges?: SearchHighlightRange[]
+  highlightRanges?: SearchHighlightRange[]
+}
+
 export interface Note {
   id: string
   slug: string
@@ -146,6 +162,7 @@ export interface Note {
   isFavorite?: boolean
   collection?: NoteCollectionRef | null
   source?: SourceMetadata | null
+  searchMatches?: SearchMatch[]
   /** Стабильный ключ для React — не меняется при tempId→serverId переходе */
   stableKey?: string
   isLocal?: boolean    // хранится локально, ещё не синхронизировано
@@ -154,6 +171,7 @@ export interface Note {
 
 export interface NotesParams {
   search?: string
+  searchMode?: 'full_text' | 'semantic' | 'hybrid'
   tags?: string[]
   folders?: string[]
   sort?: 'newest' | 'custom'

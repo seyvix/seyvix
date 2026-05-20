@@ -4,23 +4,40 @@ import { useNotes } from '../hooks/useNotes'
 import { useLocalNotes } from '../contexts/LocalNotesContext'
 import { NoteGrid } from '../components/NoteGrid/NoteGrid'
 import { SearchBar } from '../components/SearchBar/SearchBar'
+import type { SearchMode } from '../components/SearchBar/SearchBar'
 import { BulkToolbar } from '../components/BulkToolbar/BulkToolbar'
 import { BulkSelectProvider } from '../contexts/BulkSelectContext'
 import { useThumbnailPoller } from '../hooks/useThumbnailPoller'
+import { nextSearchHistory, readSearchHistory, writeSearchHistory } from '../utils/searchHistory'
 
 export default function NotesPage() {
   const [searchParams, setSearchParams] = useSearchParams()
 
   const search     = searchParams.get('search') ?? ''
+  const searchMode = parseSearchMode(searchParams.get('searchMode'))
   const activeTags = searchParams.get('tags')?.split(',').filter(Boolean) ?? []
   const activeFolders = searchParams.get('folders')?.split(',').filter(Boolean) ?? []
 
   // Локальный state для инпута — не теряем фокус при каждом нажатии
   const [inputValue, setInputValue] = useState(search)
+  const [searchHistory, setSearchHistory] = useState<string[]>(() => readSearchHistory())
   useEffect(() => { setInputValue(search) }, [search])
+  useEffect(() => {
+    const trimmed = search.trim()
+    if (!trimmed) return
+    const timer = window.setTimeout(() => {
+      setSearchHistory(current => {
+        const next = nextSearchHistory(current, trimmed)
+        writeSearchHistory(next)
+        return next
+      })
+    }, 600)
+    return () => window.clearTimeout(timer)
+  }, [search])
 
   const { data: serverNotes = [], isPending } = useNotes({
     search:  search  || undefined,
+    searchMode,
     tags:    activeTags.length ? activeTags : undefined,
     folders: activeFolders.length ? activeFolders : undefined,
     sort:    'custom',
@@ -48,6 +65,15 @@ export default function NotesPage() {
     }, { replace: true })
   }
 
+  function handleHistorySelect(value: string) {
+    setInputValue(value)
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      next.set('search', value)
+      return next
+    }, { replace: true })
+  }
+
   function handleTagClick(tag: string) {
     setSearchParams(prev => {
       const next = new URLSearchParams(prev)
@@ -70,6 +96,15 @@ export default function NotesPage() {
     })
   }
 
+  function handleSearchModeChange(value: SearchMode) {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      if (value === 'hybrid') next.delete('searchMode')
+      else next.set('searchMode', value)
+      return next
+    }, { replace: true })
+  }
+
   function handleClear() {
     setInputValue('')
     setSearchParams({})
@@ -80,7 +115,11 @@ export default function NotesPage() {
       <SearchBar
         search={inputValue}
         activeTags={activeTags}
+        searchMode={searchMode}
+        searchHistory={searchHistory}
         onSearchChange={handleSearchChange}
+        onSearchModeChange={handleSearchModeChange}
+        onHistorySelect={handleHistorySelect}
         onTagRemove={handleTagRemove}
         onClear={handleClear}
       />
@@ -90,4 +129,9 @@ export default function NotesPage() {
       )}
     </BulkSelectProvider>
   )
+}
+
+function parseSearchMode(value: string | null): SearchMode {
+  if (value === 'full_text' || value === 'semantic' || value === 'hybrid') return value
+  return 'hybrid'
 }

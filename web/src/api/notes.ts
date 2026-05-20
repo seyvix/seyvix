@@ -12,6 +12,7 @@ export async function fetchNotes(params: NotesParams = {}): Promise<Note[]> {
   const origin = typeof window === 'undefined' ? 'http://localhost' : window.location.origin
   const url = new URL(BASE, origin)
   if (params.search) url.searchParams.set('search', params.search)
+  if (params.search && params.searchMode) url.searchParams.set('search_mode', params.searchMode)
   if (params.sort) url.searchParams.set('sort', params.sort)
   params.tags?.forEach(t => url.searchParams.append('tags', t))
   params.folders?.forEach(f => url.searchParams.append('folders', f))

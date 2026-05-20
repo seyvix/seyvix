@@ -25,6 +25,21 @@ test('fetchNotes sends custom sort when requested', async () => {
   assert.equal(url.searchParams.get('search'), 'grid')
 })
 
+test('fetchNotes sends selected search mode when searching', async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = []
+  globalThis.fetch = async (input, init) => {
+    calls.push({ url: String(input), init })
+    return jsonResponse({ items: [] })
+  }
+
+  await fetchNotes({ search: 'semantic notes', searchMode: 'semantic' })
+
+  const url = new URL(calls[0].url)
+  assert.equal(url.pathname, '/api/v1/notes')
+  assert.equal(url.searchParams.get('search'), 'semantic notes')
+  assert.equal(url.searchParams.get('search_mode'), 'semantic')
+})
+
 test('reorderNotes sends backend order payload', async () => {
   const calls: Array<{ url: string; init?: RequestInit }> = []
   globalThis.fetch = async (input, init) => {
