@@ -8,7 +8,7 @@
   position: relative;
   width: var(--note-grid-content-width);
   min-height: 100%;
-  margin: 0 auto;
+  margin: 18px auto;
   padding: var(--space-4) 0;
   box-sizing: content-box;
 }
@@ -61,7 +61,7 @@
 
 @media (max-width: 1180px) {
   .grid {
-    margin: 0 auto;
+    margin: 18px auto;
   }
 }
 

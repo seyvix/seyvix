@@ -848,7 +848,7 @@ class ContentService:
     ) -> NoteCardResponse:
         normalized_title = title or text.strip().splitlines()[0][:80]
         slug = await self._unique_slug(owner_user_id, normalized_title)
-        sort_order = await self.content.get_max_sort_order(owner_user_id=owner_user_id) + 10
+        sort_order = await self._next_root_sort_order(owner_user_id=owner_user_id)
         content_object_id = str(uuid4())
         asset_id = str(uuid4())
         stored_file = self.storage.write_text_object(
@@ -928,7 +928,7 @@ class ContentService:
     ) -> NoteCardResponse:
         normalized_title = title or self._link_title(url)
         slug = await self._unique_slug(owner_user_id, normalized_title)
-        sort_order = await self.content.get_max_sort_order(owner_user_id=owner_user_id) + 10
+        sort_order = await self._next_root_sort_order(owner_user_id=owner_user_id)
         content_object_id = str(uuid4())
         asset_id = str(uuid4())
         logger.info(
@@ -1024,7 +1024,7 @@ class ContentService:
         has_text = bool(text.strip())
         normalized_title = title or self._link_title(links[0])
         slug = await self._unique_slug(owner_user_id, normalized_title)
-        sort_order = await self.content.get_max_sort_order(owner_user_id=owner_user_id) + 10
+        sort_order = await self._next_root_sort_order(owner_user_id=owner_user_id)
         content_object_id = str(uuid4())
         logger.info(
             "content.note.create_text_links.started",
@@ -1160,7 +1160,7 @@ class ContentService:
         file_media_type = self._media_type(uploaded.filename, uploaded.content_type)
         normalized_title = title or text.strip().splitlines()[0][:80] or uploaded.filename
         slug = await self._unique_slug(owner_user_id, normalized_title)
-        sort_order = await self.content.get_max_sort_order(owner_user_id=owner_user_id) + 10
+        sort_order = await self._next_root_sort_order(owner_user_id=owner_user_id)
         content_object_id = str(uuid4())
         file_asset_id = str(uuid4())
         text_asset_id = str(uuid4())
@@ -1365,7 +1365,7 @@ class ContentService:
             owner_user_id,
             Path(uploaded.filename).stem or normalized_title,
         )
-        sort_order = await self.content.get_max_sort_order(owner_user_id=owner_user_id) + 10
+        sort_order = await self._next_root_sort_order(owner_user_id=owner_user_id)
         content_object_id = object_id or str(uuid4())
         asset_id = str(uuid4())
         stored_file = self.storage.write_binary_object(
@@ -1495,7 +1495,7 @@ class ContentService:
         slug: str | None = None,
     ) -> ContentObject:
         normalized_slug = slug or await self._unique_slug(owner_user_id, title)
-        sort_order = await self.content.get_max_sort_order(owner_user_id=owner_user_id) + 10
+        sort_order = await self._next_root_sort_order(owner_user_id=owner_user_id)
         content_object_id = object_id or str(uuid4())
         collection = ContentObject(
             id=content_object_id,
@@ -1606,6 +1606,9 @@ class ContentService:
     async def _next_collection_position(self, collection: ContentObject) -> int:
         current_items = await self.content.list_collection_items(collection.id)
         return max((item.position for item in current_items), default=0) + 10
+
+    async def _next_root_sort_order(self, *, owner_user_id: str) -> int:
+        return await self.content.get_min_sort_order(owner_user_id=owner_user_id) - 10
 
     async def _assign_object_tree_to_category(
         self,

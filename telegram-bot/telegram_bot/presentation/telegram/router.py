@@ -79,7 +79,7 @@ def build_router() -> Router:
         await media_group_buffer.ingest(
             material=material,
             save=use_cases.ingest_material,
-            send_loading=lambda _material: message.answer(
+            send_loading=lambda _material: message.reply(
                 "Загружаю и сохраняю…",
                 reply_markup=web_app_keyboard(web_app_url),
             ),
