@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useCallback } from 'react'
+import { useRef, useState, useEffect, useCallback, type CSSProperties } from 'react'
 import { Link } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { EditorContent, useEditor, type Editor } from '@tiptap/react'
@@ -36,22 +36,19 @@ import {
 } from 'lucide-react'
 import { useSyncLocalNote } from '../../hooks/useSyncLocalNote'
 import { useBulkSelect } from '../../contexts/BulkSelectContext'
-import { draggable, dropTargetForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter'
 import { dropTargetForExternal } from '@atlaskit/pragmatic-drag-and-drop/external/adapter'
 import { containsFiles, getFiles } from '@atlaskit/pragmatic-drag-and-drop/external/file'
 import AuthImage from '../AuthImage/AuthImage'
 import { LoaderSpinner } from '../LoaderSpinner'
 import type { Note, NoteObject, Tag } from '../../types'
 import { getTagColor } from '../../utils/tagColor'
-import { MERGE_NOTES_ENABLED } from '../../api/notes'
-import { useMergeNotes } from '../../hooks/useMergeNotes'
 import { useUploadFiles } from '../../hooks/useUploadFiles'
 import { useAddFilesToNote } from '../../hooks/useAddFilesToNote'
 import { useCreateNote } from '../../hooks/useCreateNote'
 import { useUpdateNote } from '../../hooks/useUpdateNote'
 import { useDragContext } from '../../contexts/DragContext'
 import { getObjectDisplayText, getObjectPreviewSource } from '../../utils/notePreview'
-import { collectSourceChips } from '../../utils/noteCardPresentation'
+import { collectSourceChips, getSavedDateLabel } from '../../utils/noteCardPresentation'
 import { htmlToMarkdown, makeMarkdownTitle, replaceBlobImageSources } from '../../utils/markdownPaste'
 import { useFavicon } from '../../hooks/useFavicon'
 import styles from './NoteCard.module.css'
@@ -113,6 +110,48 @@ function CardMeta({ note, onTagClick }: { note: Note; onTagClick?: (name: string
   )
 }
 
+function SavedDate({ note, tone = 'muted' }: { note: Note; tone?: 'muted' | 'overlay' }) {
+  const label = getSavedDateLabel(note.updatedAt)
+  if (!label) return null
+  return <span className={`${styles.savedDate} ${tone === 'overlay' ? styles.savedDateOverlay : ''}`}>{label}</span>
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value))
+}
+
+function getObjectAspectRatio(obj: NoteObject | undefined): number | null {
+  if (!obj?.imageWidth || !obj.imageHeight) return null
+  return clamp(obj.imageWidth / obj.imageHeight, 0.68, 1.55)
+}
+
+function visualRatioStyle(obj: NoteObject | undefined, fallbackRatio: number): CSSProperties {
+  return { '--note-card-visual-ratio': String(getObjectAspectRatio(obj) ?? fallbackRatio) } as CSSProperties
+}
+
+function SoftOverlay({
+  note,
+  titleNode,
+  children,
+  onTagClick,
+}: {
+  note: Note
+  titleNode?: React.ReactNode
+  children?: React.ReactNode
+  onTagClick?: (name: string) => void
+}) {
+  return (
+    <div className={styles.softOverlay}>
+      <div className={styles.softOverlayTop}>
+        <SavedDate note={note} tone="overlay" />
+        {children}
+      </div>
+      {titleNode ?? <div className={styles.title}>{note.title}</div>}
+      <CardMeta note={note} onTagClick={onTagClick} />
+    </div>
+  )
+}
+
 // ─── Simple ──────────────────────────────────────────────────────────────────
 
 function SimpleCard({ note, onTagClick }: { note: Note; onTagClick?: (name: string) => void }) {
@@ -122,31 +161,36 @@ function SimpleCard({ note, onTagClick }: { note: Note; onTagClick?: (name: stri
 
   // Только картинка — без заголовка, изображение в край
   if (imageObj && !textObj) {
-    const imageStyle = imageObj.imageWidth && imageObj.imageHeight
-      ? { aspectRatio: `${imageObj.imageWidth} / ${imageObj.imageHeight}` }
-      : undefined
-
     return (
-      <Link draggable={false} to={notePageHref(note)} className={`${styles.card} ${styles.cardSimpleImage}`}>
+      <Link
+        draggable={false}
+        to={notePageHref(note)}
+        className={`${styles.card} ${styles.cardMedia} ${styles.cardSimpleImage}`}
+        style={visualRatioStyle(imageObj, 0.82)}
+      >
         <AuthImage
           className={styles.simpleImageMedia}
           src={getObjectPreviewSource(imageObj)}
           alt={note.title}
-          style={imageStyle}
         />
-        {hasMeta && (
-          <div className={styles.imageOnlyMeta}>
-            <CardMeta note={note} onTagClick={onTagClick} />
-          </div>
-        )}
+        <SoftOverlay note={note} onTagClick={onTagClick}>
+          {hasMeta ? null : <span className={styles.mediaTypeLabel}>Изображение</span>}
+        </SoftOverlay>
       </Link>
     )
   }
 
   return (
-    <Link draggable={false} to={notePageHref(note)} className={`${styles.card} ${styles.cardSimple}`}>
-      {imageObj && <AuthImage className={styles.cover} src={getObjectPreviewSource(imageObj)} alt="" />}
-      <div className={styles.title}>{note.title}</div>
+    <Link draggable={false} to={notePageHref(note)} className={`${styles.card} ${styles.cardSimple} ${imageObj ? styles.cardSoft : ''}`}>
+      {imageObj && (
+        <div className={styles.inlineCover} style={visualRatioStyle(imageObj, 1.18)}>
+          <AuthImage className={styles.cover} src={getObjectPreviewSource(imageObj)} alt="" />
+        </div>
+      )}
+      <div className={styles.cardTextHead}>
+        <SavedDate note={note} />
+        <div className={styles.title}>{note.title}</div>
+      </div>
       {textObj && <div className={styles.excerpt}>{getObjectDisplayText(textObj)}</div>}
       <CardMeta note={note} onTagClick={onTagClick} />
     </Link>
@@ -311,16 +355,21 @@ function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClic
     })
   }
 
+  const primaryVisual = visualObjs[0]
+
   return (
-    <Link draggable={false} to={notePageHref(note)} className={`${styles.card} ${styles.cardCollection}`}>
+    <Link
+      draggable={false}
+      to={notePageHref(note)}
+      className={`${styles.card} ${styles.cardMedia} ${styles.cardCollection}`}
+      style={visualRatioStyle(primaryVisual, visualObjs.length > 2 ? 0.82 : 1.05)}
+    >
       <div className={styles.collectionVisual}>
         {visual}
       </div>
-      <div className={styles.cardFooter}>
+      <SoftOverlay note={note} titleNode={titleNode} onTagClick={onTagClick}>
         <CollectionStats objects={note.objects} />
-        {titleNode}
-        <CardMeta note={note} onTagClick={onTagClick} />
-      </div>
+      </SoftOverlay>
     </Link>
   )
 }
@@ -377,9 +426,15 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
   const docThumb  = firstDoc ? (firstDoc.thumbnailUrl ?? firstDoc.cover) : undefined
   const firstLink = links[0]
   const firstLinkThumb = firstLink?.thumbnailUrl ?? null
+  const visualObject = imageObj ?? (docThumb ? firstDoc : undefined) ?? (firstLinkThumb ? firstLink : undefined)
 
   return (
-    <Link draggable={false} to={notePageHref(note)} className={`${styles.card} ${styles.cardComposite}`}>
+    <Link
+      draggable={false}
+      to={notePageHref(note)}
+      className={`${styles.card} ${styles.cardMedia} ${styles.cardComposite}`}
+      style={visualRatioStyle(visualObject, textObj ? 0.92 : 1.18)}
+    >
 
       {/* Cover */}
       <div className={styles.compositeCover}>
@@ -410,11 +465,13 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
                     {textObj && <span className={styles.compositeCoverText}>{getObjectDisplayText(textObj, 240)}</span>}
                   </div>
         }
+        <SoftOverlay note={note} titleNode={titleNode} onTagClick={onTagClick}>
+          <span className={styles.mediaTypeLabel}>{docs.length > 0 ? 'Документ' : links.length > 0 ? 'Ссылка' : 'Заметка'}</span>
+        </SoftOverlay>
       </div>
 
       {/* Footer */}
       <div className={styles.cardFooter}>
-
         {/* Ссылки */}
         {links.length > 0 && (
           <div className={styles.compositeChips}>
@@ -429,11 +486,9 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
           </div>
         )}
 
-        {titleNode}
         {textObj && !/^https?:\/\//.test(textObj.content) && (
           <div className={styles.excerpt}>{getObjectDisplayText(textObj)}</div>
         )}
-        <CardMeta note={note} onTagClick={onTagClick} />
       </div>
     </Link>
   )
@@ -443,23 +498,14 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
 
 const HIGHLIGHT_MS = 5000
 
-export function NoteCard({ note, isNew, onTagClick }: { note: Note; isNew?: boolean; onTagClick?: (tag: string) => void }) {
+export function NoteCard({ note, isNew, isDragging, onTagClick }: { note: Note; isNew?: boolean; isDragging?: boolean; onTagClick?: (tag: string) => void }) {
   const wrapperRef = useRef<HTMLDivElement>(null)
-  const [isDragging,     setIsDragging]     = useState(false)
-  const [isOver,         setIsOver]         = useState(false)
   const [fileHoverState, setFileHoverState] = useState<'new' | 'merge' | null>(null)
 
   // Rename after merge
   const [renamePending, setRenamePending] = useState(false)
   const [renameValue,   setRenameValue]   = useState('')
   const { mutate: updateNote } = useUpdateNote()
-
-  // Стабильный ref для trigger-функции ренейма (используется внутри DnD useEffect)
-  const triggerRenameRef = useRef<((initialValue?: string) => void) | null>(null)
-  triggerRenameRef.current = (initialValue = '') => {
-    setRenameValue(initialValue)
-    setRenamePending(true)
-  }
 
   function handleRenameSubmit() {
     const title = renameValue.trim() || note.title
@@ -482,16 +528,13 @@ export function NoteCard({ note, isNew, onTagClick }: { note: Note; isNew?: bool
   const { isBulk, selectedSlugs, toggleSelect } = useBulkSelect()
   const isSelected = selectedSlugs.has(note.slug)
 
-  const { mutate: merge }    = useMergeNotes()
   const { mutate: upload }   = useUploadFiles()
   const { mutate: addFiles } = useAddFilesToNote()
   const { mutate: syncLocal, isPending: isSyncing } = useSyncLocalNote()
 
   // Стабильные рефы, чтобы useEffect не переподписывался на каждый рендер
-  const mergeRef    = useRef(merge)
   const uploadRef   = useRef(upload)
   const addFilesRef = useRef(addFiles)
-  useEffect(() => { mergeRef.current    = merge    })
   useEffect(() => { uploadRef.current   = upload   })
   useEffect(() => { addFilesRef.current = addFiles })
 
@@ -501,39 +544,6 @@ export function NoteCard({ note, isNew, onTagClick }: { note: Note; isNew?: bool
   useEffect(() => {
     const el = wrapperRef.current
     if (!el) return
-
-    const cleanupDrag = draggable({
-      element: el,
-      getInitialData: () => ({ type: 'note', noteId: note.id, noteSlug: note.slug, noteType: note.type, noteTitle: note.title }),
-      onDragStart: () => setIsDragging(true),
-      onDrop: () => setIsDragging(false),
-    })
-
-    const cleanupDrop = dropTargetForElements({
-      element: el,
-      canDrop: ({ source }) =>
-        MERGE_NOTES_ENABLED && source.data.type === 'note' && source.data.noteId !== note.id,
-      onDragEnter: () => setIsOver(true),
-      onDragLeave: () => setIsOver(false),
-      onDrop: ({ source }) => {
-        setIsOver(false)
-        if (!MERGE_NOTES_ENABLED) return
-        const sourceType  = source.data.noteType  as string
-        const sourceTitle = source.data.noteTitle as string
-        mergeRef.current(
-          { sourceSlug: source.data.noteSlug as string, targetSlug: note.slug },
-          {
-            onSuccess: () => {
-              const isMixed = (sourceType === 'collection') !== (note.type === 'collection')
-              const prefill = isMixed
-                ? (note.type === 'collection' ? note.title : sourceTitle)
-                : ''
-              triggerRenameRef.current?.(prefill)
-            },
-          },
-        )
-      },
-    })
 
     const cleanupFileDrop = dropTargetForExternal({
       element: el,
@@ -562,8 +572,6 @@ export function NoteCard({ note, isNew, onTagClick }: { note: Note; isNew?: bool
     })
 
     return () => {
-      cleanupDrag()
-      cleanupDrop()
       cleanupFileDrop()
     }
   }, [note.id])
@@ -571,7 +579,6 @@ export function NoteCard({ note, isNew, onTagClick }: { note: Note; isNew?: bool
   const cls = [
     styles.cardWrapper,
     isDragging                 ? styles.isDragging      : '',
-    isOver                     ? styles.isDropOver      : '',
     fileHoverState === 'new'   ? styles.isFileOverNew   : '',
     fileHoverState === 'merge' ? styles.isFileOverMerge : '',
     highlighted                ? styles.isHighlighted   : '',

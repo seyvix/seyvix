@@ -11,6 +11,7 @@ import {
   FileDown,
   Globe,
   Download,
+  RefreshCw,
   X,
   ChevronRight,
   Check,
@@ -34,6 +35,7 @@ import HtmlSnapshotViewer from '../components/HtmlSnapshotViewer/HtmlSnapshotVie
 import { LoaderSpinner } from '../components/LoaderSpinner'
 import { apiFetch } from '../lib/apiClient'
 import { deleteNotes } from '../api/notes'
+import { useAuthenticatedObjectUrl } from '../hooks/useAuthenticatedObjectUrl'
 import {
   acceptTagSuggestion,
   acceptTaxonomyAssignment,
@@ -44,14 +46,17 @@ import {
   fetchContentTagSuggestions,
   fetchContentTagJobs,
   fetchContentTags,
+  fetchSnapshotArtifacts,
   fetchSnapshotJobs,
   fetchTaxonomyAssignments,
   fetchTaxonomyClassificationJobs,
   rejectTagSuggestion,
   rejectTaxonomyAssignment,
+  reprocessSnapshotMarkdown,
   searchTaxonomyCategories,
   type ContentTagAssignment,
   type ContentTagJob,
+  type SnapshotArtifact,
   type SnapshotJob,
   type TaxonomyAssignment,
   type TaxonomyClassificationJob,
@@ -371,6 +376,10 @@ const LINK_SNAPSHOT_TYPES: Array<{ jobType: 'markdown' | 'pdf'; label: string }>
   { jobType: 'pdf', label: 'PDF' },
 ]
 
+const TEXT_EXTRACTION_TYPES: Array<{ jobType: 'markdown'; label: string }> = [
+  { jobType: 'markdown', label: 'Текст' },
+]
+
 function linkSnapshotJobBadge(
   kind: 'markdown' | 'pdf',
   views: SnapshotView[],
@@ -388,6 +397,27 @@ function linkSnapshotJobBadge(
     return <span className={styles.assetTabJobPct} title="Готовится">{pct}</span>
   }
   return null
+}
+
+function snapshotArtifactView(artifact: SnapshotArtifact): SnapshotView | null {
+  if (artifact.status !== 'ready') return null
+  if (artifact.artifact_type === 'markdown') {
+    return { kind: 'markdown', label: 'Текст', url: artifact.url }
+  }
+  if (artifact.artifact_type === 'pdf') {
+    return { kind: 'pdf', label: 'PDF', url: artifact.url }
+  }
+  if (artifact.artifact_type === 'webpage_html') {
+    return { kind: 'webpage_html', label: 'Website', url: artifact.url }
+  }
+  return null
+}
+
+function mergeSnapshotViews(primary: SnapshotView[], discovered: SnapshotView[]): SnapshotView[] {
+  const byKind = new Map<SnapshotView['kind'], SnapshotView>()
+  for (const view of primary) byKind.set(view.kind, view)
+  for (const view of discovered) byKind.set(view.kind, view)
+  return Array.from(byKind.values())
 }
 
 function EnrichmentPanel({ note }: { note: Note }) {
@@ -650,7 +680,21 @@ function EnrichmentPanel({ note }: { note: Note }) {
 
 // ─── Image ─────────────────────────────────────────────────────────────────────
 
-function ImageObj({ obj, isEditing, onDelete }: { obj: NoteObject; isEditing: boolean; onDelete: () => void }) {
+function ImageObj({
+  obj,
+  noteId,
+  isEditing,
+  isOpen,
+  onOpen,
+  onDelete,
+}: {
+  obj: NoteObject
+  noteId: string
+  isEditing: boolean
+  isOpen: boolean
+  onOpen: () => void
+  onDelete: () => void
+}) {
   return (
     <div className={`${styles.objWrapper} ${styles.objImage} ${obj.caption ? styles.objImageWithCaption : ''}`}>
       <AuthImage
@@ -661,6 +705,16 @@ function ImageObj({ obj, isEditing, onDelete }: { obj: NoteObject; isEditing: bo
       />
       <ObjectSource source={obj.source} />
       {obj.caption && <MarkdownText className={styles.objImageCaption} text={obj.caption} source={obj.source} />}
+      <div className={styles.extractionCompanion}>
+        <AssetViewer
+          obj={obj}
+          noteId={noteId}
+          isEditing={false}
+          isOpen={isOpen}
+          onOpen={onOpen}
+          onDelete={onDelete}
+        />
+      </div>
       {isEditing && <button className={styles.objDeleteBtn} onClick={onDelete}><X size={12} /></button>}
     </div>
   )
@@ -806,9 +860,9 @@ function AssetViewer({
 }) {
   const queryClient = useQueryClient()
   const { noteId: pageNoteId } = useParams<{ noteId: string }>()
-  const views = (obj.snapshotViews ?? []).filter(isAssetMode)
-  const viewKey = views.map(view => `${view.kind}:${view.url}`).join('|')
-  const [activeKind, setActiveKind] = useState<SnapshotView['kind'] | null>(() => views[0]?.kind ?? null)
+  const baseViews = (obj.snapshotViews ?? []).filter(isAssetMode)
+  const canExtractText = obj.type !== 'text'
+  const [activeKind, setActiveKind] = useState<SnapshotView['kind'] | null>(() => baseViews[0]?.kind ?? null)
   const favicon = useFavicon(obj.type === 'link' ? obj.content : null)
   let domain = obj.content
   if (obj.type === 'link') {
@@ -820,27 +874,51 @@ function AssetViewer({
   const { data: snapshotJobsNote } = useQuery({
     queryKey: ['snapshot-jobs', noteId],
     queryFn: () => fetchSnapshotJobs(noteId),
-    enabled: obj.type === 'link',
+    enabled: canExtractText,
     refetchInterval: (query) => {
-      if (obj.type !== 'link') return false
       const jobs = query.state.data ?? []
       return jobs.some(isActiveJob) ? 3000 : false
     },
   })
   const snapshotJobs = (snapshotJobsNote ?? []).filter(j => j.source_asset_id === obj.id)
-  const webpageHtmlJob = snapshotJobs.find(j => j.job_type === 'webpage_html')
+  const { data: snapshotArtifactsNote } = useQuery({
+    queryKey: ['snapshot-artifacts', noteId],
+    queryFn: () => fetchSnapshotArtifacts(noteId),
+    enabled: canExtractText,
+    refetchInterval: () => snapshotJobs.some(isActiveJob) ? 3000 : false,
+  })
+  const discoveredViews = (snapshotArtifactsNote ?? [])
+    .filter(artifact => artifact.source_asset_id === obj.id)
+    .map(snapshotArtifactView)
+    .filter((view): view is SnapshotView => view !== null)
+    .filter(isAssetMode)
+  const views = mergeSnapshotViews(baseViews, discoveredViews)
+  const viewKey = views.map(view => `${view.kind}:${view.url}`).join('|')
+  const markdownJob = snapshotJobs.find(j => j.job_type === 'markdown')
+  const reprocessMarkdown = useMutation({
+    mutationFn: () => reprocessSnapshotMarkdown(noteId, obj.id),
+    onSuccess: () => {
+      setActiveKind('markdown')
+      queryClient.invalidateQueries({ queryKey: ['snapshot-jobs', noteId] })
+      queryClient.invalidateQueries({ queryKey: ['snapshot-artifacts', noteId] })
+      if (pageNoteId) queryClient.invalidateQueries({ queryKey: ['note', pageNoteId] })
+      queryClient.invalidateQueries({ queryKey: ['notes'] })
+      onOpen()
+    },
+  })
 
   useEffect(() => {
-    if (obj.type !== 'link') return
-    if (webpageHtmlJob?.status !== 'done') return
-    if ((obj.snapshotViews ?? []).some(v => v.kind === 'webpage_html')) return
+    const finishedJob = snapshotJobs.find(job => (job.status === 'done' || job.status === 'completed'))
+    if (!finishedJob) return
+    if ((obj.snapshotViews ?? []).some(v => v.kind === finishedJob.job_type)) return
     if (pageNoteId) queryClient.invalidateQueries({ queryKey: ['note', pageNoteId] })
+    queryClient.invalidateQueries({ queryKey: ['snapshot-artifacts', noteId] })
     queryClient.invalidateQueries({ queryKey: ['notes'] })
-  }, [obj.type, obj.snapshotViews, pageNoteId, queryClient, webpageHtmlJob?.status])
+  }, [noteId, obj.snapshotViews, pageNoteId, queryClient, snapshotJobs])
 
   const hasPendingOnlySlots =
-    obj.type === 'link' &&
-    LINK_SNAPSHOT_TYPES.some(({ jobType }) => {
+    canExtractText &&
+    (obj.type === 'link' ? LINK_SNAPSHOT_TYPES : TEXT_EXTRACTION_TYPES).some(({ jobType }) => {
       if (views.some(v => v.kind === jobType)) return false
       const job = snapshotJobs.find(j => j.job_type === jobType)
       return !!(job && job.status !== 'done' && job.status !== 'completed')
@@ -859,7 +937,11 @@ function AssetViewer({
   }, [activeKind, viewKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const activeView = views.find(view => view.kind === activeKind) ?? views[0] ?? null
-  const title = obj.type === 'link' ? domain : getBaseName(obj.filename)
+  const title = obj.type === 'link'
+    ? domain
+    : obj.type === 'image' || obj.type === 'audio' || obj.type === 'video'
+      ? `Оцифровка · ${obj.filename ?? getBaseName(obj.filename)}`
+      : getBaseName(obj.filename)
 
   return (
     <div className={styles.objWrapper}>
@@ -908,7 +990,42 @@ function AssetViewer({
                     </span>
                   )
                 })}
+              {obj.type !== 'link' &&
+                TEXT_EXTRACTION_TYPES.map(({ jobType, label }) => {
+                  if (views.some(v => v.kind === jobType)) return null
+                  const job = snapshotJobs.find(j => j.job_type === jobType)
+                  if (!job || job.status === 'done' || job.status === 'completed') return null
+                  const failed = job.status === 'failed'
+                  const pct = job.status === 'processing' ? '50%' : '0%'
+                  return (
+                    <span
+                      key={`${obj.id}-job-${jobType}`}
+                      className={styles.assetTabPending}
+                      aria-label={failed ? `${label}: ошибка` : `${label}: готовится`}
+                    >
+                      {SNAPSHOT_ICON[jobType] ?? <Download size={12} />}
+                      {label}
+                      <span className={failed ? styles.assetTabJobFailed : styles.assetTabJobPct}>
+                        {failed ? '!' : pct}
+                      </span>
+                    </span>
+                  )
+                })}
             </div>
+          )}
+          {canExtractText && (
+            <button
+              type="button"
+              className={styles.assetAction}
+              disabled={reprocessMarkdown.isPending || markdownJob?.status === 'processing'}
+              onClick={event => {
+                event.stopPropagation()
+                reprocessMarkdown.mutate()
+              }}
+              title="Переоцифровать текст"
+            >
+              <RefreshCw size={13} />
+            </button>
           )}
           {activeView && (
             <button
@@ -950,8 +1067,12 @@ function AssetViewer({
                 <MarkdownSnapshotView src={activeView.url} />
               ) : obj.type === 'link' ? (
                 <LinkSnapshotPending obj={obj} favicon={favicon} domain={domain} />
+              ) : markdownJob?.status === 'failed' ? (
+                <div className={styles.assetEmpty}>Оцифровка завершилась ошибкой: {markdownJob.error_message ?? 'нет деталей'}</div>
+              ) : markdownJob && isActiveJob(markdownJob) ? (
+                <div className={styles.assetEmpty}>Оцифровка готовится</div>
               ) : (
-                <div className={styles.assetEmpty}>Нет доступных режимов просмотра</div>
+                <div className={styles.assetEmpty}>Оцифровка еще не запускалась. Нажмите кнопку обновления выше.</div>
               )}
             </div>
           </div>
@@ -982,45 +1103,101 @@ function LinkObj({
   return <AssetViewer obj={obj} noteId={noteId} isEditing={isEditing} isOpen={isOpen} onOpen={onOpen} onDelete={onDelete} />
 }
 
-function MediaObj({ obj, isEditing, onDelete }: { obj: NoteObject; isEditing: boolean; onDelete: () => void }) {
+function MediaObj({
+  obj,
+  noteId,
+  isEditing,
+  isOpen,
+  onOpen,
+  onDelete,
+  showExtraction = true,
+}: {
+  obj: NoteObject
+  noteId: string
+  isEditing: boolean
+  isOpen: boolean
+  onOpen: () => void
+  onDelete: () => void
+  showExtraction?: boolean
+}) {
   const [mediaReady, setMediaReady] = useState(false)
+  const media = useAuthenticatedObjectUrl(obj.content)
   useEffect(() => {
     setMediaReady(false)
-  }, [obj.content, obj.type])
+  }, [media.url, obj.type])
 
   return (
     <div className={styles.objWrapper}>
       <div className={styles.mediaBox}>
         <div className={styles.mediaPlayerWrap}>
-          {!mediaReady && (
+          {(!mediaReady || media.loading) && (
             <div className="appLoaderOverlay" aria-hidden>
               <LoaderSpinner />
             </div>
           )}
-          {obj.type === 'audio' ? (
+          {media.error && <div className={styles.mediaError}>Не удалось загрузить медиа</div>}
+          {media.url && obj.type === 'audio' ? (
             <audio
               controls
-              src={obj.content}
+              src={media.url}
               onLoadedData={() => setMediaReady(true)}
               onError={() => setMediaReady(true)}
             />
-          ) : (
+          ) : media.url ? (
             <video
               controls
-              src={obj.content}
+              src={media.url}
               onLoadedData={() => setMediaReady(true)}
               onError={() => setMediaReady(true)}
             />
-          )}
+          ) : null}
         </div>
         <div className={styles.mediaMeta}>
           <span>{obj.filename ?? (obj.type === 'audio' ? 'Аудио' : 'Видео')}</span>
           {obj.sizeBytes !== undefined && <small>{formatBytes(obj.sizeBytes)}</small>}
         </div>
       </div>
+      {showExtraction && (
+        <div className={styles.extractionCompanion}>
+          <AssetViewer
+            obj={obj}
+            noteId={noteId}
+            isEditing={false}
+            isOpen={isOpen}
+            onOpen={onOpen}
+            onDelete={onDelete}
+          />
+        </div>
+      )}
       {isEditing && <button className={styles.objDeleteBtn} onClick={onDelete}><X size={12} /></button>}
     </div>
   )
+}
+
+function ProtectedVideo({ obj }: { obj: NoteObject }) {
+  const media = useAuthenticatedObjectUrl(obj.content)
+  if (media.error) return <div className={styles.mediaError}>Не удалось загрузить видео</div>
+  if (!media.url) {
+    return (
+      <div className="appLoaderOverlay" aria-hidden>
+        <LoaderSpinner />
+      </div>
+    )
+  }
+  return <video controls src={media.url} />
+}
+
+function ProtectedAudio({ obj }: { obj: NoteObject }) {
+  const media = useAuthenticatedObjectUrl(obj.content)
+  if (media.error) return <div className={styles.mediaError}>Не удалось загрузить аудио</div>
+  if (!media.url) {
+    return (
+      <div className="appLoaderOverlay" aria-hidden>
+        <LoaderSpinner />
+      </div>
+    )
+  }
+  return <audio controls src={media.url} />
 }
 
 // ─── Telegram detail post ─────────────────────────────────────────────────────
@@ -1036,7 +1213,7 @@ function TelegramDetailMediaTile({ obj }: { obj: NoteObject }) {
   if (obj.type === 'video') {
     return (
       <div className={styles.telegramDetailMediaTile}>
-        <video controls src={obj.content} />
+        <ProtectedVideo obj={obj} />
       </div>
     )
   }
@@ -1046,7 +1223,7 @@ function TelegramDetailMediaTile({ obj }: { obj: NoteObject }) {
         <div className={styles.telegramDetailAudioIcon}>
           <Mic2 size={26} />
         </div>
-        <audio controls src={obj.content} />
+        <ProtectedAudio obj={obj} />
         <span>{obj.filename ?? 'Голосовое сообщение'}</span>
       </div>
     )
@@ -1235,7 +1412,15 @@ function CollectionStream({
 
         if (obj.type === 'audio' || obj.type === 'video') return (
           <div key={obj.id} className={styles.objWrapper}>
-            <MediaObj obj={obj} isEditing={isEditing} onDelete={() => onRemove(obj.id, obj.slug)} />
+            <MediaObj
+              obj={obj}
+              noteId={obj.id}
+              isEditing={isEditing}
+              isOpen={openViewerId === obj.id}
+              onOpen={() => onOpenViewer(obj.id)}
+              onDelete={() => onRemove(obj.id, obj.slug)}
+              showExtraction={false}
+            />
             {hint}
           </div>
         )
@@ -1438,7 +1623,9 @@ export default function NotePage() {
             {visibleObjects.map(obj => {
               if (obj.type === 'image') return (
                 <ImageObj
-                  key={obj.id} obj={obj} isEditing={isEditing}
+                  key={obj.id} obj={obj} noteId={note.id} isEditing={isEditing}
+                  isOpen={openViewerId === obj.id}
+                  onOpen={() => setOpenViewerId(obj.id)}
                   onDelete={() => setDeletedObjs(p => new Set([...p, obj.id]))}
                 />
               )
@@ -1471,7 +1658,9 @@ export default function NotePage() {
               )
               if (obj.type === 'audio' || obj.type === 'video') return (
                 <MediaObj
-                  key={obj.id} obj={obj} isEditing={isEditing}
+                  key={obj.id} obj={obj} noteId={note.id} isEditing={isEditing}
+                  isOpen={openViewerId === obj.id}
+                  onOpen={() => setOpenViewerId(obj.id)}
                   onDelete={() => setDeletedObjs(p => new Set([...p, obj.id]))}
                 />
               )

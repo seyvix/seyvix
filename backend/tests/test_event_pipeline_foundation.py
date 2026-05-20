@@ -34,7 +34,9 @@ from app.modules.vectorization.worker import VectorizationEventConsumer
 from app.platform.events import topology
 from app.platform.events.idempotency import EventAlreadyProcessedError, ProcessedEventStore
 from app.platform.events.outbox import EventOutboxRepository
-from app.platform.storage.service import LocalVolumeStorage, StorageKeyBuilder
+from app.platform.storage.models import StorageObject
+from app.platform.storage.repositories import StorageObjectRepository
+from app.platform.storage.service import LocalVolumeStorage, StorageKeyBuilder, StoredObject
 
 
 async def _prepare_database(database_url: str) -> async_sessionmaker:
@@ -186,6 +188,54 @@ def test_local_storage_backend_returns_s3_style_storage_reference(tmp_path: Path
     assert stored.size_bytes == 5
     assert stored.checksum.startswith("sha256:")
     assert storage.get_bytes(stored.storage_key) == b"hello"
+
+
+def test_storage_object_repository_upserts_existing_storage_key() -> None:
+    async def scenario() -> None:
+        session_factory = await _prepare_database(_test_database_url())
+        async with session_factory() as session:
+            repository = StorageObjectRepository(session)
+            await repository.upsert(
+                StoredObject(
+                    storage_backend="local",
+                    bucket="app-storage",
+                    storage_key="snapshots/content-1/job-1/snapshot.md",
+                    storage_ref="s3://app-storage/snapshots/content-1/job-1/snapshot.md",
+                    content_type="text/markdown",
+                    size_bytes=5,
+                    checksum="sha256:first",
+                ),
+                owner_entity_type="snapshot_artifact",
+                owner_entity_id="artifact-1",
+                metadata={"job_type": "markdown"},
+            )
+            await repository.upsert(
+                StoredObject(
+                    storage_backend="local",
+                    bucket="app-storage",
+                    storage_key="snapshots/content-1/job-1/snapshot.md",
+                    storage_ref="s3://app-storage/snapshots/content-1/job-1/snapshot.md",
+                    content_type="text/markdown",
+                    size_bytes=12,
+                    checksum="sha256:second",
+                ),
+                owner_entity_type="snapshot_artifact",
+                owner_entity_id="artifact-1",
+                metadata={"job_type": "markdown", "extraction": {"method": "pdf"}},
+            )
+            await session.commit()
+
+            rows = list(await session.scalars(select(StorageObject)))
+
+        assert len(rows) == 1
+        assert rows[0].size_bytes == 12
+        assert rows[0].checksum == "sha256:second"
+        assert rows[0].metadata_["extraction"] == {"method": "pdf"}
+
+    try:
+        asyncio.run(scenario())
+    except OSError as exc:
+        pytest.skip(f"PostgreSQL is not available for storage repository tests: {exc}")
 
 
 def test_outbox_and_processed_events_are_idempotent() -> None:

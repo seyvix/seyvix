@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import copy
+import json
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.contracts.events import EventEnvelope
 from app.core.config import get_settings
@@ -26,9 +29,20 @@ from app.modules.snapshots.service import SnapshotService
 from app.platform.events.idempotency import EventAlreadyProcessedError, ProcessedEventStore
 from app.platform.storage.repositories import StorageObjectRepository
 from app.platform.storage.service import LocalVolumeStorage, StorageBackend, StorageKeyBuilder
-from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = get_logger(__name__)
+
+
+def extraction_metadata_from_generated_artifact(
+    generated: GeneratedArtifact,
+) -> dict[str, object] | None:
+    if generated.metadata_path is None or not generated.metadata_path.exists():
+        return None
+    try:
+        value = json.loads(generated.metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
 
 
 class SnapshotWorker:
@@ -153,7 +167,9 @@ class SnapshotWorker:
                 mime_type=generated.mime_type,
                 size_bytes=generated.path.stat().st_size if generated.path.exists() else None,
                 has_resources=generated.resources_dir is not None,
-                resources_dir=str(generated.resources_dir) if generated.resources_dir is not None else None,
+                resources_dir=(
+                    str(generated.resources_dir) if generated.resources_dir is not None else None
+                ),
             )
         except UnsupportedSnapshotError as exc:
             logger.warning(
@@ -185,12 +201,31 @@ class SnapshotWorker:
             data=generated.path.read_bytes(),
             content_type=generated.mime_type,
         )
-        self.storage_objects.add(
+        extraction_metadata = extraction_metadata_from_generated_artifact(generated)
+        storage_metadata: dict[str, object] = {
+            "job_type": job.job_type,
+            "source_asset_id": job.source_asset_id,
+        }
+        if extraction_metadata is not None:
+            storage_metadata["extraction"] = extraction_metadata
+            job.metadata_ = {**(job.metadata_ or {}), "extraction": extraction_metadata}
+
+        await self.storage_objects.upsert(
             stored,
             owner_entity_type="snapshot_artifact",
             owner_entity_id=artifact_id,
-            metadata={"job_type": job.job_type, "source_asset_id": job.source_asset_id},
+            metadata=storage_metadata,
         )
+        if generated.metadata_path is not None and generated.metadata_path.exists():
+            self.storage_backend.put_bytes(
+                storage_key=StorageKeyBuilder.snapshot_artifact(
+                    content_object_id=job.content_object_id,
+                    snapshot_id=job.id,
+                    filename=generated.metadata_path.name,
+                ),
+                data=generated.metadata_path.read_bytes(),
+                content_type="application/json",
+            )
         if generated.resources_dir is not None and generated.resources_dir.exists():
             manifest_file = generated.resources_dir.parent / "manifest.json"
             if manifest_file.exists():
@@ -238,7 +273,7 @@ class SnapshotWorker:
             checksum=stored.checksum,
             status="ready",
         )
-        self.artifacts.add(artifact)
+        await self.artifacts.upsert_ready(artifact)
         logger.info(
             "snapshot.job.artifact_record_created",
             job_id=job.id,
@@ -309,6 +344,10 @@ class SnapshotWorker:
                 manifest_src = generated.resources_dir.parent / "manifest.json"
                 if manifest_src.exists():
                     shutil.copy2(manifest_src, stable_path.parent / "manifest.json")
+            stable_metadata_path: Path | None = None
+            if generated.metadata_path is not None and generated.metadata_path.exists():
+                stable_metadata_path = stable_path.with_suffix(".extraction.json")
+                shutil.copy2(generated.metadata_path, stable_metadata_path)
             return type(generated)(
                 filename=generated.filename,
                 mime_type=generated.mime_type,
@@ -316,6 +355,7 @@ class SnapshotWorker:
                 width=generated.width,
                 height=generated.height,
                 resources_dir=stable_resources_dir,
+                metadata_path=stable_metadata_path,
             )
 
     @staticmethod

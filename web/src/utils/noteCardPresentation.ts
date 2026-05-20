@@ -82,3 +82,25 @@ export function getTelegramCardModel(note: Note): TelegramCardModel | null {
     itemCount: note.objects.length,
   }
 }
+
+function startOfLocalDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate())
+}
+
+export function getSavedDateLabel(value: string, now = new Date()): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+
+  const dayMs = 24 * 60 * 60 * 1000
+  const diffDays = Math.round((startOfLocalDay(now).getTime() - startOfLocalDay(date).getTime()) / dayMs)
+
+  if (diffDays === 0) return 'Сегодня'
+  if (diffDays === 1) return 'Вчера'
+  if (diffDays > 1 && diffDays < 7) return `${diffDays} дн. назад`
+
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: 'numeric',
+    month: 'short',
+    ...(date.getFullYear() !== now.getFullYear() ? { year: 'numeric' } : {}),
+  }).format(date).replace('.', '')
+}

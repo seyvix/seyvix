@@ -23,6 +23,7 @@ export default function NotesPage() {
     search:  search  || undefined,
     tags:    activeTags.length ? activeTags : undefined,
     folders: activeFolders.length ? activeFolders : undefined,
+    sort:    'custom',
   })
   const { localNotes } = useLocalNotes()
 

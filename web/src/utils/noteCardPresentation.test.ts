@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import type { Note } from '../types'
-import { collectSourceChips, getTelegramCardModel } from './noteCardPresentation.ts'
+import { collectSourceChips, getSavedDateLabel, getTelegramCardModel } from './noteCardPresentation.ts'
 
 const telegramNote: Note = {
   id: 'note-1',
@@ -65,4 +65,13 @@ test('source chips collapse same telegram origin into one readable chip', () => 
     originLabel: 'Бэкдор',
     title: 'Telegram: Бэкдор',
   }])
+})
+
+test('saved date label uses relative labels for recent notes', () => {
+  const now = new Date('2026-05-19T12:00:00+03:00')
+
+  assert.equal(getSavedDateLabel('2026-05-19T08:00:00+03:00', now), 'Сегодня')
+  assert.equal(getSavedDateLabel('2026-05-18T23:00:00+03:00', now), 'Вчера')
+  assert.equal(getSavedDateLabel('2026-05-16T12:00:00+03:00', now), '3 дн. назад')
+  assert.equal(getSavedDateLabel('2026-05-01T12:00:00+03:00', now), '1 мая')
 })

@@ -156,6 +156,7 @@ export interface NotesParams {
   search?: string
   tags?: string[]
   folders?: string[]
+  sort?: 'newest' | 'custom'
 }
 
 export interface FileProgress {

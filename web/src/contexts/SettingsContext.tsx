@@ -7,16 +7,16 @@ interface SettingsContextValue {
 
 const SettingsContext = createContext<SettingsContextValue | null>(null)
 
-const KEY = 'seyvix:grid-cols'
+const KEY = 'seyvix:masonry-cols'
 
 export function SettingsProvider({ children }: { children: React.ReactNode }) {
   const [cols, setCols] = useState<number>(() => {
     try {
       const stored = localStorage.getItem(KEY)
-      const n = stored ? Number(stored) : 3
-      return n >= 3 && n <= 5 ? n : 3
+      const n = stored ? Number(stored) : 5
+      return n >= 3 && n <= 7 ? n : 5
     } catch {
-      return 3
+      return 5
     }
   })
 

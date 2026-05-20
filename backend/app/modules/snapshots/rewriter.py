@@ -64,7 +64,7 @@ def rewrite_html(html: str, page_url: str, manifest: dict[str, str]) -> str:
             tag["href"] = "#"
 
     for tag_name, attr in _TAG_ATTRS:
-        for el in soup.find_all(tag_name, **{attr: True}):
+        for el in soup.find_all(tag_name, attrs={attr: True}):
             if not isinstance(el, Tag):
                 continue
             raw = el.get(attr, "")

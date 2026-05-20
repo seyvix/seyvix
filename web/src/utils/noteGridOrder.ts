@@ -1,0 +1,97 @@
+export interface OrderedNoteRef {
+  id: string
+  slug: string
+  estimatedHeight?: number
+}
+
+export interface ReorderPayloadItem {
+  slug: string
+  position: number
+}
+
+export interface MasonryGridMetrics {
+  cols: number
+  itemWidth: number
+  contentWidth: number
+}
+
+export interface MasonryLayoutInput {
+  heights: readonly number[]
+  cols: number
+  itemWidth: number
+  gap: number
+}
+
+export interface MasonryLayoutResult {
+  slots: number[]
+  height: number
+}
+
+const MIN_CARD_WIDTH = 248
+const MAX_CARD_WIDTH = 320
+const GRID_GAP = 8
+const DESKTOP_PADDING = 32
+const MOBILE_PADDING = 24
+
+export function orderNotesByIds<T extends OrderedNoteRef>(
+  notes: readonly T[],
+  orderedIds: readonly string[],
+): T[] {
+  const notesById = new Map(notes.map(note => [note.id, note]))
+  const usedIds = new Set<string>()
+  const next: T[] = []
+
+  for (const id of orderedIds) {
+    const note = notesById.get(id)
+    if (!note || usedIds.has(id)) continue
+    next.push(note)
+    usedIds.add(id)
+  }
+
+  for (const note of notes) {
+    if (!usedIds.has(note.id)) next.push(note)
+  }
+
+  return next
+}
+
+export function toReorderPayload(notes: readonly OrderedNoteRef[]): ReorderPayloadItem[] {
+  return notes.map((note, index) => ({
+    slug: note.slug,
+    position: (index + 1) * 10,
+  }))
+}
+
+export function calculateMasonryGridMetrics(containerWidth: number, requestedCols: number): MasonryGridMetrics {
+  const padding = containerWidth <= 640 ? MOBILE_PADDING : DESKTOP_PADDING
+  const availableWidth = Math.max(160, containerWidth - padding)
+  const minCardWidth = Math.min(MIN_CARD_WIDTH, availableWidth)
+  const maxColumnsByWidth = Math.max(1, Math.floor((availableWidth + GRID_GAP) / (minCardWidth + GRID_GAP)))
+  const cols = Math.max(1, Math.min(requestedCols, maxColumnsByWidth))
+  const widthFromColumns = Math.floor((availableWidth - GRID_GAP * (cols - 1)) / cols)
+  const itemWidth = Math.min(MAX_CARD_WIDTH, Math.max(minCardWidth, widthFromColumns))
+  const contentWidth = itemWidth * cols + GRID_GAP * (cols - 1)
+
+  return { cols, itemWidth, contentWidth }
+}
+
+export function buildMasonryLayoutSlots({ heights, cols, itemWidth, gap }: MasonryLayoutInput): MasonryLayoutResult {
+  const safeCols = Math.max(1, Math.floor(cols))
+  const columnHeights = Array.from({ length: safeCols }, () => 0)
+  const slots: number[] = []
+
+  for (const height of heights) {
+    let columnIndex = 0
+    for (let index = 1; index < columnHeights.length; index += 1) {
+      if (columnHeights[index] < columnHeights[columnIndex]) columnIndex = index
+    }
+
+    slots.push(columnIndex * (itemWidth + gap), columnHeights[columnIndex])
+    columnHeights[columnIndex] += Math.max(0, height) + gap
+  }
+
+  return {
+    slots,
+    height: Math.max(0, ...columnHeights) - (heights.length > 0 ? gap : 0),
+  }
+}
