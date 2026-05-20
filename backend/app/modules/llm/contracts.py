@@ -102,6 +102,8 @@ class HttpStructuredLLMGenerator:
             "response_format": {"type": "json_object"},
             "stream": False,
         }
+        if model_config.get("reasoning_effort") is not None:
+            payload["reasoning_effort"] = str(model_config["reasoning_effort"])
         if model_config.get("max_tokens") is not None:
             payload["max_tokens"] = int(model_config["max_tokens"])
         try:

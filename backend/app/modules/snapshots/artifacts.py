@@ -17,7 +17,6 @@ from urllib.parse import urlparse
 from xml.etree import ElementTree
 
 import httpx
-
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.modules.content.models import ContentAsset, ContentObject

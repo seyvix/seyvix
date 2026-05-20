@@ -27,8 +27,8 @@ export interface MasonryLayoutResult {
   height: number
 }
 
-const MIN_CARD_WIDTH = 220
-const MAX_CARD_WIDTH = 300
+const MIN_READABLE_CARD_WIDTH = 156
+const MOBILE_MAX_CARD_WIDTH = 420
 const GRID_GAP = 8
 const DESKTOP_PADDING = 32
 const MOBILE_PADDING = 24
@@ -65,11 +65,16 @@ export function toReorderPayload(notes: readonly OrderedNoteRef[]): ReorderPaylo
 export function calculateMasonryGridMetrics(containerWidth: number, requestedCols: number): MasonryGridMetrics {
   const padding = containerWidth <= 640 ? MOBILE_PADDING : DESKTOP_PADDING
   const availableWidth = Math.max(160, containerWidth - padding)
-  const minCardWidth = Math.min(MIN_CARD_WIDTH, availableWidth)
+  if (containerWidth <= 640) {
+    const itemWidth = Math.min(MOBILE_MAX_CARD_WIDTH, availableWidth)
+    return { cols: 1, itemWidth, contentWidth: itemWidth }
+  }
+
+  const minCardWidth = Math.min(MIN_READABLE_CARD_WIDTH, availableWidth)
   const maxColumnsByWidth = Math.max(1, Math.floor((availableWidth + GRID_GAP) / (minCardWidth + GRID_GAP)))
   const cols = Math.max(1, Math.min(requestedCols, maxColumnsByWidth))
   const widthFromColumns = Math.floor((availableWidth - GRID_GAP * (cols - 1)) / cols)
-  const itemWidth = Math.min(MAX_CARD_WIDTH, Math.max(minCardWidth, widthFromColumns))
+  const itemWidth = widthFromColumns
   const contentWidth = itemWidth * cols + GRID_GAP * (cols - 1)
 
   return { cols, itemWidth, contentWidth }

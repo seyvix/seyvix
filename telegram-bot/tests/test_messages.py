@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from aiogram.types import Message
-
 from telegram_bot.domain.models import MaterialType
 from telegram_bot.presentation.telegram.message_mapper import (
     material_from_mapping,

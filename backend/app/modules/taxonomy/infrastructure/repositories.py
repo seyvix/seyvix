@@ -3,10 +3,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
-from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
-
 from app.modules.content.models import ContentObject
 from app.modules.taxonomy.models import (
     ClassificationFeedback,
@@ -16,6 +12,9 @@ from app.modules.taxonomy.models import (
     TaxonomyContentAssignment,
     TaxonomyUserSettings,
 )
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 
 class TaxonomyRepository:

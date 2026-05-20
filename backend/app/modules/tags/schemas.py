@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
-
 from app.modules.tags.contracts import (
     AssignmentCreatedByType,
     AssignmentSource,
@@ -11,6 +9,7 @@ from app.modules.tags.contracts import (
     TagCreatedByType,
     TagSource,
 )
+from pydantic import BaseModel, Field
 
 
 class TagCreateRequest(BaseModel):

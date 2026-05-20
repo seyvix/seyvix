@@ -5,7 +5,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from aiogram.types import Message
-
 from telegram_bot.domain.models import Attachment, InboundMaterial, MaterialType, SourceMetadata
 
 
@@ -214,9 +213,7 @@ def _markdown_text(value: object, entities_value: object) -> str | None:
         return value
     replacements: list[tuple[int, int, str, str, str]] = []
     entity_ranges = [
-        _entity_range(value, entity)
-        for entity in entities
-        if isinstance(entity.get("type"), str)
+        _entity_range(value, entity) for entity in entities if isinstance(entity.get("type"), str)
     ]
     non_custom_ranges = [
         item for item in entity_ranges if item is not None and item[2].get("type") != "custom_emoji"

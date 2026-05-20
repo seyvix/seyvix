@@ -119,8 +119,6 @@ def test_media_group_buffer_saves_non_album_message_immediately() -> None:
 
         assert loading == ["1"]
         assert saved_materials == [material]
-        assert [(status, saved.title) for status, saved in saved_updates] == [
-            ("status-1", "plain")
-        ]
+        assert [(status, saved.title) for status, saved in saved_updates] == [("status-1", "plain")]
 
     asyncio.run(scenario())

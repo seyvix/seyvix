@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from aiogram import Dispatcher
-
 from telegram_bot.application.use_cases import BotUseCases
 from telegram_bot.presentation.telegram.media_group_buffer import MediaGroupBuffer
 from telegram_bot.presentation.telegram.router import build_router

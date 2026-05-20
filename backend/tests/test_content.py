@@ -237,8 +237,8 @@ def test_create_plain_url_note_creates_link_object_and_content_event(
     assert events[0].payload["metadata"]["media_type"] == "link"
     assert events[0].payload["asset_ids"] == [payload["objects"][0]["id"]]
     assert {job.job_type for job in snapshot_jobs} >= {"thumbnail", "markdown", "pdf", "screenshot"}
-    assert [job.job_type for job in tag_jobs] == ["suggest_content_tags"]
-    assert [job.job_type for job in taxonomy_jobs] == ["classify_content"]
+    assert tag_jobs == []
+    assert taxonomy_jobs == []
 
 
 def test_concurrent_notes_reuse_folder_and_tags_and_allocate_unique_slugs(

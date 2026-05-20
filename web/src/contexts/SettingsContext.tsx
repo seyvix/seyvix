@@ -14,7 +14,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     try {
       const stored = localStorage.getItem(KEY)
       const n = stored ? Number(stored) : 5
-      return n >= 3 && n <= 7 ? n : 5
+      return n >= 1 && n <= 7 ? n : 5
     } catch {
       return 5
     }

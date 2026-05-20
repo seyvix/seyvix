@@ -30,7 +30,8 @@ from app.modules.snapshots.schemas import (
     SnapshotSettingsResponse,
     UpdateSnapshotSettingsRequest,
 )
-from app.platform.storage.service import LocalVolumeStorage, StorageBackend
+from app.platform.storage.factory import build_storage_backend
+from app.platform.storage.service import StorageBackend
 
 logger = get_logger(__name__)
 
@@ -138,10 +139,8 @@ def plan_snapshot_job_types(
     asset: ContentAsset,
     effective: EffectiveSnapshotSettings,
 ) -> tuple[str, ...]:
-    job_types: list[str] = ["thumbnail_text" if _uses_text_thumbnail(asset) else "thumbnail"]
-
-    if effective.markdown and not _is_markdown_asset(asset):
-        job_types.append("markdown")
+    job_types: list[str] = ["markdown"]
+    job_types.append("thumbnail_text" if _uses_text_thumbnail(asset) else "thumbnail")
     if effective.pdf and _should_generate_pdf(asset):
         job_types.append("pdf")
     if _is_site_asset(asset):
@@ -162,9 +161,9 @@ class SnapshotService:
     ) -> None:
         self.session = session
         self.storage_root = storage_root or Path("data/content")
-        self.storage_backend = storage_backend or LocalVolumeStorage(
-            root=self.storage_root,
-            bucket=get_settings().s3_bucket,
+        self.storage_backend = storage_backend or build_storage_backend(
+            get_settings(),
+            local_root=self.storage_root,
         )
         self.settings = SnapshotSettingsRepository(session)
         self.jobs = SnapshotJobRepository(session)
@@ -620,11 +619,6 @@ def _uses_text_thumbnail(asset: ContentAsset) -> bool:
         or asset.mime_type in {"text/markdown", "text/plain"}
         or suffix in TEXT_THUMBNAIL_SUFFIXES
     )
-
-
-def _is_markdown_asset(asset: ContentAsset) -> bool:
-    suffix = Path(asset.filename).suffix.lower()
-    return asset.mime_type == "text/markdown" or suffix in MARKDOWN_SUFFIXES
 
 
 def _should_generate_pdf(asset: ContentAsset) -> bool:

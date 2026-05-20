@@ -12,7 +12,6 @@ from tempfile import NamedTemporaryFile, mkdtemp
 from typing import Any, Protocol
 
 import httpx
-
 from app.core.config import get_settings
 
 
@@ -121,11 +120,7 @@ class HttpVisionProvider:
         response.raise_for_status()
         data = response.json()
         description = data.get("description") or data.get("text")
-        return (
-            description.strip()
-            if isinstance(description, str) and description.strip()
-            else None
-        )
+        return description.strip() if isinstance(description, str) and description.strip() else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -580,9 +575,7 @@ def _openai_headers(api_key: str | None) -> dict[str, str]:
     return {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
 
-def _vision_chat_payload(
-    *, model: str, prompt: str, image_paths: list[Path]
-) -> dict[str, object]:
+def _vision_chat_payload(*, model: str, prompt: str, image_paths: list[Path]) -> dict[str, object]:
     content: list[dict[str, object]] = [{"type": "text", "text": prompt}]
     for image_path in image_paths:
         content.append(

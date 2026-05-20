@@ -4,7 +4,6 @@ import asyncio
 import logging
 
 import httpx
-
 from telegram_bot.application.use_cases import BotUseCases
 from telegram_bot.infrastructure.backend_client import HttpSeyvixBackend
 from telegram_bot.infrastructure.settings import get_settings

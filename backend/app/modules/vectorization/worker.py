@@ -54,7 +54,7 @@ class VectorizationEventConsumer:
             )
             return 1
 
-        if envelope.event_name not in {"content.object.created", "content.object.updated"}:
+        if envelope.event_name != "snapshot.text_representation.completed":
             await self.session.commit()
             return 0
 
@@ -64,7 +64,7 @@ class VectorizationEventConsumer:
             source_type="content_object",
             source_id=content_object_id,
             priority=100,
-            reason=f"Triggered by {envelope.event_name}.",
+            reason="Triggered by completed snapshot text representation.",
         )
         return 1
 

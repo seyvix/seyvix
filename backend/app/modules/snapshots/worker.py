@@ -8,9 +8,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
 
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.contracts.events import EventEnvelope
+from app.contracts.events import EventEnvelope, SnapshotTextRepresentationCompletedPayload
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.modules.content.models import ContentAsset, ContentObject
@@ -27,8 +28,10 @@ from app.modules.snapshots.infrastructure.repositories import (
 from app.modules.snapshots.models import SnapshotArtifact, SnapshotJob
 from app.modules.snapshots.service import SnapshotService
 from app.platform.events.idempotency import EventAlreadyProcessedError, ProcessedEventStore
+from app.platform.events.outbox import EventOutboxRepository
+from app.platform.storage.factory import build_storage_backend
 from app.platform.storage.repositories import StorageObjectRepository
-from app.platform.storage.service import LocalVolumeStorage, StorageBackend, StorageKeyBuilder
+from app.platform.storage.service import StorageBackend, StorageKeyBuilder
 
 logger = get_logger(__name__)
 
@@ -56,15 +59,16 @@ class SnapshotWorker:
     ) -> None:
         self.session = session
         self.storage_root = storage_root or Path("data/content")
-        self.storage_backend = storage_backend or LocalVolumeStorage(
-            root=self.storage_root,
-            bucket=get_settings().s3_bucket,
+        self.storage_backend = storage_backend or build_storage_backend(
+            get_settings(),
+            local_root=self.storage_root,
         )
         self.jobs = SnapshotJobRepository(session)
         self.artifacts = SnapshotArtifactRepository(session)
         self.content = SnapshotContentRepository(session)
         self.storage_objects = StorageObjectRepository(session)
         self.idempotency = ProcessedEventStore(session)
+        self.outbox = EventOutboxRepository(session)
 
     async def run_once(self, limit: int | None = None) -> int:
         jobs = await self.jobs.list_pending(limit or get_settings().snapshot_worker_batch_size)
@@ -72,7 +76,9 @@ class SnapshotWorker:
         for job in jobs:
             await self._process_job(job)
             processed += 1
-        await self.session.commit()
+            await self.session.commit()
+        if processed == 0:
+            await self.session.commit()
         return processed
 
     async def handle_event(self, envelope: EventEnvelope) -> int:
@@ -117,7 +123,9 @@ class SnapshotWorker:
         for job in jobs:
             await self._process_job(job)
             processed += 1
-        await self.session.commit()
+            await self.session.commit()
+        if processed == 0:
+            await self.session.commit()
         return processed
 
     async def _process_job(self, job: SnapshotJob) -> None:
@@ -297,6 +305,19 @@ class SnapshotWorker:
         job.error_message = None
         job.last_error = None
         job.finished_at = datetime.now(UTC)
+        if (
+            job.job_type == "markdown"
+            and asset is not None
+            and await self._all_text_representation_jobs_finished(
+                content_object_id=job.content_object_id
+            )
+        ):
+            self._enqueue_text_representation_completed_event(
+                job=job,
+                asset=asset,
+                artifact=artifact,
+                extraction_metadata=extraction_metadata,
+            )
 
     def _generate_with_storage(
         self,
@@ -364,3 +385,46 @@ class SnapshotWorker:
         job.error_message = message[:4000]
         job.last_error = message[:4000]
         job.finished_at = datetime.now(UTC)
+
+    def _enqueue_text_representation_completed_event(
+        self,
+        *,
+        job: SnapshotJob,
+        asset: ContentAsset,
+        artifact: SnapshotArtifact,
+        extraction_metadata: dict[str, object] | None,
+    ) -> None:
+        envelope = EventEnvelope.new(
+            event_name="snapshot.text_representation.completed",
+            entity_id=job.content_object_id,
+            correlation_id=job.correlation_id or str(uuid4()),
+            user_id=job.owner_user_id,
+            payload=SnapshotTextRepresentationCompletedPayload(
+                content_object_id=job.content_object_id,
+                source_asset_id=asset.id,
+                artifact_id=artifact.id,
+                representation_type="markdown",
+                source_media_type=asset.media_type,
+                source_mime_type=asset.mime_type,
+                source_filename=asset.filename,
+                metadata={
+                    "job_id": job.id,
+                    "job_type": job.job_type,
+                    "source_event_id": job.source_event_id,
+                    "extraction": extraction_metadata,
+                },
+            ),
+        )
+        self.outbox.add(envelope, routing_key="snapshot.text_representation.completed")
+
+    async def _all_text_representation_jobs_finished(self, *, content_object_id: str) -> bool:
+        unfinished_count = await self.session.scalar(
+            select(func.count())
+            .select_from(SnapshotJob)
+            .where(
+                SnapshotJob.content_object_id == content_object_id,
+                SnapshotJob.job_type == "markdown",
+                SnapshotJob.status.in_(("pending", "processing", "retrying")),
+            )
+        )
+        return int(unfinished_count or 0) == 0

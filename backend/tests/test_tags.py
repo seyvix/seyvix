@@ -287,9 +287,34 @@ def test_llm_tagger_prompt_requests_grounded_multi_level_tags() -> None:
     assert "different levels of abstraction" in prompt
     assert "broad categories" in prompt
     assert "specific topics" in prompt
-    assert "sources" in prompt
+    assert "metadata only to understand context and provenance" in prompt
+    assert "do not tag the source" in prompt
     assert "Only suggest tags supported by the provided title, metadata, and text" in prompt
     assert "Good tags: vLLM" not in prompt
+
+
+def test_llm_tagger_allocates_reasoning_budget_for_gpt_oss_models() -> None:
+    async def scenario() -> None:
+        generator = FakeStructuredGenerator()
+        tagger = LLMContentTagger(
+            settings=Settings(tags_llm_prompt_version="test-tags-v2", tags_llm_model="gpt-oss"),
+            llm_generator=generator,
+        )
+
+        await tagger.suggest(
+            title="Edifier M90 listing",
+            url=None,
+            existing_tags=[],
+            excerpt="Edifier M90 active speakers with LDAC and Hi-Res Audio support.",
+            metadata={"media_type": "image", "source_filename": "listing.jpg"},
+            max_tags=8,
+        )
+
+        model_config = generator.calls[0]["model_config"]
+        assert model_config["reasoning_effort"] == "low"
+        assert model_config["max_tokens"] == 4096
+
+    asyncio.run(scenario())
 
 
 def test_llm_tagger_filters_pdf_container_and_filename_tags() -> None:

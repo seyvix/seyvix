@@ -5,11 +5,6 @@ from pathlib import Path
 from typing import Annotated
 
 import jwt
-from fastapi import APIRouter, Cookie, Depends, Query, Request, Security, status
-from fastapi.responses import FileResponse, Response
-from fastapi.security import HTTPAuthorizationCredentials
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.api.dependencies import get_db_session
 from app.api.errors import AppError
 from app.api.schemas import ErrorResponse
@@ -30,6 +25,10 @@ from app.modules.snapshots.schemas import (
     UpdateSnapshotSettingsRequest,
 )
 from app.modules.snapshots.service import SnapshotArtifactNotFoundError, SnapshotService
+from fastapi import APIRouter, Cookie, Depends, Query, Request, Security, status
+from fastapi.responses import FileResponse, Response
+from fastapi.security import HTTPAuthorizationCredentials
+from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/snapshots", tags=["snapshots"])
 SNAPSHOT_ACCESS_COOKIE = "snapshot_access"

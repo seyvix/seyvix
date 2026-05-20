@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import hmac
+import json
 import os
 from datetime import UTC, datetime
 
@@ -22,6 +23,7 @@ from app.modules.vectorization.infrastructure.chunking import ChunkingLimits, ch
 from app.modules.vectorization.infrastructure.embedding_providers import (
     FakeEmbeddingProvider,
     HttpEmbeddingProvider,
+    YandexEmbeddingProvider,
     build_embedding_provider,
 )
 from app.modules.vectorization.models import (
@@ -378,6 +380,76 @@ def test_ollama_provider_alias_uses_local_openai_compatible_default() -> None:
     assert isinstance(provider, HttpEmbeddingProvider)
     assert provider.base_url == "http://127.0.0.1:11434/v1"
     assert provider.api_key is None
+
+
+@pytest.mark.asyncio
+async def test_yandex_embedding_provider_uses_text_embedding_api_shape() -> None:
+    requests: list[dict[str, object]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "llm.api.cloud.yandex.net"
+        assert request.url.path == "/foundationModels/v1/textEmbedding"
+        assert request.headers["authorization"] == "Api-Key secret"
+        body = json.loads(request.content)
+        requests.append(body)
+        assert body["modelUri"] == "emb://folder/text-search-doc/latest"
+        assert "dim" not in body
+        return httpx.Response(
+            200,
+            json={
+                "embedding": ["0.1", "0.2"],
+                "numTokens": "2",
+                "modelVersion": "latest",
+            },
+        )
+
+    provider = YandexEmbeddingProvider(
+        base_url="https://llm.api.cloud.yandex.net/foundationModels/v1",
+        api_key="secret",
+        timeout_seconds=5,
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert await provider.embed_texts(
+        ["first", "second"],
+        model="emb://folder/text-search-doc/latest",
+        dimensions=2,
+    ) == [[0.1, 0.2], [0.1, 0.2]]
+    assert [request["text"] for request in requests] == ["first", "second"]
+
+
+def test_yandex_provider_alias_uses_foundation_models_default() -> None:
+    provider = build_embedding_provider(
+        provider_name="yandex",
+        base_url=None,
+        api_key="secret",
+        timeout_seconds=120,
+    )
+
+    assert isinstance(provider, YandexEmbeddingProvider)
+    assert provider.base_url == "https://ai.api.cloud.yandex.net/foundationModels/v1"
+
+
+@pytest.mark.asyncio
+async def test_yandex_embedding_provider_normalizes_ai_studio_v1_base_url() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/foundationModels/v1/textEmbedding"
+        assert request.headers["authorization"] == "Bearer secret"
+        return httpx.Response(200, json={"embedding": ["0.1", "0.2"]})
+
+    provider = YandexEmbeddingProvider(
+        base_url="https://ai.api.cloud.yandex.net/v1",
+        api_key="secret",
+        timeout_seconds=5,
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert provider.base_url == "https://ai.api.cloud.yandex.net/foundationModels/v1"
+    assert await provider.embed_texts(
+        ["text"],
+        model="emb://folder/text-search-doc/latest",
+        dimensions=2,
+    ) == [[0.1, 0.2]]
 
 
 def test_authenticated_index_endpoint_enqueues_owner_scoped_job(

@@ -105,7 +105,7 @@ class Settings(BaseSettings):
     snapshot_extraction_timeout_seconds: int = 120
     snapshot_extraction_max_pdf_pages: int = 100
     snapshot_extraction_max_media_seconds: int = 1800
-    vector_embedding_provider: Literal["fake", "http", "ollama"] = "fake"
+    vector_embedding_provider: Literal["fake", "http", "ollama", "yandex"] = "fake"
     vector_embedding_base_url: str | None = None
     vector_embedding_api_key: str | None = None
     vector_embedding_model: str = "fake-embedding"
@@ -120,6 +120,12 @@ class Settings(BaseSettings):
     vector_worker_batch_size: int = 10
     vector_worker_poll_interval_seconds: int = 10
     vector_worker_lock_timeout_seconds: int = 300
+    search_fts_config: str = "simple"
+    search_rrf_k: int = 60
+    search_hybrid_candidate_multiplier: int = 5
+    search_query_expansion_enabled: bool = False
+    search_query_expansion_model: str = "qwen3:4b-thinking"
+    search_query_expansion_max_queries: int = 3
     taxonomy_classification_high_threshold: float = 0.80
     taxonomy_classification_medium_threshold: float = 0.60
     taxonomy_llm_classification_accept_threshold: float = 0.80

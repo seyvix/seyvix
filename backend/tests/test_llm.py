@@ -92,6 +92,33 @@ async def test_http_structured_generator_adds_bearer_token_and_rejects_invalid_j
 
 
 @pytest.mark.asyncio
+async def test_http_structured_generator_forwards_reasoning_effort() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload["reasoning_effort"] == "low"
+        assert payload["max_tokens"] == 4096
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"ok": true}'}}]})
+
+    generator = HttpStructuredLLMGenerator(
+        base_url="http://llm.local/v1",
+        api_key=None,
+        timeout_seconds=30,
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert await generator.generate_structured(
+        prompt="Return JSON.",
+        schema={"type": "object"},
+        model_config={
+            "model": "gpt-oss-120b",
+            "temperature": 0,
+            "reasoning_effort": "low",
+            "max_tokens": 4096,
+        },
+    ) == {"ok": True}
+
+
+@pytest.mark.asyncio
 async def test_unavailable_structured_generator_fails_explicitly() -> None:
     with pytest.raises(LLMGenerationError, match="not configured"):
         await UnavailableStructuredLLMGenerator().generate_structured(

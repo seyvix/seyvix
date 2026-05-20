@@ -1181,6 +1181,38 @@
 }
 
 @media (max-width: 760px) {
+  .cardWrapper,
+  .cardWrapper * {
+    cursor: pointer;
+  }
+
+  .cardWrapper:active,
+  .cardWrapper:active * {
+    cursor: pointer;
+  }
+
+  .card {
+    border-radius: 12px;
+    max-height: none;
+  }
+
+  .card:hover {
+    transform: none;
+    box-shadow: none;
+  }
+
+  .cardSimple {
+    padding: 12px;
+  }
+
+  .cardSimpleImage {
+    padding: 0;
+  }
+
+  .cardMedia {
+    min-height: 180px;
+  }
+
   .addCardEditing {
     left: 12px;
     right: 12px;

@@ -63,7 +63,9 @@ def upgrade() -> None:
             name="uq_content_sources_provider_external_object",
         ),
     )
-    op.create_index(op.f("ix_content_sources_content_asset_id"), "content_sources", ["content_asset_id"])
+    op.create_index(
+        op.f("ix_content_sources_content_asset_id"), "content_sources", ["content_asset_id"]
+    )
     op.create_index(
         op.f("ix_content_sources_content_object_id"),
         "content_sources",

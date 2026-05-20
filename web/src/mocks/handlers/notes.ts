@@ -4,6 +4,35 @@ import type { Note } from '../../types'
 
 let notes = [...noteFixtures]
 
+function listNotes(request: Request) {
+  const url = new URL(request.url)
+  const search = url.searchParams.get('search')?.toLowerCase()
+  const tags = [
+    ...url.searchParams.getAll('tags'),
+    ...(url.searchParams.get('tags')?.split(',') ?? []),
+  ].filter(Boolean)
+  const folders = [
+    ...url.searchParams.getAll('folders'),
+    ...(url.searchParams.get('folders')?.split(',') ?? []),
+  ].filter(Boolean)
+
+  let result = notes
+  if (search) {
+    result = result.filter(n => n.title.toLowerCase().includes(search))
+  }
+  if (tags.length) {
+    result = result.filter(n => n.tags.some(t => tags.includes(t.name)))
+  }
+  if (folders.length) {
+    result = result.filter(n => n.folderId !== null && folders.includes(n.folderId))
+  }
+  return result
+}
+
+function getNoteByRef(ref: string) {
+  return notes.find(n => n.slug === ref || n.id === ref)
+}
+
 // ─── Upload job store ──────────────────────────────────────────────────────────
 interface JobEntry {
   startedAt: number
@@ -16,28 +45,34 @@ const FILE_DURATION_MS = 1500  // имитация обработки одног
 
 export const noteHandlers = [
   http.get('/api/notes', ({ request }) => {
-    const url = new URL(request.url)
-    const search = url.searchParams.get('search')?.toLowerCase()
-    const tags = url.searchParams.get('tags')?.split(',').filter(Boolean)
-    const folders = url.searchParams.get('folders')?.split(',').filter(Boolean)
+    return HttpResponse.json(listNotes(request))
+  }),
 
-    let result = notes
-    if (search) {
-      result = result.filter(n => n.title.toLowerCase().includes(search))
-    }
-    if (tags?.length) {
-      result = result.filter(n => n.tags.some(t => tags.includes(t.name)))
-    }
-    if (folders?.length) {
-      result = result.filter(n => n.folderId !== null && folders.includes(n.folderId))
-    }
-    return HttpResponse.json(result)
+  http.get('/api/v1/notes', ({ request }) => {
+    return HttpResponse.json({ items: listNotes(request) })
   }),
 
   http.get('/api/notes/:slug', ({ params }) => {
-    const note = notes.find(n => n.slug === params.slug)
+    const note = getNoteByRef(String(params.slug))
     if (!note) return HttpResponse.json({ error: 'Not found' }, { status: 404 })
     return HttpResponse.json(note)
+  }),
+
+  http.get('/api/v1/notes/trash', () => {
+    return HttpResponse.json({ items: [] })
+  }),
+
+  http.get('/api/v1/notes/:noteRef', ({ params }) => {
+    const note = getNoteByRef(String(params.noteRef))
+    if (!note) return HttpResponse.json({ error: 'Not found' }, { status: 404 })
+    return HttpResponse.json(note)
+  }),
+
+  http.patch('/api/v1/notes/order', async ({ request }) => {
+    const body = await request.json() as { items?: Array<{ slug: string; position: number }> }
+    const order = new Map((body.items ?? []).map(item => [item.slug, item.position]))
+    notes = [...notes].sort((a, b) => (order.get(a.slug) ?? 1_000_000) - (order.get(b.slug) ?? 1_000_000))
+    return new HttpResponse(null, { status: 204 })
   }),
 
   // Добавление файлов в существующую заметку (сценарий C — долгий hover)
@@ -170,7 +205,15 @@ export const noteHandlers = [
 
   http.patch('/api/notes/:slug', async ({ params, request }) => {
     const body = await request.json() as Partial<Note>
-    const idx = notes.findIndex(n => n.slug === params.slug)
+    const idx = notes.findIndex(n => n.slug === params.slug || n.id === params.slug)
+    if (idx === -1) return HttpResponse.json({ error: 'Not found' }, { status: 404 })
+    notes[idx] = { ...notes[idx], ...body, updatedAt: new Date().toISOString() }
+    return HttpResponse.json(notes[idx])
+  }),
+
+  http.patch('/api/v1/notes/:noteRef', async ({ params, request }) => {
+    const body = await request.json() as Partial<Note>
+    const idx = notes.findIndex(n => n.slug === params.noteRef || n.id === params.noteRef)
     if (idx === -1) return HttpResponse.json({ error: 'Not found' }, { status: 404 })
     notes[idx] = { ...notes[idx], ...body, updatedAt: new Date().toISOString() }
     return HttpResponse.json(notes[idx])
@@ -195,6 +238,34 @@ export const noteHandlers = [
     }
     notes = [note, ...notes]
     return HttpResponse.json(note, { status: 201 })
+  }),
+
+  http.post('/api/v1/notes', async ({ request }) => {
+    const body = await request.json() as { title?: string | null; text?: string | null; tag_names?: string[] }
+    const id = String(Date.now())
+    const text = body.text ?? ''
+    const title = body.title ?? text.split('\n')[0] ?? 'Untitled'
+    const note: Note = {
+      id,
+      slug: title.toLowerCase().replace(/\s+/g, '-'),
+      type: 'simple',
+      title,
+      cover: null,
+      tags: (body.tag_names ?? []).map(name => ({ id: `${id}-${name}`, name })),
+      folderId: null,
+      objects: text ? [{ id: `${id}-text`, type: 'text', content: text, createdAt: new Date().toISOString() }] : [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }
+    notes = [note, ...notes]
+    return HttpResponse.json(note, { status: 201 })
+  }),
+
+  http.delete('/api/v1/notes', async ({ request }) => {
+    const body = await request.json() as { slugs?: string[] }
+    const slugs = new Set(body.slugs ?? [])
+    notes = notes.filter(note => !slugs.has(note.slug))
+    return new HttpResponse(null, { status: 204 })
   }),
 
   http.post('/api/notes/merge', async ({ request }) => {
