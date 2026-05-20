@@ -1692,3 +1692,142 @@
     aspect-ratio: 4 / 3;
   }
 }
+
+@media (max-width: 760px) {
+  .page {
+    min-height: 100%;
+  }
+
+  .topBar {
+    min-height: 54px;
+    padding: 8px 12px;
+    gap: 8px;
+  }
+
+  .backBtn,
+  .editBtn,
+  .saveBtn,
+  .deleteNoteBtn {
+    min-height: 36px;
+    box-sizing: border-box;
+  }
+
+  .topBarActions {
+    gap: 6px;
+  }
+
+  .deleteNoteBtn {
+    padding: 6px 10px;
+  }
+
+  .detailLayout {
+    padding: 16px 12px calc(88px + env(safe-area-inset-bottom));
+    gap: 16px;
+  }
+
+  .meta {
+    padding-bottom: 16px;
+  }
+
+  .title {
+    font-size: 30px;
+    line-height: 1.12;
+    margin-bottom: 12px;
+  }
+
+  .metaRow {
+    gap: 6px;
+  }
+
+  .tag,
+  .countBadge {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .detailSidebar {
+    gap: 10px;
+  }
+
+  .overviewPanel,
+  .enrichmentPanel,
+  .assetFrame,
+  .mediaBox,
+  .telegramDetailPost {
+    border-radius: var(--radius-md);
+  }
+
+  .stream {
+    gap: 14px;
+  }
+
+  .sourceMeta {
+    max-width: 100%;
+  }
+
+  .assetChrome {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    padding: 9px 10px;
+  }
+
+  .assetTitle {
+    flex-basis: calc(100% - 96px);
+    min-height: 28px;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .assetTabs {
+    order: 5;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .assetAction {
+    width: 32px;
+    height: 32px;
+  }
+
+  .assetBody,
+  .assetBodyInner,
+  .assetPanelLoader,
+  .assetEmpty {
+    min-height: 320px;
+  }
+
+  .assetWebsiteFrame,
+  .objLinkIframe,
+  .objLinkSnapshotPending {
+    height: 320px;
+  }
+
+  .assetMarkdown {
+    min-height: 320px;
+    padding: 18px;
+    font-size: var(--font-size-sm);
+  }
+
+  .telegramDetailHeader {
+    grid-template-columns: 32px minmax(0, 1fr);
+  }
+
+  .telegramDetailMeta {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
+
+  .telegramDetailMediaTile {
+    min-height: 180px;
+  }
+
+  .telegramDetailCaption {
+    padding: 14px 16px 16px;
+  }
+
+  .objText {
+    font-size: 16px;
+    line-height: 1.72;
+  }
+}

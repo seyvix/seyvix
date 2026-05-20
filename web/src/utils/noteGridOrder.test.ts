@@ -54,10 +54,10 @@ test('calculateMasonryGridMetrics honors dense column selections when cards rema
   })
 })
 
-test('calculateMasonryGridMetrics only reduces columns when cards would become too narrow', () => {
+test('calculateMasonryGridMetrics uses a single comfortable column on phones', () => {
   assert.deepEqual(calculateMasonryGridMetrics(390, 5), {
-    cols: 2,
-    itemWidth: 179,
+    cols: 1,
+    itemWidth: 366,
     contentWidth: 366,
   })
 })

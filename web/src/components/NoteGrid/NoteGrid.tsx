@@ -17,6 +17,7 @@ import {
 import styles from './NoteGrid.module.css'
 
 const GRID_GAP = 8
+const MOBILE_GRID_QUERY = '(max-width: 760px), (pointer: coarse)'
 
 interface NoteGridProps {
   notes: Note[]
@@ -38,11 +39,26 @@ export function NoteGrid({ notes, onAddNote, onTagClick }: NoteGridProps) {
   const gridMetricsRef = useRef<MasonryGridMetrics | null>(null)
   const [orderedNotes, setOrderedNotes] = useState<Note[]>(notes)
   const [gridMetrics, setGridMetrics] = useState<MasonryGridMetrics | null>(null)
+  const [isMobileGrid, setIsMobileGrid] = useState(() => (
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia !== 'undefined' &&
+    window.matchMedia(MOBILE_GRID_QUERY).matches
+  ))
   const queryClient = useQueryClient()
   const { cols } = useSettings()
   const hasGridMetrics = gridMetrics !== null
 
   gridMetricsRef.current = gridMetrics
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia === 'undefined') return
+    const media = window.matchMedia(MOBILE_GRID_QUERY)
+    const handleChange = () => setIsMobileGrid(media.matches)
+
+    handleChange()
+    media.addEventListener?.('change', handleChange)
+    return () => media.removeEventListener?.('change', handleChange)
+  }, [])
 
   function mergeIncomingNotes(incomingNotes: Note[]) {
     setOrderedNotes(current => {
@@ -129,9 +145,10 @@ export function NoteGrid({ notes, onAddNote, onTagClick }: NoteGridProps) {
       layoutOnResize: 80,
       layoutDuration: 180,
       layoutEasing: 'ease',
-      dragEnabled: true,
+      dragEnabled: !isMobileGrid,
       dragContainer: document.body,
       dragStartPredicate: (item, event) => {
+        if (isMobileGrid) return false
         const element = item.getElement()
         if (!element || element.dataset.staticItem === 'true' || element.dataset.dragDisabled === 'true') {
           return false
@@ -237,7 +254,7 @@ export function NoteGrid({ notes, onAddNote, onTagClick }: NoteGridProps) {
       grid.destroy(false)
       if (muuriRef.current === grid) muuriRef.current = null
     }
-  }, [hasGridMetrics, queryClient])
+  }, [hasGridMetrics, isMobileGrid, queryClient])
 
   useLayoutEffect(() => {
     const grid = muuriRef.current
@@ -265,7 +282,12 @@ export function NoteGrid({ notes, onAddNote, onTagClick }: NoteGridProps) {
   return (
     <DragProvider>
       <div ref={scrollRef} className={styles.scrollArea}>
-        <div ref={gridRef} className={styles.grid} style={gridStyle}>
+        <div
+          ref={gridRef}
+          className={`${styles.grid} ${isMobileGrid ? styles.mobileGrid : ''}`}
+          style={gridStyle}
+          data-mobile-grid={isMobileGrid ? 'true' : undefined}
+        >
           <div className={`${styles.item} ${styles.addItem}`} style={itemStyle} data-static-item="true" data-muuri-item>
             <div className={styles.itemContent}>
               <AddNoteCard onClick={onAddNote} />
@@ -283,7 +305,7 @@ export function NoteGrid({ notes, onAddNote, onTagClick }: NoteGridProps) {
                 className={styles.item}
                 data-note-id={note.id}
                 data-note-slug={note.slug}
-                data-drag-disabled={note.isLocal || note.isLoading ? 'true' : undefined}
+                data-drag-disabled={note.isLocal || note.isLoading || isMobileGrid ? 'true' : undefined}
                 data-muuri-item
                 style={itemStyle}
               >

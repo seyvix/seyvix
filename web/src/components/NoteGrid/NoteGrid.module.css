@@ -35,6 +35,11 @@
   cursor: default;
 }
 
+.mobileGrid .item {
+  cursor: default;
+  touch-action: pan-y;
+}
+
 .itemDragging {
   z-index: 20;
   cursor: grabbing;
@@ -66,7 +71,19 @@
 }
 
 @media (max-width: 640px) {
-  .grid {
-    padding: var(--space-3) 0;
+  .scrollArea {
+    overscroll-behavior: contain;
+    padding-bottom: calc(72px + env(safe-area-inset-bottom));
   }
+
+  .grid {
+    margin: 10px auto 0;
+    padding: var(--space-3) 0 var(--space-5);
+  }
+
+  .item {
+    cursor: default;
+    touch-action: pan-y;
+  }
+
 }
