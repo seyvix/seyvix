@@ -4,9 +4,10 @@ import json
 from typing import Any, Protocol
 
 import httpx
+from pydantic import BaseModel, Field
+
 from app.core.config import get_settings
 from app.shared.module_definitions import ModuleDefinition
-from pydantic import BaseModel, Field
 
 MODULE = ModuleDefinition(
     name="llm",
@@ -101,6 +102,8 @@ class HttpStructuredLLMGenerator:
             "response_format": {"type": "json_object"},
             "stream": False,
         }
+        if model_config.get("reasoning_effort") is not None:
+            payload["reasoning_effort"] = str(model_config["reasoning_effort"])
         if model_config.get("max_tokens") is not None:
             payload["max_tokens"] = int(model_config["max_tokens"])
         try:

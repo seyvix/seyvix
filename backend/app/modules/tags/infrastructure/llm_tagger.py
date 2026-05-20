@@ -4,11 +4,12 @@ import json
 import re
 from typing import Any
 
+from pydantic import BaseModel, Field, ValidationError
+
 from app.core.config import Settings
 from app.modules.content.storage import slugify
 from app.modules.llm.contracts import LLMGenerationError, StructuredLLMGenerator
 from app.modules.tags.contracts import ContentTagSuggestion
-from pydantic import BaseModel, Field, ValidationError
 
 
 class LLMTaggingError(Exception):
@@ -76,7 +77,8 @@ class LLMContentTagger:
                 model_config={
                     "model": self.settings.tags_llm_model,
                     "temperature": 0,
-                    "max_tokens": 512,
+                    "max_tokens": 4096,
+                    "reasoning_effort": "low",
                 },
             )
             parsed = _RawTaggingResponse.model_validate(raw)
