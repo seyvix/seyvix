@@ -8,10 +8,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
-
 from app.core.config import Settings, get_settings
 from app.core.database import Base, build_session_factory
 from app.main import app
@@ -23,6 +19,9 @@ from app.modules.tags.models import ContentTagAssignment, Tag, TaggingJob
 from app.modules.tags.service import TagsService
 from app.modules.tags.worker import TagsWorker
 from app.modules.taxonomy.models import ClassificationFeedback
+from fastapi.testclient import TestClient
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 TELEGRAM_BOT_TOKEN = "123456:test-bot-token"
 
@@ -287,7 +286,8 @@ def test_llm_tagger_prompt_requests_grounded_multi_level_tags() -> None:
     assert "different levels of abstraction" in prompt
     assert "broad categories" in prompt
     assert "specific topics" in prompt
-    assert "sources" in prompt
+    assert "metadata only to understand context and provenance" in prompt
+    assert "do not tag the source" in prompt
     assert "Only suggest tags supported by the provided title, metadata, and text" in prompt
     assert "Good tags: vLLM" not in prompt
 

@@ -4,12 +4,11 @@ import json
 import re
 from typing import Any
 
-from pydantic import BaseModel, Field, ValidationError
-
 from app.core.config import Settings
 from app.modules.content.storage import slugify
 from app.modules.llm.contracts import LLMGenerationError, StructuredLLMGenerator
 from app.modules.tags.contracts import ContentTagSuggestion
+from pydantic import BaseModel, Field, ValidationError
 
 
 class LLMTaggingError(Exception):
@@ -126,13 +125,15 @@ class LLMContentTagger:
             "Suggest concise, useful tags for one content object.\n"
             "Only suggest tags supported by the provided title, metadata, and text. Cover "
             "different levels of abstraction when the content supports them: broad categories, "
-            "specific topics, named entities, technologies, statuses, sources, authors, or "
-            "formats. Prefer existing candidate tags when they fit exactly or nearly exactly, "
+            "specific topics, named entities, technologies, statuses, authors, or concepts. "
+            "Use metadata only to understand context and provenance; do not tag the source, "
+            "ingestion channel, container type, media type, filename, MIME type, extension, or "
+            "format unless the meaningful content text itself is about that subject. Prefer "
+            "existing candidate tags when they fit exactly or nearly exactly, "
             "but create new tag names when none of the candidates match the content. Avoid "
             "near-duplicates, taxonomy paths, and generic labels like interesting, misc, "
-            "general, or random. Never tag internal metadata values, filenames, page numbers, "
-            "file extensions, MIME types, or file formats unless the meaningful text itself is "
-            "about them. Return structured JSON only.\n\n"
+            "general, or random. Never tag internal metadata values or page numbers. Return "
+            "structured JSON only.\n\n"
             f"Maximum tags: {max_tags}\n"
             f"Prompt version: {self.settings.tags_llm_prompt_version}\n"
             f"Title: {title}\n"

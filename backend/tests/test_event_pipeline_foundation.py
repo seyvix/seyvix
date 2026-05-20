@@ -8,13 +8,12 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
-
 from app.contracts.events import (
     ContentObjectChangedPayload,
+    ContentTagsCompletedPayload,
     EventEnvelope,
     SnapshotRequestedPayload,
+    SnapshotTextRepresentationCompletedPayload,
 )
 from app.core.database import Base, build_session_factory
 from app.modules.auth.models import User
@@ -24,7 +23,8 @@ from app.modules.snapshots.infrastructure.repositories import (
     SnapshotJobRepository,
     SnapshotSettingsRepository,
 )
-from app.modules.snapshots.models import SnapshotJob, SnapshotUserSettings
+from app.modules.snapshots.models import SnapshotArtifact, SnapshotJob, SnapshotUserSettings
+from app.modules.snapshots.worker import SnapshotWorker
 from app.modules.tags.models import TaggingJob
 from app.modules.tags.worker import TagsEventConsumer
 from app.modules.taxonomy.models import TaxonomyClassificationJob
@@ -33,10 +33,13 @@ from app.modules.vectorization.models import VectorizationJob
 from app.modules.vectorization.worker import VectorizationEventConsumer
 from app.platform.events import topology
 from app.platform.events.idempotency import EventAlreadyProcessedError, ProcessedEventStore
+from app.platform.events.models import EventOutbox
 from app.platform.events.outbox import EventOutboxRepository
 from app.platform.storage.models import StorageObject
 from app.platform.storage.repositories import StorageObjectRepository
 from app.platform.storage.service import LocalVolumeStorage, StorageKeyBuilder, StoredObject
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 
 async def _prepare_database(database_url: str) -> async_sessionmaker:
@@ -421,7 +424,7 @@ def test_failed_snapshot_job_is_requeued_instead_of_getting_stuck() -> None:
         pytest.skip(f"PostgreSQL is not available for event pipeline tests: {exc}")
 
 
-def test_content_event_creates_module_jobs_idempotently() -> None:
+def test_content_event_no_longer_creates_downstream_jobs_before_text_is_ready() -> None:
     async def scenario() -> None:
         session_factory = await _prepare_database(_test_database_url())
         owner_user_id = str(uuid4())
@@ -454,9 +457,9 @@ def test_content_event_creates_module_jobs_idempotently() -> None:
         )
 
         async with session_factory() as session:
-            assert await VectorizationEventConsumer(session).handle_event(envelope) == 1
-            assert await TaxonomyEventConsumer(session).handle_event(envelope) == 1
-            assert await TagsEventConsumer(session).handle_event(envelope) == 1
+            assert await VectorizationEventConsumer(session).handle_event(envelope) == 0
+            assert await TaxonomyEventConsumer(session).handle_event(envelope) == 0
+            assert await TagsEventConsumer(session).handle_event(envelope) == 0
             await session.commit()
 
         async with session_factory() as session:
@@ -470,24 +473,207 @@ def test_content_event_creates_module_jobs_idempotently() -> None:
             taxonomy_jobs = list(await session.scalars(select(TaxonomyClassificationJob)))
             tagging_jobs = list(await session.scalars(select(TaggingJob)))
 
+        assert vector_jobs == []
+        assert taxonomy_jobs == []
+        assert tagging_jobs == []
+
+    try:
+        asyncio.run(scenario())
+    except OSError as exc:
+        pytest.skip(f"PostgreSQL is not available for event pipeline tests: {exc}")
+
+
+def test_text_representation_and_tag_completion_events_create_downstream_jobs_idempotently() -> (
+    None
+):
+    async def scenario() -> None:
+        session_factory = await _prepare_database(_test_database_url())
+        owner_user_id = str(uuid4())
+        content_object_id = str(uuid4())
+        asset_id = str(uuid4())
+        artifact_id = str(uuid4())
+
+        async with session_factory() as session:
+            user = User(id=owner_user_id, telegram_id="100500", display_name="User")
+            content_object = ContentObject(
+                id=content_object_id,
+                owner_user_id=owner_user_id,
+                slug="text-ready",
+                title="Text ready",
+                kind="simple",
+                media_type="image",
+                storage_path=f"content-assets/{content_object_id}",
+            )
+            asset = ContentAsset(
+                id=asset_id,
+                content_object=content_object,
+                role="original",
+                media_type="image",
+                filename="diagram.png",
+                mime_type="image/png",
+                size_bytes=120,
+                storage_path=f"content-assets/{content_object_id}/{asset_id}/original.png",
+            )
+            session.add_all([user, content_object, asset])
+            await session.commit()
+
+        content_event = EventEnvelope.new(
+            event_name="content.object.created",
+            entity_id=content_object_id,
+            correlation_id="correlation-1",
+            user_id=owner_user_id,
+            payload=ContentObjectChangedPayload(
+                content_object_id=content_object_id,
+                asset_ids=[asset_id],
+                storage_refs=[],
+            ),
+        )
+        text_event = EventEnvelope.new(
+            event_name="snapshot.text_representation.completed",
+            entity_id=content_object_id,
+            correlation_id="correlation-1",
+            user_id=owner_user_id,
+            payload=SnapshotTextRepresentationCompletedPayload(
+                content_object_id=content_object_id,
+                source_asset_id=asset_id,
+                artifact_id=artifact_id,
+                representation_type="markdown",
+                source_media_type="image",
+                source_mime_type="image/png",
+                source_filename="diagram.png",
+                metadata={"job_type": "markdown"},
+            ),
+        )
+
+        async with session_factory() as session:
+            assert await VectorizationEventConsumer(session).handle_event(content_event) == 0
+            assert await TaxonomyEventConsumer(session).handle_event(content_event) == 0
+            assert await TagsEventConsumer(session).handle_event(content_event) == 0
+            await session.commit()
+
+        async with session_factory() as session:
+            assert await VectorizationEventConsumer(session).handle_event(text_event) == 1
+            assert await TaxonomyEventConsumer(session).handle_event(text_event) == 0
+            assert await TagsEventConsumer(session).handle_event(text_event) == 1
+            await session.commit()
+
+        async with session_factory() as session:
+            vector_jobs = list(await session.scalars(select(VectorizationJob)))
+            taxonomy_jobs = list(await session.scalars(select(TaxonomyClassificationJob)))
+            tagging_jobs = list(await session.scalars(select(TaggingJob)))
+
         assert len(vector_jobs) == 1
-        assert vector_jobs[0].source == "content"
-        assert vector_jobs[0].source_type == "content_object"
         assert vector_jobs[0].source_id == content_object_id
         assert vector_jobs[0].status == "pending"
 
-        assert len(taxonomy_jobs) == 1
-        assert taxonomy_jobs[0].content_object_id == content_object_id
-        assert taxonomy_jobs[0].status == "pending"
-        assert taxonomy_jobs[0].source_event_id == envelope.event_id
-
         assert len(tagging_jobs) == 1
         assert tagging_jobs[0].content_object_id == content_object_id
-        assert tagging_jobs[0].job_type == "suggest_content_tags"
-        assert tagging_jobs[0].status == "pending"
-        assert tagging_jobs[0].source_event_id == envelope.event_id
-        assert tagging_jobs[0].correlation_id == envelope.correlation_id
-        assert tagging_jobs[0].content_updated_at_snapshot is not None
+        assert tagging_jobs[0].source_event_id == text_event.event_id
+        assert tagging_jobs[0].correlation_id == text_event.correlation_id
+
+        assert taxonomy_jobs == []
+
+        tags_completed_event = EventEnvelope.new(
+            event_name="content.tags.completed",
+            entity_id=content_object_id,
+            correlation_id=text_event.correlation_id,
+            user_id=owner_user_id,
+            payload=ContentTagsCompletedPayload(
+                content_object_id=content_object_id,
+                tagging_job_id=tagging_jobs[0].id,
+                job_type=tagging_jobs[0].job_type,
+                status="succeeded",
+            ),
+        )
+
+        async with session_factory() as session:
+            assert await VectorizationEventConsumer(session).handle_event(text_event) == 0
+            assert await TagsEventConsumer(session).handle_event(text_event) == 0
+            assert await TaxonomyEventConsumer(session).handle_event(tags_completed_event) == 1
+            await session.commit()
+
+        async with session_factory() as session:
+            taxonomy_jobs = list(await session.scalars(select(TaxonomyClassificationJob)))
+
+        assert len(taxonomy_jobs) == 1
+        assert taxonomy_jobs[0].content_object_id == content_object_id
+        assert taxonomy_jobs[0].source_event_id == tags_completed_event.event_id
+
+    try:
+        asyncio.run(scenario())
+    except OSError as exc:
+        pytest.skip(f"PostgreSQL is not available for event pipeline tests: {exc}")
+
+
+def test_markdown_snapshot_job_publishes_text_representation_event(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        session_factory = await _prepare_database(_test_database_url())
+        owner_user_id = str(uuid4())
+        content_object_id = str(uuid4())
+        asset_id = str(uuid4())
+        storage_root = tmp_path / "content-storage"
+        storage_backend = LocalVolumeStorage(root=storage_root, bucket="app-storage")
+        stored = storage_backend.put_bytes(
+            storage_key=f"content-assets/{content_object_id}/{asset_id}/original.txt",
+            data=b"Extracted text must trigger downstream processing.",
+            content_type="text/plain",
+        )
+
+        async with session_factory() as session:
+            user = User(id=owner_user_id, telegram_id="100500", display_name="User")
+            content_object = ContentObject(
+                id=content_object_id,
+                owner_user_id=owner_user_id,
+                slug="snapshot-text",
+                title="Snapshot text",
+                kind="simple",
+                media_type="text",
+                storage_path=f"content-assets/{content_object_id}",
+            )
+            asset = ContentAsset(
+                id=asset_id,
+                content_object=content_object,
+                role="original",
+                media_type="text",
+                filename="note.txt",
+                mime_type="text/plain",
+                size_bytes=stored.size_bytes,
+                storage_path=stored.storage_key,
+                storage_backend=stored.storage_backend,
+                bucket=stored.bucket,
+                storage_key=stored.storage_key,
+                storage_ref=stored.storage_ref,
+                checksum=stored.checksum,
+            )
+            job = SnapshotJob(
+                owner_user_id=owner_user_id,
+                content_object_id=content_object_id,
+                source_asset_id=asset_id,
+                job_type="markdown",
+                status="pending",
+                correlation_id="correlation-1",
+                source_event_id="event-1",
+            )
+            session.add_all([user, content_object, asset, job])
+            await session.commit()
+
+        async with session_factory() as session:
+            processed = await SnapshotWorker(
+                session,
+                storage_root,
+                storage_backend,
+            ).run_once(limit=1)
+            assert processed == 1
+
+        async with session_factory() as session:
+            artifacts = list(await session.scalars(select(SnapshotArtifact)))
+            events = list(await session.scalars(select(EventOutbox)))
+
+        assert [artifact.artifact_type for artifact in artifacts] == ["markdown"]
+        assert [event.event_name for event in events] == ["snapshot.text_representation.completed"]
+        assert events[0].entity_id == content_object_id
+        assert events[0].payload["source_asset_id"] == asset_id
+        assert events[0].payload["artifact_id"] == artifacts[0].id
 
     try:
         asyncio.run(scenario())

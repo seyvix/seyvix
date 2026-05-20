@@ -8,10 +8,6 @@ from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.contracts.events import EventEnvelope, TaxonomyClassificationCompletedPayload
 from app.core.config import Settings, get_settings
 from app.modules.content.models import ContentObject
@@ -58,6 +54,9 @@ from app.modules.vectorization.contracts import (
 )
 from app.modules.vectorization.models import VectorizationJob
 from app.platform.events.outbox import EventOutboxRepository
+from pydantic import BaseModel, Field, ValidationError
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 SLUG_PATTERN = re.compile(r"^[a-z0-9_-]+$")
 LLM_JUDGE_PROMPT_VERSION = "taxonomy_classification_llm_judge_v1"
@@ -148,12 +147,16 @@ class TaxonomyService:
         self.llm_generator = llm_generator or build_structured_llm_generator(
             provider_name=self.settings.taxonomy_llm_provider
             or self.settings.llm_structured_provider,
-            base_url=self.settings.taxonomy_llm_base_url
-            if self.settings.taxonomy_llm_base_url is not None
-            else self.settings.llm_structured_base_url,
-            api_key=self.settings.taxonomy_llm_api_key
-            if self.settings.taxonomy_llm_api_key is not None
-            else self.settings.llm_structured_api_key,
+            base_url=(
+                self.settings.taxonomy_llm_base_url
+                if self.settings.taxonomy_llm_base_url is not None
+                else self.settings.llm_structured_base_url
+            ),
+            api_key=(
+                self.settings.taxonomy_llm_api_key
+                if self.settings.taxonomy_llm_api_key is not None
+                else self.settings.llm_structured_api_key
+            ),
             timeout_seconds=self.settings.taxonomy_llm_timeout_seconds
             or self.settings.llm_structured_timeout_seconds,
         )
@@ -209,9 +212,7 @@ class TaxonomyService:
         self.repository.add_category(category)
         await self.session.flush()
         if await self.repository.get_profile(category_id=category.id) is None:
-            profile_source = (
-                "template" if source in {"template", "system"} else "llm_generated"
-            )
+            profile_source = "template" if source in {"template", "system"} else "llm_generated"
             self.repository.add_profile(
                 self._profile_for_category(
                     category,
@@ -987,6 +988,7 @@ class TaxonomyService:
             title=classification_input.title,
             url=classification_input.url,
             tags=classification_input.tags,
+            metadata=classification_input.metadata,
             text_excerpt=classification_input.text_excerpt,
         )
         search_service = semantic_search_service or SemanticSearchService(self.session)
@@ -1992,6 +1994,7 @@ class TaxonomyService:
         title: str,
         url: str | None,
         tags: list[str],
+        metadata: dict[str, str | int | bool | None],
         text_excerpt: str | None,
     ) -> str:
         lines = [
@@ -1999,6 +2002,7 @@ class TaxonomyService:
             f"Title: {title}",
             f"URL: {url or ''}",
             f"Tags: {', '.join(tags)}",
+            f"Metadata: {json.dumps(metadata, ensure_ascii=False, sort_keys=True)}",
             "Content:",
         ]
         if text_excerpt:
@@ -2293,12 +2297,10 @@ class TaxonomyService:
             profile_data.get("keywords") or profile_data.get("profile_keywords")
         )
         positive_examples = cls._template_profile_list(
-            profile_data.get("positive_examples")
-            or profile_data.get("profile_positive_examples")
+            profile_data.get("positive_examples") or profile_data.get("profile_positive_examples")
         )
         negative_examples = cls._template_profile_list(
-            profile_data.get("negative_examples")
-            or profile_data.get("profile_negative_examples")
+            profile_data.get("negative_examples") or profile_data.get("profile_negative_examples")
         )
         if not summary or not keywords or not positive_examples or not negative_examples:
             return cls._profile(name)

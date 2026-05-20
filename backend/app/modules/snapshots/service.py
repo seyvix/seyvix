@@ -5,8 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.modules.content.models import ContentAsset, ContentObject
@@ -31,6 +29,7 @@ from app.modules.snapshots.schemas import (
     UpdateSnapshotSettingsRequest,
 )
 from app.platform.storage.service import LocalVolumeStorage, StorageBackend
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = get_logger(__name__)
 
@@ -138,10 +137,8 @@ def plan_snapshot_job_types(
     asset: ContentAsset,
     effective: EffectiveSnapshotSettings,
 ) -> tuple[str, ...]:
-    job_types: list[str] = ["thumbnail_text" if _uses_text_thumbnail(asset) else "thumbnail"]
-
-    if effective.markdown and not _is_markdown_asset(asset):
-        job_types.append("markdown")
+    job_types: list[str] = ["markdown"]
+    job_types.append("thumbnail_text" if _uses_text_thumbnail(asset) else "thumbnail")
     if effective.pdf and _should_generate_pdf(asset):
         job_types.append("pdf")
     if _is_site_asset(asset):
@@ -620,11 +617,6 @@ def _uses_text_thumbnail(asset: ContentAsset) -> bool:
         or asset.mime_type in {"text/markdown", "text/plain"}
         or suffix in TEXT_THUMBNAIL_SUFFIXES
     )
-
-
-def _is_markdown_asset(asset: ContentAsset) -> bool:
-    suffix = Path(asset.filename).suffix.lower()
-    return asset.mime_type == "text/markdown" or suffix in MARKDOWN_SUFFIXES
 
 
 def _should_generate_pdf(asset: ContentAsset) -> bool:

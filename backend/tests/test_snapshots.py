@@ -6,9 +6,6 @@ import zlib
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import select
-
 from app.modules.content.models import ContentAsset, ContentObject
 from app.modules.content.schemas import NoteAssetResponse
 from app.modules.snapshots.artifacts import (
@@ -29,6 +26,8 @@ from app.modules.snapshots.models import SnapshotJob
 from app.modules.snapshots.service import EffectiveSnapshotSettings, plan_snapshot_job_types
 from app.modules.snapshots.worker import extraction_metadata_from_generated_artifact
 from app.platform.events.models import EventOutbox
+from fastapi.testclient import TestClient
+from sqlalchemy import select
 from tests.test_content import _auth_headers
 
 
@@ -299,7 +298,7 @@ def test_snapshot_job_plan_uses_text_thumbnail_and_skips_existing_markdown() -> 
         archive_org=True,
     )
 
-    assert plan_snapshot_job_types(asset, settings) == ("thumbnail_text", "pdf")
+    assert plan_snapshot_job_types(asset, settings) == ("markdown", "thumbnail_text", "pdf")
 
 
 def test_snapshot_job_plan_skips_html_archive_and_pdf_for_existing_pdf() -> None:
@@ -321,7 +320,7 @@ def test_snapshot_job_plan_skips_html_archive_and_pdf_for_existing_pdf() -> None
         archive_org=True,
     )
 
-    assert plan_snapshot_job_types(asset, settings) == ("thumbnail", "markdown")
+    assert plan_snapshot_job_types(asset, settings) == ("markdown", "thumbnail")
 
 
 def test_snapshot_job_plan_includes_site_jobs_for_link_when_enabled() -> None:
@@ -345,8 +344,8 @@ def test_snapshot_job_plan_includes_site_jobs_for_link_when_enabled() -> None:
     )
 
     assert plan_snapshot_job_types(asset, settings) == (
-        "thumbnail",
         "markdown",
+        "thumbnail",
         "pdf",
         "screenshot",
         "webpage_html",
@@ -372,7 +371,7 @@ def test_snapshot_job_plan_respects_disabled_markdown_and_pdf_settings() -> None
         archive_org=True,
     )
 
-    assert plan_snapshot_job_types(asset, settings) == ("thumbnail",)
+    assert plan_snapshot_job_types(asset, settings) == ("markdown", "thumbnail")
 
 
 def test_note_asset_response_exposes_snapshot_representation_fields() -> None:

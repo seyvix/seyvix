@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.contracts.events import EventEnvelope
 from app.core.logging import get_logger
 from app.modules.tags.infrastructure.repositories import TagsRepository
 from app.platform.events.idempotency import EventAlreadyProcessedError, ProcessedEventStore
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = get_logger(__name__)
 
@@ -32,7 +31,7 @@ class TagsEventConsumer:
             )
             return 0
 
-        if envelope.event_name not in {"content.object.created", "content.object.updated"}:
+        if envelope.event_name != "snapshot.text_representation.completed":
             await self.session.commit()
             return 0
 

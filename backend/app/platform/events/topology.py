@@ -76,7 +76,7 @@ def build_rabbit_topology(settings: Settings) -> RabbitTopology:
         vectorization_queue=RabbitQueue(
             settings.rabbitmq_vectorization_queue,
             queue_type=QueueType.QUORUM,
-            routing_key="content.object.*",
+            routing_key="snapshot.text_representation.completed",
             arguments={
                 "x-dead-letter-exchange": retry_exchange.name,
             },
@@ -84,7 +84,7 @@ def build_rabbit_topology(settings: Settings) -> RabbitTopology:
         vectorization_retry_queue=RabbitQueue(
             settings.rabbitmq_vectorization_retry_queue,
             queue_type=QueueType.QUORUM,
-            routing_key="content.object.*",
+            routing_key="snapshot.text_representation.completed",
             arguments={
                 "x-message-ttl": settings.rabbitmq_retry_ttl_ms,
                 "x-dead-letter-exchange": events_exchange.name,
@@ -98,7 +98,7 @@ def build_rabbit_topology(settings: Settings) -> RabbitTopology:
         taxonomy_queue=RabbitQueue(
             settings.rabbitmq_taxonomy_queue,
             queue_type=QueueType.QUORUM,
-            routing_key="content.object.*",
+            routing_key="content.tags.completed",
             arguments={
                 "x-dead-letter-exchange": retry_exchange.name,
             },
@@ -106,7 +106,7 @@ def build_rabbit_topology(settings: Settings) -> RabbitTopology:
         taxonomy_retry_queue=RabbitQueue(
             settings.rabbitmq_taxonomy_retry_queue,
             queue_type=QueueType.QUORUM,
-            routing_key="content.object.*",
+            routing_key="content.tags.completed",
             arguments={
                 "x-message-ttl": settings.rabbitmq_retry_ttl_ms,
                 "x-dead-letter-exchange": events_exchange.name,
@@ -120,7 +120,7 @@ def build_rabbit_topology(settings: Settings) -> RabbitTopology:
         tags_queue=RabbitQueue(
             settings.rabbitmq_tags_queue,
             queue_type=QueueType.QUORUM,
-            routing_key="content.object.*",
+            routing_key="snapshot.text_representation.completed",
             arguments={
                 "x-dead-letter-exchange": retry_exchange.name,
             },
@@ -128,7 +128,7 @@ def build_rabbit_topology(settings: Settings) -> RabbitTopology:
         tags_retry_queue=RabbitQueue(
             settings.rabbitmq_tags_retry_queue,
             queue_type=QueueType.QUORUM,
-            routing_key="content.object.*",
+            routing_key="snapshot.text_representation.completed",
             arguments={
                 "x-message-ttl": settings.rabbitmq_retry_ttl_ms,
                 "x-dead-letter-exchange": events_exchange.name,
@@ -254,12 +254,20 @@ async def declare_rabbit_topology(settings: Settings) -> None:
         await snapshot_retry_queue.bind(retry_exchange, routing_key="content.object.*")
         await snapshot_retry_queue.bind(retry_exchange, routing_key="snapshot.requested")
         await snapshot_dlq.bind(dlq_exchange, routing_key="#")
-        await vectorization_queue.bind(events_exchange, routing_key="content.object.*")
-        await vectorization_retry_queue.bind(retry_exchange, routing_key="content.object.*")
+        await vectorization_queue.bind(
+            events_exchange, routing_key="snapshot.text_representation.completed"
+        )
+        await vectorization_queue.bind(events_exchange, routing_key="content.object.deleted")
+        await vectorization_retry_queue.bind(
+            retry_exchange, routing_key="snapshot.text_representation.completed"
+        )
+        await vectorization_retry_queue.bind(retry_exchange, routing_key="content.object.deleted")
         await vectorization_dlq.bind(dlq_exchange, routing_key="#")
-        await taxonomy_queue.bind(events_exchange, routing_key="content.object.*")
-        await taxonomy_retry_queue.bind(retry_exchange, routing_key="content.object.*")
+        await taxonomy_queue.bind(events_exchange, routing_key="content.tags.completed")
+        await taxonomy_retry_queue.bind(retry_exchange, routing_key="content.tags.completed")
         await taxonomy_dlq.bind(dlq_exchange, routing_key="#")
-        await tags_queue.bind(events_exchange, routing_key="content.object.*")
-        await tags_retry_queue.bind(retry_exchange, routing_key="content.object.*")
+        await tags_queue.bind(events_exchange, routing_key="snapshot.text_representation.completed")
+        await tags_retry_queue.bind(
+            retry_exchange, routing_key="snapshot.text_representation.completed"
+        )
         await tags_dlq.bind(dlq_exchange, routing_key="#")

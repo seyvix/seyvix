@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.contracts.events import EventEnvelope
 from app.core.logging import get_logger
 from app.modules.taxonomy.service import TaxonomyNotFoundError, TaxonomyService
 from app.platform.events.idempotency import EventAlreadyProcessedError, ProcessedEventStore
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = get_logger(__name__)
 
@@ -31,10 +30,7 @@ class TaxonomyEventConsumer:
             )
             return 0
 
-        if envelope.event_name == "content.object.deleted":
-            await self.session.commit()
-            return 0
-        if envelope.event_name not in {"content.object.created", "content.object.updated"}:
+        if envelope.event_name != "content.tags.completed":
             await self.session.commit()
             return 0
 

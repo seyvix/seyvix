@@ -3,15 +3,14 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from pathlib import Path
 
 from app.core.config import Settings, get_settings
 from app.modules.content.infrastructure.repositories import ContentRepository
 from app.modules.content.models import ContentObject
 from app.modules.content.storage import slugify
 from app.modules.llm.contracts import StructuredLLMGenerator, build_structured_llm_generator
+from app.modules.snapshots.service import SnapshotService
 from app.modules.tags.contracts import (
     ContentTagSuggestion,
     TagAssignmentStatus,
@@ -23,6 +22,8 @@ from app.modules.tags.models import ContentTagAssignment, Tag, TaggingJob
 from app.modules.tags.schemas import JobStatusCountResponse, TagsJobMetricsResponse
 from app.modules.taxonomy.contracts import AutomaticApplyMode
 from app.modules.taxonomy.models import ClassificationFeedback, TaxonomyUserSettings
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class TagNotFoundError(Exception):
@@ -56,20 +57,28 @@ class TagsService:
         *,
         settings: Settings | None = None,
         llm_generator: StructuredLLMGenerator | None = None,
+        storage_root: Path | None = None,
     ) -> None:
         self.session = session
         self.settings = settings or get_settings()
         self.repository = TagsRepository(session)
         self.content = ContentRepository(session)
+        self.snapshots = SnapshotService(
+            session,
+            storage_root or Path(self.settings.content_storage_root),
+        )
         self.llm_generator = llm_generator or build_structured_llm_generator(
-            provider_name=self.settings.tags_llm_provider
-            or self.settings.llm_structured_provider,
-            base_url=self.settings.tags_llm_base_url
-            if self.settings.tags_llm_base_url is not None
-            else self.settings.llm_structured_base_url,
-            api_key=self.settings.tags_llm_api_key
-            if self.settings.tags_llm_api_key is not None
-            else self.settings.llm_structured_api_key,
+            provider_name=self.settings.tags_llm_provider or self.settings.llm_structured_provider,
+            base_url=(
+                self.settings.tags_llm_base_url
+                if self.settings.tags_llm_base_url is not None
+                else self.settings.llm_structured_base_url
+            ),
+            api_key=(
+                self.settings.tags_llm_api_key
+                if self.settings.tags_llm_api_key is not None
+                else self.settings.llm_structured_api_key
+            ),
             timeout_seconds=self.settings.tags_llm_timeout_seconds
             or self.settings.llm_structured_timeout_seconds,
         )
@@ -718,6 +727,7 @@ class TagsService:
             include_archived=False,
         )
         active_tags = [assignment.tag for assignment in active]
+        excerpt = await self._text_excerpt(content_object, max_chars=4000)
         return TaggingInput(
             content_object=content_object,
             active_tags=active_tags,
@@ -725,9 +735,10 @@ class TagsService:
                 content_object=content_object,
                 active_tags=active_tags,
                 tags=all_tags,
+                text_excerpt=excerpt,
                 max_tags=24,
             ),
-            excerpt=self._text_excerpt(content_object, max_chars=4000),
+            excerpt=excerpt,
         )
 
     async def _get_tag(self, *, owner_user_id: str, tag_id: str) -> Tag:
@@ -829,13 +840,20 @@ class TagsService:
             normalized.append(alias_slug)
         return list(dict.fromkeys(normalized))
 
-    @staticmethod
-    def _text_excerpt(content_object: ContentObject, *, max_chars: int) -> str | None:
-        text = "\n".join(
-            asset.text_content.strip()
-            for asset in content_object.assets
-            if asset.text_content is not None and asset.text_content.strip()
-        ).strip()
+    async def _text_excerpt(self, content_object: ContentObject, *, max_chars: int) -> str | None:
+        parts: list[str] = []
+        for asset in content_object.assets:
+            if asset.text_content is not None and asset.text_content.strip():
+                parts.append(asset.text_content.strip())
+                continue
+            if asset.media_type != "text":
+                snapshot_text = await self.snapshots.get_markdown_text(
+                    source_asset_id=asset.id,
+                    max_chars=max_chars,
+                )
+                if snapshot_text:
+                    parts.append(snapshot_text.strip())
+        text = "\n\n".join(parts).strip()
         text = TagsService._strip_filename_heading(text)
         return text[:max_chars] if text else None
 
@@ -852,10 +870,11 @@ class TagsService:
         content_object: ContentObject,
         active_tags: list[Tag],
         tags: list[Tag],
+        text_excerpt: str | None,
         max_tags: int,
     ) -> list[Tag]:
         active_by_slug = {tag.slug: tag for tag in active_tags}
-        text = cls._candidate_matching_text(content_object)
+        text = cls._candidate_matching_text(content_object, text_excerpt=text_excerpt)
         scored: list[tuple[int, str, Tag]] = []
         for tag in tags:
             if tag.slug in active_by_slug:
@@ -869,10 +888,15 @@ class TagsService:
         return [tag for _, _, tag in scored[:max_tags]]
 
     @classmethod
-    def _candidate_matching_text(cls, content_object: ContentObject) -> str:
+    def _candidate_matching_text(
+        cls,
+        content_object: ContentObject,
+        *,
+        text_excerpt: str | None = None,
+    ) -> str:
         parts = [
             cls._semantic_title(content_object.title),
-            cls._text_excerpt(content_object, max_chars=4000),
+            text_excerpt,
         ]
         if content_object.media_type == "link":
             parts.append(content_object.source_filename)
