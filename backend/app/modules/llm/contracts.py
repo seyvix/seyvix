@@ -77,7 +77,11 @@ class HttpStructuredLLMGenerator:
     ) -> dict[str, Any]:
         headers: dict[str, str] = {}
         if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+            stripped = self.api_key.strip()
+            if stripped.startswith(("Bearer ", "Api-Key ")):
+                headers["Authorization"] = stripped
+            else:
+                headers["Authorization"] = f"Bearer {stripped}"
         payload = {
             "model": str(model_config["model"]),
             "messages": [
