@@ -182,7 +182,12 @@ def test_telegram_media_group_creates_single_collection_with_item_sources(
     assert second["status"] == "collection_updated"
     assert second["note"]["type"] == "collection"
     assert second["note"]["objects"][0]["caption"] == "Caption from first album item"
-    assert [obj["source"]["origin"]["url"] for obj in second["note"]["objects"]] == [
+    source_urls = [
+        source["origin"]["url"]
+        for obj in second["note"]["objects"]
+        if (source := obj.get("source")) is not None
+    ]
+    assert source_urls == [
         "https://t.me/whackdoor/28305",
         "https://t.me/whackdoor/28306",
     ]

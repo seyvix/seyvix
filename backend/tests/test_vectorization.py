@@ -588,7 +588,13 @@ def test_content_object_vectorization_provider_indexes_and_replaces_changed_cont
                     )
                 )
             )
-            embeddings = list(await session.scalars(select(VectorizationEmbedding)))
+            embeddings = list(
+                await session.scalars(
+                    select(VectorizationEmbedding)
+                    .join(VectorizationChunk)
+                    .where(VectorizationChunk.source_record_id == source.id)
+                )
+            )
             old_chunk_ids = {chunk.id for chunk in chunks}
 
             await VectorizationService(session).enqueue_index_request(

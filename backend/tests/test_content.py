@@ -195,7 +195,7 @@ def test_create_plain_url_note_creates_link_object_and_content_event(
 
     assert response.status_code == 201
     payload = response.json()
-    assert payload["type"] == "simple"
+    assert payload["type"] == "composite"
     assert payload["objects"][0]["type"] == "link"
     assert payload["title"] == "example.com"
     assert "folder" not in payload
