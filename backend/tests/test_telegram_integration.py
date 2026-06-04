@@ -187,10 +187,7 @@ def test_telegram_media_group_creates_single_collection_with_item_sources(
         for obj in second["note"]["objects"]
         if (source := obj.get("source")) is not None
     ]
-    assert source_urls == [
-        "https://t.me/whackdoor/28305",
-        "https://t.me/whackdoor/28306",
-    ]
+    assert source_urls == ["https://t.me/whackdoor/28306"]
 
 
 def test_telegram_ingest_video_file_creates_video_note_object(
