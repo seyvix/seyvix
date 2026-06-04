@@ -20,87 +20,87 @@ env:
   NODE_VERSION: "22"
 
 jobs:
-#  python:
-#    name: Python checks
-#    runs-on: ubuntu-latest
-#    services:
-#      postgres:
-#        image: pgvector/pgvector:pg16
-#        env:
-#          POSTGRES_DB: vkr_api
-#          POSTGRES_USER: postgres
-#          POSTGRES_PASSWORD: postgres
-#        ports:
-#          - 5432:5432
-#        options: >-
-#          --health-cmd "pg_isready -U postgres -d vkr_api"
-#          --health-interval 5s
-#          --health-timeout 5s
-#          --health-retries 20
-#    strategy:
-#      fail-fast: false
-#      matrix:
-#        project:
-#          - name: backend
-#            path: backend
-#          - name: telegram-bot
-#            path: telegram-bot
-#    steps:
-#      - name: Checkout
-#        uses: actions/checkout@v6
-#
-#      - name: Set up uv
-#        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
-#        with:
-#          enable-cache: true
-#          cache-dependency-glob: ${{ matrix.project.path }}/uv.lock
-#
-#      - name: Install Python
-#        run: uv python install "$PYTHON_VERSION"
-#
-#      - name: Install dependencies
-#        working-directory: ${{ matrix.project.path }}
-#        run: uv sync --frozen --python "$PYTHON_VERSION"
-#
-#      - name: Pytest
-#        working-directory: ${{ matrix.project.path }}
-#        env:
-#          TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/vkr_api
-#          TELEGRAM_BOT_TOKEN: 123456:test-bot-token
-#        run: uv run pytest
+  python:
+    name: Python checks
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: vkr_api
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d vkr_api"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    strategy:
+      fail-fast: false
+      matrix:
+        project:
+          - name: backend
+            path: backend
+          - name: telegram-bot
+            path: telegram-bot
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
 
-#  web:
-#    name: Web checks
-#    runs-on: ubuntu-latest
-#    steps:
-#      - name: Checkout
-#        uses: actions/checkout@v6
-#
-#      - name: Set up Node.js
-#        uses: actions/setup-node@v6
-#        with:
-#          node-version: ${{ env.NODE_VERSION }}
-#          cache: npm
-#          cache-dependency-path: web/package-lock.json
-#
-#      - name: Install dependencies
-#        working-directory: web
-#        run: npm ci
-#
-#      - name: Test
-#        working-directory: web
-#        run: npm test
-#
-#      - name: Build
-#        working-directory: web
-#        run: npm run build
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          enable-cache: true
+          cache-dependency-glob: ${{ matrix.project.path }}/uv.lock
+
+      - name: Install Python
+        run: uv python install "$PYTHON_VERSION"
+
+      - name: Install dependencies
+        working-directory: ${{ matrix.project.path }}
+        run: uv sync --frozen --python "$PYTHON_VERSION"
+
+      - name: Pytest
+        working-directory: ${{ matrix.project.path }}
+        env:
+          TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/vkr_api
+          TELEGRAM_BOT_TOKEN: 123456:test-bot-token
+        run: uv run pytest
+
+  web:
+    name: Web checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Test
+        working-directory: web
+        run: npm test
+
+      - name: Build
+        working-directory: web
+        run: npm run build
 
   build-images:
     name: Build and publish images
     runs-on: ubuntu-latest
-#    needs:
-#      - python
-#      - web
+    needs:
+      - python
+      - web
     strategy:
       fail-fast: false
       matrix:
