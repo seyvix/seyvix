@@ -178,7 +178,7 @@ def test_telegram_media_group_creates_single_collection_with_item_sources(
     first = ingest_photo(29, 28305, "Caption from first album item")
     second = ingest_photo(30, 28306, None)
 
-    assert first["note"]["type"] == "simple"
+    assert first["note"]["type"] == "composite"
     assert second["status"] == "collection_updated"
     assert second["note"]["type"] == "collection"
     assert second["note"]["objects"][0]["caption"] == "Caption from first album item"

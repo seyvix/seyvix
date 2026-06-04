@@ -81,6 +81,12 @@ def _create_indexed_category_profile(
     )
     assert category_response.status_code == 201, category_response.text
     category = category_response.json()
+    settings_response = client.patch(
+        "/api/v1/taxonomy/settings",
+        headers=headers,
+        json={"category_profile_editing_enabled": True},
+    )
+    assert settings_response.status_code == 200, settings_response.text
     profile_response = client.put(
         f"/api/v1/taxonomy/categories/{category['id']}/profile",
         headers=headers,

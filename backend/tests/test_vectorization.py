@@ -80,6 +80,12 @@ def _create_category(
 def _put_profile(
     client: TestClient, headers: dict[str, str], category_id: str, summary: str
 ) -> None:
+    settings_response = client.patch(
+        "/api/v1/taxonomy/settings",
+        headers=headers,
+        json={"category_profile_editing_enabled": True},
+    )
+    assert settings_response.status_code == 200, settings_response.text
     response = client.put(
         f"/api/v1/taxonomy/categories/{category_id}/profile",
         headers=headers,

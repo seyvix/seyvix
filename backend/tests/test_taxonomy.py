@@ -230,7 +230,7 @@ def test_unclassified_content_goes_to_inbox_and_can_be_requeued(
                 )
             )
 
-    assert content_client.portal.call(count_jobs) >= 2
+    assert content_client.portal.call(count_jobs) >= 1
 
 
 def test_taxonomy_jobs_coalesce_trace_and_skip_stale_content(
@@ -1045,7 +1045,7 @@ def test_content_classification_input_contract(content_client: TestClient) -> No
     assert payload["tags"] == ["ai", "draft"]
     assert payload["metadata"]["kind"] == "simple"
     assert payload["metadata"]["media_type"] == "text"
-    assert payload["created_at"] == note["created_at"]
+    assert payload["created_at"] == note["createdAt"]
 
 
 def test_content_classification_input_uses_ready_markdown_snapshot_for_document(

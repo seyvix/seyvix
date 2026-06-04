@@ -680,7 +680,9 @@ def test_markdown_snapshot_job_publishes_text_representation_event(tmp_path: Pat
                 correlation_id="correlation-1",
                 source_event_id="event-1",
             )
-            session.add_all([user, content_object, asset, job])
+            session.add_all([user, content_object, asset])
+            await session.flush()
+            session.add(job)
             await session.commit()
 
         async with session_factory() as session:

@@ -678,7 +678,7 @@ def test_service_llm_prompt_uses_content_context_and_existing_tag_candidates(
             assert "different levels of abstraction" in prompt
             assert "broad categories" in prompt
             assert "specific topics" in prompt
-            assert "sources" in prompt
+            assert "source, context, or confidence" in prompt
 
     asyncio.run(scenario())
 
