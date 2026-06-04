@@ -1,0 +1,32 @@
+services:
+  web:
+    image: ${WEB_IMAGE:?WEB_IMAGE is required for deploy}
+    build: !reset null
+
+  backend:
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required for deploy}
+    build: !reset null
+
+  outbox-publisher:
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required for deploy}
+    build: !reset null
+
+  snapshot-worker:
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required for deploy}
+    build: !reset null
+
+  vectorization-worker:
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required for deploy}
+    build: !reset null
+
+  taxonomy-worker:
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required for deploy}
+    build: !reset null
+
+  tags-worker:
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required for deploy}
+    build: !reset null
+
+  telegram-bot:
+    image: ${TELEGRAM_BOT_IMAGE:?TELEGRAM_BOT_IMAGE is required for deploy}
+    build: !reset null

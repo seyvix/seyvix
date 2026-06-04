@@ -59,6 +59,7 @@ services:
         condition: service_started
 
   web:
+    image: ${WEB_IMAGE:-seyvix-web:local}
     build:
       context: .
       dockerfile: web/Dockerfile
@@ -72,6 +73,7 @@ services:
 
   backend:
     <<: *backend-env
+    image: ${BACKEND_IMAGE:-seyvix-backend:local}
     build: *backend-build
     restart: unless-stopped
     depends_on: *backend-depends
@@ -92,6 +94,7 @@ services:
 
   outbox-publisher:
     <<: *backend-env
+    image: ${BACKEND_IMAGE:-seyvix-backend:local}
     build: *backend-build
     restart: unless-stopped
     depends_on:
@@ -103,6 +106,7 @@ services:
 
   snapshot-worker:
     <<: *backend-env
+    image: ${BACKEND_IMAGE:-seyvix-backend:local}
     build: *backend-build
     restart: unless-stopped
     depends_on: *backend-depends
@@ -110,6 +114,7 @@ services:
 
   vectorization-worker:
     <<: *backend-env
+    image: ${BACKEND_IMAGE:-seyvix-backend:local}
     build: *backend-build
     restart: unless-stopped
     depends_on:
@@ -123,6 +128,7 @@ services:
 
   taxonomy-worker:
     <<: *backend-env
+    image: ${BACKEND_IMAGE:-seyvix-backend:local}
     build: *backend-build
     restart: unless-stopped
     depends_on:
@@ -134,6 +140,7 @@ services:
 
   tags-worker:
     <<: *backend-env
+    image: ${BACKEND_IMAGE:-seyvix-backend:local}
     build: *backend-build
     restart: unless-stopped
     depends_on:
@@ -145,6 +152,7 @@ services:
 
   telegram-bot:
     <<: *telegram-bot-env
+    image: ${TELEGRAM_BOT_IMAGE:-seyvix-telegram-bot:local}
     build:
       context: .
       dockerfile: telegram-bot/Dockerfile

@@ -870,10 +870,11 @@ class TagsService:
         content_object: ContentObject,
         active_tags: list[Tag],
         tags: list[Tag],
-        text_excerpt: str | None,
+        text_excerpt: str | None = None,
         max_tags: int,
     ) -> list[Tag]:
         active_by_slug = {tag.slug: tag for tag in active_tags}
+        text_excerpt = text_excerpt or cls._text_excerpt_from_loaded_assets(content_object)
         text = cls._candidate_matching_text(content_object, text_excerpt=text_excerpt)
         scored: list[tuple[int, str, Tag]] = []
         for tag in tags:
@@ -886,6 +887,17 @@ class TagsService:
 
         scored.sort(key=lambda item: (-item[0], item[1]))
         return [tag for _, _, tag in scored[:max_tags]]
+
+    @staticmethod
+    def _text_excerpt_from_loaded_assets(content_object: ContentObject) -> str | None:
+        parts = [
+            asset.text_content.strip()
+            for asset in content_object.assets
+            if asset.text_content is not None and asset.text_content.strip()
+        ]
+        text = "\n\n".join(parts).strip()
+        text = TagsService._strip_filename_heading(text)
+        return text or None
 
     @classmethod
     def _candidate_matching_text(

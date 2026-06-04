@@ -91,6 +91,40 @@ docker compose run --rm backend alembic upgrade head
 
 Сервис `backend` также запускает миграции при старте.
 
+### Автодеплой через GitHub Actions
+
+В репозитории настроен workflow `.github/workflows/deploy.yml`. На каждый push в
+`main` он:
+
+- запускает проверки backend, telegram-bot и frontend;
+- собирает Docker-образы `backend`, `web`, `telegram-bot` в GitHub Actions;
+- публикует образы в GHCR с тегами `latest` и SHA коммита;
+- копирует Compose-файлы на сервер;
+- делает на сервере только `docker compose pull` и `docker compose up -d --no-build`.
+
+На сервере должны быть установлены Docker и Docker Compose plugin. В директории
+деплоя должен лежать production `.env`; исходники проекта на сервере не нужны.
+
+Добавь в GitHub Environment `production` или в repository secrets:
+
+- `DEPLOY_HOST` - адрес сервера;
+- `DEPLOY_USER` - SSH-пользователь;
+- `DEPLOY_SSH_KEY` - приватный SSH-ключ для входа на сервер;
+- `DEPLOY_PATH` - директория деплоя на сервере, например `/opt/seyvix`;
+- `DEPLOY_PORT` - SSH-порт, опционально, по умолчанию `22`;
+- `DEPLOY_KNOWN_HOSTS` - known_hosts запись сервера, опционально.
+
+Для ручного деплоя готовыми образами можно использовать:
+
+```bash
+export BACKEND_IMAGE=ghcr.io/seyvix/seyvix/backend:<tag>
+export WEB_IMAGE=ghcr.io/seyvix/seyvix/web:<tag>
+export TELEGRAM_BOT_IMAGE=ghcr.io/seyvix/seyvix/telegram-bot:<tag>
+
+docker compose -f docker-compose.yml -f docker-compose.deploy.yml pull
+docker compose -f docker-compose.yml -f docker-compose.deploy.yml up -d --no-build --remove-orphans
+```
+
 ## Маршрутизация
 
 Дефолтный режим использует один внешний порт:
