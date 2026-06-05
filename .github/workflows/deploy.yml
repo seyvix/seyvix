@@ -266,5 +266,9 @@ jobs:
           compose_files="-f docker-compose.yml -f docker-compose.deploy.yml"
           docker compose $compose_files pull
           docker compose $compose_files up -d --no-build --remove-orphans
+          sleep 20
+          docker compose $compose_files ps
+          docker compose $compose_files logs backend --tail=100
+          docker compose $compose_files logs web --tail=100
           docker image prune -f
           REMOTE
