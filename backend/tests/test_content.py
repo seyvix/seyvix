@@ -690,3 +690,33 @@ def test_folder_tree_and_folder_tags_are_available(content_client: TestClient) -
     assert notes_response.status_code == 200
     assert len(notes_response.json()["items"]) == 2
     assert notes_response.json()["items"][0]["taxonomyCategory"]["path"] == "work/research"
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("**Hello world**", "Hello world"),
+        ("__Bold__", "Bold"),
+        ("plain title", "plain title"),
+        ("# Heading", "Heading"),
+        ("### Subheading", "Subheading"),
+        ("> quoted line", "quoted line"),
+        ("`code`", "code"),
+        ("```code```", "code"),
+        ("~~strike~~", "strike"),
+        ("_italic_", "italic"),
+        ("*italic*", "italic"),
+        ("**bold** and _italic_ and ~~strike~~", "bold and italic and strike"),
+        ("Read [docs](https://example.com) now", "Read docs now"),
+        ("<u>underlined</u>", "underlined"),
+        ("multi   spaces   collapsed", "multi spaces collapsed"),
+        ("snake_case_var stays", "snake_case_var stays"),
+        ("2 * 3 = 6", "2 * 3 = 6"),
+        ("first line\nsecond line", "first line second line"),
+        ("   **trim me**   ", "trim me"),
+    ],
+)
+def test_strip_title_markdown_removes_common_markers(raw: str, expected: str) -> None:
+    from app.modules.content.service import _strip_title_markdown
+
+    assert _strip_title_markdown(raw) == expected

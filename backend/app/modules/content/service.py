@@ -82,6 +82,55 @@ def _optional_string(value: Any) -> str | None:
     return str(value)
 
 
+_TITLE_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
+_TITLE_INLINE_TAG_RE = re.compile(
+    r"</?(?:u|b|i|s|em|strong|code|tg-spoiler)\b[^>]*>",
+    re.IGNORECASE,
+)
+_TITLE_HEADING_PREFIX_RE = re.compile(r"^\s{0,3}#{1,6}\s+")
+_TITLE_BLOCKQUOTE_PREFIX_RE = re.compile(r"^\s{0,3}>\s+")
+_TITLE_BOLD_STAR_RE = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
+_TITLE_BOLD_UNDERSCORE_RE = re.compile(r"__(.+?)__", re.DOTALL)
+_TITLE_STRIKE_RE = re.compile(r"~~(.+?)~~", re.DOTALL)
+_TITLE_ITALIC_STAR_RE = re.compile(r"(?<!\*)\*(?!\*)(\S(?:[^*\n]*?\S)?)\*(?!\*)")
+_TITLE_ITALIC_UNDERSCORE_RE = re.compile(
+    r"(?<![A-Za-z0-9_])_(?!_)(\S(?:[^_\n]*?\S)?)_(?!_)(?![A-Za-z0-9_])",
+)
+_TITLE_INLINE_CODE_RE = re.compile(r"`+([^`]+?)`+")
+
+
+def _strip_title_markdown(value: str) -> str:
+    """Remove common Markdown / Telegram entity markers from a single-line title.
+
+    Bold/italic/strike/code/link/heading/blockquote markers are unwrapped while
+    the textual content is preserved. Whitespace is collapsed.
+    """
+    text = value.replace("\r", " ").replace("\n", " ")
+    text = _TITLE_HEADING_PREFIX_RE.sub("", text)
+    text = _TITLE_BLOCKQUOTE_PREFIX_RE.sub("", text)
+    text = _TITLE_LINK_RE.sub(r"\1", text)
+    text = _TITLE_INLINE_TAG_RE.sub("", text)
+    text = _TITLE_BOLD_STAR_RE.sub(r"\1", text)
+    text = _TITLE_BOLD_UNDERSCORE_RE.sub(r"\1", text)
+    text = _TITLE_STRIKE_RE.sub(r"\1", text)
+    text = _TITLE_INLINE_CODE_RE.sub(r"\1", text)
+    text = _TITLE_ITALIC_STAR_RE.sub(r"\1", text)
+    text = _TITLE_ITALIC_UNDERSCORE_RE.sub(r"\1", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _normalize_title(*candidates: str | None, max_length: int = 80) -> str:
+    """Pick the first non-empty candidate, strip Markdown markers, truncate."""
+    for candidate in candidates:
+        if not candidate:
+            continue
+        cleaned = _strip_title_markdown(candidate)
+        if not cleaned:
+            continue
+        return cleaned[:max_length]
+    return ""
+
+
 def _optional_datetime(value: Any) -> datetime | None:
     if value is None:
         return None
@@ -635,7 +684,9 @@ class ContentService:
     ) -> NoteCardResponse:
         content_object = await self._load_note(owner_user_id=owner_user_id, slug=slug)
         if title is not None:
-            content_object.title = title
+            cleaned_title = _strip_title_markdown(title)[:80]
+            if cleaned_title:
+                content_object.title = cleaned_title
         if tag_names is not None:
             await self.tag_service.replace_manual_tags_for_content(
                 owner_user_id=owner_user_id,
@@ -924,7 +975,9 @@ class ContentService:
         folder_path: str | None,
         tag_names: list[str],
     ) -> NoteCardResponse:
-        normalized_title = title or text.strip().splitlines()[0][:80]
+        normalized_title = _strip_title_markdown(
+            title or text.strip().splitlines()[0]
+        )[:80]
         slug = await self._unique_slug(owner_user_id, normalized_title)
         sort_order = await self._next_root_sort_order(owner_user_id=owner_user_id)
         content_object_id = str(uuid4())
@@ -1004,7 +1057,9 @@ class ContentService:
         folder_path: str | None,
         tag_names: list[str],
     ) -> NoteCardResponse:
-        normalized_title = title or self._link_title(url)
+        normalized_title = (
+            _strip_title_markdown(title)[:80] if title else self._link_title(url)
+        )
         slug = await self._unique_slug(owner_user_id, normalized_title)
         sort_order = await self._next_root_sort_order(owner_user_id=owner_user_id)
         content_object_id = str(uuid4())
@@ -1100,7 +1155,9 @@ class ContentService:
         tag_names: list[str],
     ) -> NoteCardResponse:
         has_text = bool(text.strip())
-        normalized_title = title or self._link_title(links[0])
+        normalized_title = (
+            _strip_title_markdown(title)[:80] if title else self._link_title(links[0])
+        )
         slug = await self._unique_slug(owner_user_id, normalized_title)
         sort_order = await self._next_root_sort_order(owner_user_id=owner_user_id)
         content_object_id = str(uuid4())
@@ -1236,7 +1293,10 @@ class ContentService:
         tag_names: list[str],
     ) -> NoteCardResponse:
         file_media_type = self._media_type(uploaded.filename, uploaded.content_type)
-        normalized_title = title or text.strip().splitlines()[0][:80] or uploaded.filename
+        first_line = next(iter(text.strip().splitlines()), "")
+        normalized_title = (
+            _strip_title_markdown(title or first_line)[:80] or uploaded.filename
+        )
         slug = await self._unique_slug(owner_user_id, normalized_title)
         sort_order = await self._next_root_sort_order(owner_user_id=owner_user_id)
         content_object_id = str(uuid4())
@@ -1438,7 +1498,7 @@ class ContentService:
     ) -> ContentObject:
         media_type = self._media_type(uploaded.filename, uploaded.content_type)
         kind = "complex" if media_type == "document" else "simple"
-        normalized_title = title or uploaded.filename
+        normalized_title = _strip_title_markdown(title)[:80] if title else uploaded.filename
         slug = await self._unique_slug(
             owner_user_id,
             Path(uploaded.filename).stem or normalized_title,
