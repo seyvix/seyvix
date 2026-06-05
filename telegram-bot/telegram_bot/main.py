@@ -20,7 +20,7 @@ async def main() -> None:
             internal_token=settings.telegram_internal_token,
         )
         await run_polling(
-            bot=build_bot(settings.telegram_bot_token),
+            bot=build_bot(settings.telegram_bot_token, settings.telegram_api_base),
             use_cases=BotUseCases(backend=backend),
             web_app_url=settings.telegram_web_app_url,
             media_group_flush_seconds=settings.telegram_media_group_flush_seconds,

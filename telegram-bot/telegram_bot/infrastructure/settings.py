@@ -7,6 +7,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True, slots=True)
 class Settings:
     telegram_bot_token: str
+    telegram_api_base: str | None
     telegram_internal_token: str
     telegram_backend_base_url: str
     telegram_web_app_url: str | None
@@ -20,6 +21,7 @@ def get_settings() -> Settings:
     internal_token = os.getenv("TELEGRAM_INTERNAL_TOKEN") or bot_token
     return Settings(
         telegram_bot_token=bot_token,
+        telegram_api_base=os.getenv("TELEGRAM_API_BASE") or None,
         telegram_internal_token=internal_token,
         telegram_backend_base_url=os.getenv(
             "TELEGRAM_BACKEND_BASE_URL",
