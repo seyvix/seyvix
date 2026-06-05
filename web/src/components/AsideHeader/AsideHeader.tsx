@@ -208,7 +208,11 @@ export default function AsideHeader() {
 
       <button
         className={styles.toggleBtn}
-        onClick={() => setExpanded(!expanded)}
+        onClick={() => {
+          const next = !expanded
+          setExpanded(next)
+          if (!next) setSettingsOpen(false)
+        }}
         aria-label={expanded ? 'Свернуть меню' : 'Развернуть меню'}
       >
         {expanded ? <IconChevronLeft /> : <IconChevronRight />}
