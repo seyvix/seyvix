@@ -472,7 +472,15 @@ class AuthService:
             raise TelegramAuthNotConfiguredError
 
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            client_kwargs = {
+                "timeout": httpx.Timeout(15.0, connect=10.0),
+                "follow_redirects": False,
+            }
+
+            if settings.telegram_oidc_proxy_url:
+                client_kwargs["proxy"] = settings.telegram_oidc_proxy_url
+
+            async with httpx.AsyncClient(**client_kwargs) as client:
                 token_response = await client.post(
                     settings.telegram_oidc_token_url,
                     data={

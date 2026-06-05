@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     telegram_login_redirect_url: str | None = None
     telegram_oidc_client_id: str | None = None
     telegram_oidc_client_secret: str | None = None
+    telegram_oidc_proxy_url: str | None = None
     telegram_oidc_authorization_url: str = "https://oauth.telegram.org/auth"
     telegram_oidc_token_url: str = "https://oauth.telegram.org/token"
     telegram_oidc_jwks_url: str = "https://oauth.telegram.org/.well-known/jwks.json"
