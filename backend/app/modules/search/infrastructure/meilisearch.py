@@ -124,7 +124,15 @@ class HttpMeilisearchClient:
     ) -> None:
         if not documents:
             return
-        await self._request("POST", f"/indexes/{index_uid}/documents", json=documents)
+        # Pin primaryKey=id explicitly. The chunk schema has many `*_id` fields
+        # (chunk_external_id, content_object_id, source_id, ...), so Meilisearch
+        # cannot infer one and would reject the task with
+        # `index_primary_key_multiple_candidates_found`.
+        await self._request(
+            "POST",
+            f"/indexes/{index_uid}/documents?primaryKey=id",
+            json=documents,
+        )
 
     async def delete_documents_by_filter(self, *, index_uid: str, filter_expression: str) -> None:
         await self._request(

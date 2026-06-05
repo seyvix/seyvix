@@ -5,6 +5,7 @@ import os
 from datetime import UTC, datetime
 from typing import Any, cast
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -704,3 +705,51 @@ def test_hybrid_search_filters_by_metadata_before_ranking(
     assert {result["source_id"] for result in note_response.json()["results"]} == {note["id"]}
     assert stale_date_response.status_code == 200, stale_date_response.text
     assert stale_date_response.json()["results"] == []
+
+
+@pytest.mark.asyncio
+async def test_http_client_replace_documents_pins_primary_key_to_id() -> None:
+    """
+    The chunk document schema contains many `*_id` fields (chunk_external_id,
+    content_object_id, source_id, ...). Meilisearch cannot infer a primary key
+    from that, so it rejects every `documentAdditionOrUpdate` task. The client
+    must pin `primaryKey=id` on the POST so Meilisearch uses our canonical id.
+    """
+    from app.modules.search.infrastructure.meilisearch import HttpMeilisearchClient
+
+    captured: dict[str, object] = {}
+
+    class _StubTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            captured["url"] = str(request.url)
+            captured["method"] = request.method
+            return httpx.Response(202, json={"taskUid": 1})
+
+    real_async_client = httpx.AsyncClient
+
+    def _patched_client(*args: object, **kwargs: object) -> httpx.AsyncClient:
+        kwargs["transport"] = _StubTransport()
+        return real_async_client(*args, **kwargs)
+
+    import app.modules.search.infrastructure.meilisearch as meili_mod
+
+    monkey_target = "httpx.AsyncClient"
+    original = meili_mod.httpx.AsyncClient
+    meili_mod.httpx.AsyncClient = _patched_client  # type: ignore[assignment]
+    try:
+        client = HttpMeilisearchClient(
+            base_url="http://meilisearch:7700",
+            api_key=None,
+            timeout_seconds=5,
+        )
+        await client.replace_documents(
+            index_uid="content_chunks",
+            documents=[{"id": "abc", "text": "hello"}],
+        )
+    finally:
+        meili_mod.httpx.AsyncClient = original  # type: ignore[assignment]
+    assert monkey_target  # noqa: B015 — keeps the variable used for readability
+
+    assert captured["method"] == "POST"
+    url = str(captured["url"])
+    assert "primaryKey=id" in url, f"primary key not pinned in URL: {url}"
