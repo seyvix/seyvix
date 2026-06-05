@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { apiLogin, apiLogout, apiRefresh, apiRegister } from '../api/auth'
 import type { UserResponse } from '../api/auth'
 import { configureApiClient } from '../lib/apiClient'
+import { shouldSkipInitialRefresh } from '../utils/authBootstrap'
 
 interface AuthContextValue {
   user: UserResponse | null
@@ -41,6 +42,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Bootstrap: пробуем refresh при старте приложения
   useEffect(() => {
+    if (shouldSkipInitialRefresh(window.location.pathname)) {
+      setIsReady(true)
+      return
+    }
+
     apiRefresh()
       .then(({ user, access_token }) => {
         tokenRef.current = access_token

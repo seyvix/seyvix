@@ -56,6 +56,38 @@ def test_verify_telegram_oidc_id_token_returns_verified_claims() -> None:
     assert claims["name"] == "Telegram User"
 
 
+def test_verify_telegram_oidc_id_token_uses_bot_id_audience() -> None:
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_jwk = json.loads(RSAAlgorithm.to_jwk(private_key.public_key()))
+    public_jwk.update({"kid": "telegram-key", "alg": "RS256", "use": "sig"})
+    now = datetime.now(UTC)
+    id_token = jwt.encode(
+        {
+            "iss": "https://oauth.telegram.org",
+            "aud": "123456",
+            "sub": "100500",
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(minutes=5)).timestamp()),
+        },
+        private_key,
+        algorithm="RS256",
+        headers={"kid": "telegram-key"},
+    )
+
+    assert verify_telegram_oidc_id_token(
+        id_token,
+        jwks={"keys": [public_jwk]},
+        client_id="telegram-client",
+        issuer="https://oauth.telegram.org",
+    ) is None
+    assert verify_telegram_oidc_id_token(
+        id_token,
+        jwks={"keys": [public_jwk]},
+        client_id="123456",
+        issuer="https://oauth.telegram.org",
+    ) is not None
+
+
 def _signed_init_data() -> str:
     payload = {
         "query_id": "AAEAAAE",

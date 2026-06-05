@@ -500,7 +500,7 @@ class AuthService:
         claims = verify_telegram_oidc_id_token(
             id_token,
             jwks=jwks,
-            client_id=settings.telegram_oidc_client_id,
+            client_id=self._telegram_oidc_audience(),
             issuer=settings.telegram_oidc_issuer,
         )
         if claims is None:
@@ -530,6 +530,17 @@ class AuthService:
             raise InvalidTelegramOidcLoginError
 
         return user
+
+    @staticmethod
+    def _telegram_oidc_audience() -> str:
+        settings = get_settings()
+        if settings.telegram_oidc_audience:
+            return settings.telegram_oidc_audience
+        if settings.telegram_bot_token and ":" in settings.telegram_bot_token:
+            return settings.telegram_bot_token.split(":", maxsplit=1)[0]
+        if settings.telegram_oidc_client_id:
+            return settings.telegram_oidc_client_id
+        raise TelegramAuthNotConfiguredError
 
     @staticmethod
     def _build_display_name(payload: TelegramLoginRequest) -> str:
