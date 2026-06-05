@@ -59,6 +59,13 @@ class Settings(BaseSettings):
     telegram_default_group_window_seconds: int = 3
     telegram_login_max_age_seconds: int = 86400
     telegram_login_redirect_url: str | None = None
+    telegram_oidc_client_id: str | None = None
+    telegram_oidc_client_secret: str | None = None
+    telegram_oidc_authorization_url: str = "https://oauth.telegram.org/auth"
+    telegram_oidc_token_url: str = "https://oauth.telegram.org/token"
+    telegram_oidc_jwks_url: str = "https://oauth.telegram.org/.well-known/jwks.json"
+    telegram_oidc_issuer: str = "https://oauth.telegram.org"
+    telegram_oidc_scope: str = "openid profile"
     telegram_login_code_ttl_seconds: int = 60
     telegram_dev_login_enabled: bool = False
     telegram_dev_user_id: int = 100500

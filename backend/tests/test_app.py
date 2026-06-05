@@ -1,8 +1,11 @@
+from urllib.parse import parse_qs, urlsplit
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings, get_settings
 from app.main import app, configure_cors
+from app.modules.auth.presentation.rest.router import _build_telegram_oidc_authorization_url
 
 client = TestClient(app)
 
@@ -37,6 +40,32 @@ def test_settings_read_cors_values_from_env(monkeypatch) -> None:
         "postgresql+asyncpg://app:secret@db.internal:5433/vkr_api"
     )
     assert settings.redis_url == "redis://redis.internal:6380/2"
+
+    get_settings.cache_clear()
+
+
+def test_telegram_oidc_authorization_url_uses_code_flow_with_pkce(monkeypatch) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("TELEGRAM_OIDC_CLIENT_ID", "telegram-client")
+    monkeypatch.setenv("TELEGRAM_OIDC_CLIENT_SECRET", "telegram-secret")
+    monkeypatch.setenv("TELEGRAM_LOGIN_REDIRECT_URL", "https://app.example.com/auth/callback")
+
+    url = _build_telegram_oidc_authorization_url(
+        state="state-token",
+        code_verifier="dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+    )
+    query = parse_qs(urlsplit(url).query)
+
+    assert query["client_id"] == ["telegram-client"]
+    assert query["redirect_uri"] == ["https://app.example.com/auth/callback"]
+    assert query["response_type"] == ["code"]
+    assert query["scope"] == ["openid profile"]
+    assert query["state"] == ["state-token"]
+    assert query["code_challenge"] == ["E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"]
+    assert query["code_challenge_method"] == ["S256"]
+    assert "bot_id" not in query
+    assert "origin" not in query
+    assert "return_to" not in query
 
     get_settings.cache_clear()
 
@@ -143,6 +172,7 @@ def test_openapi_documents_auth_contracts() -> None:
     telegram_callback_operation = schema["paths"]["/api/v1/auth/telegram-callback"]["get"]
     telegram_code_operation = schema["paths"]["/api/v1/auth/telegram-code"]["post"]
     telegram_login_operation = schema["paths"]["/api/v1/auth/telegram-login"]["post"]
+    telegram_oidc_operation = schema["paths"]["/api/v1/auth/telegram-oidc-code"]["post"]
     telegram_web_app_operation = schema["paths"]["/api/v1/auth/telegram-web-app"]["post"]
     refresh_operation = schema["paths"]["/api/v1/auth/refresh"]["post"]
     me_operation = schema["paths"]["/api/v1/auth/me"]["get"]
@@ -152,6 +182,7 @@ def test_openapi_documents_auth_contracts() -> None:
     assert telegram_callback_operation["summary"] == "Telegram redirect callback"
     assert telegram_code_operation["summary"] == "Exchange Telegram login code"
     assert telegram_login_operation["summary"] == "Login with Telegram"
+    assert telegram_oidc_operation["summary"] == "Exchange Telegram OIDC authorization code"
     assert telegram_web_app_operation["summary"] == "Login with Telegram Mini App"
     assert telegram_login_operation["responses"]["401"]["description"] == (
         "Invalid Telegram login data."
@@ -161,6 +192,7 @@ def test_openapi_documents_auth_contracts() -> None:
     )
     assert me_operation["responses"]["401"]["description"] == "Missing or invalid access token."
     assert "TelegramLoginRequest" in schema["components"]["schemas"]
+    assert "TelegramOidcCodeExchangeRequest" in schema["components"]["schemas"]
     assert "TelegramWebAppLoginRequest" in schema["components"]["schemas"]
     assert "AuthTokensResponse" in schema["components"]["schemas"]
     assert "ErrorResponse" in schema["components"]["schemas"]

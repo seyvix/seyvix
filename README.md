@@ -29,6 +29,8 @@ cp .env.example .env
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_WEB_APP_URL`
 - `TELEGRAM_LOGIN_REDIRECT_URL`
+- `TELEGRAM_OIDC_CLIENT_ID`
+- `TELEGRAM_OIDC_CLIENT_SECRET`
 - `CORS_ALLOWED_ORIGINS`
 - `APP_SERVER_NAME`, `WEB_SERVER_NAME`, `API_SERVER_NAME`, если используются реальные домены
 
@@ -140,6 +142,8 @@ APP_PORT=8080
 APP_SERVER_NAME=example.com
 TELEGRAM_WEB_APP_URL=https://example.com
 TELEGRAM_LOGIN_REDIRECT_URL=https://example.com/auth/callback
+TELEGRAM_OIDC_CLIENT_ID=<BotFather Web Login Client ID>
+TELEGRAM_OIDC_CLIENT_SECRET=<BotFather Web Login Client Secret>
 CORS_ALLOWED_ORIGINS=["https://example.com"]
 ```
 
@@ -151,6 +155,8 @@ WEB_SERVER_NAME=app.example.com
 API_SERVER_NAME=api.example.com
 TELEGRAM_WEB_APP_URL=https://app.example.com
 TELEGRAM_LOGIN_REDIRECT_URL=https://app.example.com/auth/callback
+TELEGRAM_OIDC_CLIENT_ID=<BotFather Web Login Client ID>
+TELEGRAM_OIDC_CLIENT_SECRET=<BotFather Web Login Client Secret>
 CORS_ALLOWED_ORIGINS=["https://example.com","https://app.example.com","https://api.example.com"]
 ```
 

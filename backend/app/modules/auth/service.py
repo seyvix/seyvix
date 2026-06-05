@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -13,6 +14,7 @@ from app.modules.auth.schemas import (
     AuthTokensResponse,
     TelegramLoginCodeExchangeRequest,
     TelegramLoginRequest,
+    TelegramOidcCodeExchangeRequest,
     TelegramWebAppLoginRequest,
     UserResponse,
 )
@@ -24,6 +26,7 @@ from app.modules.auth.security import (
     parse_telegram_web_app_init_data,
     refresh_token_expires_at,
     verify_telegram_login_data,
+    verify_telegram_oidc_id_token,
 )
 
 
@@ -40,6 +43,10 @@ class InvalidTelegramLoginError(Exception):
 
 
 class InvalidTelegramWebAppLoginError(Exception):
+    pass
+
+
+class InvalidTelegramOidcLoginError(Exception):
     pass
 
 
@@ -94,6 +101,25 @@ class AuthService:
         ip_address: str | None,
     ) -> tuple[AuthTokensResponse, str]:
         user = await self._resolve_telegram_web_app_user(payload)
+        auth_response, refresh_token = await self._create_session_response(
+            user=user,
+            user_agent=user_agent,
+            ip_address=ip_address,
+        )
+        return auth_response, refresh_token
+
+    async def telegram_oidc_login(
+        self,
+        *,
+        payload: TelegramOidcCodeExchangeRequest,
+        code_verifier: str,
+        user_agent: str | None,
+        ip_address: str | None,
+    ) -> tuple[AuthTokensResponse, str]:
+        user = await self._resolve_telegram_oidc_user(
+            payload=payload,
+            code_verifier=code_verifier,
+        )
         auth_response, refresh_token = await self._create_session_response(
             user=user,
             user_agent=user_agent,
@@ -425,6 +451,83 @@ class AuthService:
         )
         if user is None:
             raise InvalidTelegramWebAppLoginError
+
+        return user
+
+    async def _resolve_telegram_oidc_user(
+        self,
+        *,
+        payload: TelegramOidcCodeExchangeRequest,
+        code_verifier: str,
+    ) -> User:
+        settings = get_settings()
+        if (
+            not settings.telegram_oidc_client_id
+            or not settings.telegram_oidc_client_secret
+            or not settings.telegram_login_redirect_url
+        ):
+            raise TelegramAuthNotConfiguredError
+
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                token_response = await client.post(
+                    settings.telegram_oidc_token_url,
+                    data={
+                        "grant_type": "authorization_code",
+                        "code": payload.code,
+                        "redirect_uri": settings.telegram_login_redirect_url,
+                        "client_id": settings.telegram_oidc_client_id,
+                        "code_verifier": code_verifier,
+                    },
+                    auth=httpx.BasicAuth(
+                        settings.telegram_oidc_client_id,
+                        settings.telegram_oidc_client_secret,
+                    ),
+                    headers={"Accept": "application/json"},
+                )
+                token_response.raise_for_status()
+                token_payload = token_response.json()
+                jwks_response = await client.get(settings.telegram_oidc_jwks_url)
+                jwks_response.raise_for_status()
+                jwks = jwks_response.json()
+        except Exception as exc:
+            raise InvalidTelegramOidcLoginError from exc
+
+        id_token = token_payload.get("id_token")
+        if not isinstance(id_token, str):
+            raise InvalidTelegramOidcLoginError
+
+        claims = verify_telegram_oidc_id_token(
+            id_token,
+            jwks=jwks,
+            client_id=settings.telegram_oidc_client_id,
+            issuer=settings.telegram_oidc_issuer,
+        )
+        if claims is None:
+            raise InvalidTelegramOidcLoginError
+
+        telegram_id = claims.get("id") or claims.get("sub")
+        if not isinstance(telegram_id, int | str):
+            raise InvalidTelegramOidcLoginError
+
+        username = claims.get("preferred_username")
+        picture = claims.get("picture")
+        name = claims.get("name")
+        display_name = str(name).strip() if isinstance(name, str) and name.strip() else None
+        user = await self.users.upsert_active_telegram_profile(
+            telegram_id=str(telegram_id),
+            display_name=display_name
+            or self._build_display_name_from_parts(
+                first_name="",
+                last_name=None,
+                username=username if isinstance(username, str) else None,
+                fallback=str(telegram_id),
+            ),
+            telegram_username=username if isinstance(username, str) else None,
+            telegram_photo_url=picture if isinstance(picture, str) else None,
+        )
+        if user is None:
+            raise InvalidTelegramOidcLoginError
 
         return user
 

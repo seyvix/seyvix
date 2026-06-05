@@ -19,9 +19,11 @@ from app.modules.auth.schemas import (
     TelegramAuthResultRequest,
     TelegramLoginCodeExchangeRequest,
     TelegramLoginRequest,
+    TelegramOidcCodeExchangeRequest,
     TelegramWebAppLoginRequest,
     UserResponse,
 )
+from app.modules.auth.security import build_pkce_code_challenge, generate_refresh_token
 from app.modules.auth.service import (
     AuthContext,
     AuthService,
@@ -29,6 +31,7 @@ from app.modules.auth.service import (
     InvalidRefreshTokenError,
     InvalidTelegramLoginCodeError,
     InvalidTelegramLoginError,
+    InvalidTelegramOidcLoginError,
     InvalidTelegramWebAppLoginError,
     SessionNotFoundError,
     TelegramAuthNotConfiguredError,
@@ -37,6 +40,10 @@ from app.modules.auth.service import (
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 bearer_auth_scheme = HTTPBearer(scheme_name="BearerAuth", auto_error=False)
+
+TELEGRAM_OIDC_STATE_COOKIE = "telegram_oidc_state"
+TELEGRAM_OIDC_CODE_VERIFIER_COOKIE = "telegram_oidc_code_verifier"
+TELEGRAM_OIDC_COOKIE_MAX_AGE_SECONDS = 600
 
 
 def get_auth_service(
@@ -90,6 +97,37 @@ def _clear_refresh_cookie(response: Response) -> None:
     )
 
 
+def _set_telegram_oidc_cookies(
+    response: Response,
+    *,
+    state: str,
+    code_verifier: str,
+) -> None:
+    settings = get_settings()
+    for name, value in (
+        (TELEGRAM_OIDC_STATE_COOKIE, state),
+        (TELEGRAM_OIDC_CODE_VERIFIER_COOKIE, code_verifier),
+    ):
+        response.set_cookie(
+            key=name,
+            value=value,
+            httponly=True,
+            secure=settings.refresh_cookie_secure,
+            samesite=settings.refresh_cookie_samesite,
+            path=f"{settings.api_prefix}/auth",
+            max_age=TELEGRAM_OIDC_COOKIE_MAX_AGE_SECONDS,
+        )
+
+
+def _clear_telegram_oidc_cookies(response: Response) -> None:
+    settings = get_settings()
+    for name in (TELEGRAM_OIDC_STATE_COOKIE, TELEGRAM_OIDC_CODE_VERIFIER_COOKIE):
+        response.delete_cookie(
+            key=name,
+            path=f"{settings.api_prefix}/auth",
+        )
+
+
 def _build_telegram_redirect_url(**params: str) -> str:
     settings = get_settings()
     if settings.telegram_login_redirect_url is None:
@@ -109,6 +147,31 @@ def _build_telegram_redirect_url(**params: str) -> str:
     )
 
 
+def _build_telegram_oidc_authorization_url(*, state: str, code_verifier: str) -> str:
+    settings = get_settings()
+    if (
+        not settings.telegram_oidc_client_id
+        or not settings.telegram_oidc_client_secret
+        or not settings.telegram_login_redirect_url
+    ):
+        raise TelegramAuthNotConfiguredError
+
+    return (
+        f"{settings.telegram_oidc_authorization_url}?"
+        + urlencode(
+            {
+                "client_id": settings.telegram_oidc_client_id,
+                "redirect_uri": settings.telegram_login_redirect_url,
+                "response_type": "code",
+                "scope": settings.telegram_oidc_scope,
+                "state": state,
+                "code_challenge": build_pkce_code_challenge(code_verifier),
+                "code_challenge_method": "S256",
+            },
+        )
+    )
+
+
 @router.get(
     "/telegram-login",
     include_in_schema=False,
@@ -121,7 +184,7 @@ async def telegram_login_redirect(
     """
     Единая точка входа для авторизации через Telegram.
     В dev-режиме делегирует в telegram-dev-login.
-    В prod-режиме строит редирект на oauth.telegram.org.
+    В prod-режиме строит OIDC authorization code redirect на oauth.telegram.org.
     """
     settings = get_settings()
 
@@ -148,30 +211,23 @@ async def telegram_login_redirect(
         _set_refresh_cookie(response, refresh_token)
         return response
 
-    if not settings.telegram_bot_token:
+    try:
+        state = generate_refresh_token()
+        code_verifier = generate_refresh_token()
+        authorization_url = _build_telegram_oidc_authorization_url(
+            state=state,
+            code_verifier=code_verifier,
+        )
+    except TelegramAuthNotConfiguredError as exc:
         raise AppError(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             code="telegram_auth_not_configured",
-            message="Telegram authentication is not configured.",
-        )
-    if not settings.telegram_login_redirect_url:
-        raise AppError(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            code="telegram_auth_not_configured",
-            message="Telegram login redirect URL is not configured.",
-        )
+            message="Telegram OIDC authentication is not configured.",
+        ) from exc
 
-    bot_id = settings.telegram_bot_token.split(":")[0]
-
-    # Берём origin фронтенда из TELEGRAM_LOGIN_REDIRECT_URL
-    redirect_parts = urlsplit(settings.telegram_login_redirect_url)
-    frontend_origin = f"{redirect_parts.scheme}://{redirect_parts.netloc}"
-
-    # Telegram appends #tgAuthResult=... as fragment — frontend reads it and calls /telegram-result
-    return_to = f"{frontend_origin}/auth/callback"
-
-    params = urlencode({"bot_id": bot_id, "origin": frontend_origin, "return_to": return_to})
-    return RedirectResponse(f"https://oauth.telegram.org/auth?{params}")
+    response = RedirectResponse(authorization_url)
+    _set_telegram_oidc_cookies(response, state=state, code_verifier=code_verifier)
+    return response
 
 
 @router.get(
@@ -361,6 +417,65 @@ async def exchange_telegram_auth_result(
             message="Telegram authentication is not configured.",
         ) from exc
 
+    _set_refresh_cookie(response, refresh_token)
+    return auth_response
+
+
+@router.post(
+    "/telegram-oidc-code",
+    response_model=AuthTokensResponse,
+    summary="Exchange Telegram OIDC authorization code",
+    description=(
+        "Exchanges a Telegram OpenID Connect authorization code for Telegram tokens, verifies "
+        "the ID token with Telegram JWKS, creates or updates the user, starts an authenticated "
+        "session, and sets a refresh token in an httpOnly cookie."
+    ),
+    responses={
+        200: {"description": "User authenticated with Telegram OIDC."},
+        401: {"model": ErrorResponse, "description": "Invalid Telegram OIDC code or state."},
+        503: {"model": ErrorResponse, "description": "Telegram OIDC is not configured."},
+        422: {"model": ErrorResponse, "description": "Validation error in input payload."},
+    },
+)
+async def exchange_telegram_oidc_code(
+    payload: TelegramOidcCodeExchangeRequest,
+    request: Request,
+    response: Response,
+    service: Annotated[AuthService, Depends(get_auth_service)],
+) -> AuthTokensResponse:
+    expected_state = request.cookies.get(TELEGRAM_OIDC_STATE_COOKIE)
+    code_verifier = request.cookies.get(TELEGRAM_OIDC_CODE_VERIFIER_COOKIE)
+    if not expected_state or not code_verifier or expected_state != payload.state:
+        _clear_telegram_oidc_cookies(response)
+        raise AppError(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            code="invalid_telegram_oidc_state",
+            message="Invalid Telegram OIDC state.",
+        )
+
+    try:
+        auth_response, refresh_token = await service.telegram_oidc_login(
+            payload=payload,
+            code_verifier=code_verifier,
+            user_agent=request.headers.get("user-agent"),
+            ip_address=request.client.host if request.client else None,
+        )
+    except InvalidTelegramOidcLoginError as exc:
+        _clear_telegram_oidc_cookies(response)
+        raise AppError(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            code="invalid_telegram_oidc_login",
+            message="Invalid Telegram OIDC login data.",
+        ) from exc
+    except TelegramAuthNotConfiguredError as exc:
+        _clear_telegram_oidc_cookies(response)
+        raise AppError(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            code="telegram_auth_not_configured",
+            message="Telegram OIDC authentication is not configured.",
+        ) from exc
+
+    _clear_telegram_oidc_cookies(response)
     _set_refresh_cookie(response, refresh_token)
     return auth_response
 

@@ -132,3 +132,17 @@ export async function apiTelegramCode(code: string): Promise<AuthTokensResponse>
   if (!res.ok) throw await parseError(res)
   return res.json()
 }
+
+export async function apiTelegramOidcCode(
+  code: string,
+  state: string,
+): Promise<AuthTokensResponse> {
+  const res = await fetch(`${BASE}/telegram-oidc-code`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code, state }),
+    credentials: 'include',
+  })
+  if (!res.ok) throw await parseError(res)
+  return res.json()
+}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -20,6 +21,42 @@ def generate_refresh_token() -> str:
 
 def hash_refresh_token(raw_refresh_token: str) -> str:
     return hashlib.sha256(raw_refresh_token.encode("utf-8")).hexdigest()
+
+
+def build_pkce_code_challenge(code_verifier: str) -> str:
+    digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+def verify_telegram_oidc_id_token(
+    id_token: str,
+    *,
+    jwks: dict[str, object],
+    client_id: str,
+    issuer: str,
+) -> dict[str, object] | None:
+    try:
+        header = jwt.get_unverified_header(id_token)
+        kid = header["kid"]
+        keys = jwks.get("keys")
+        if not isinstance(keys, list):
+            return None
+        raw_key = next(
+            (key for key in keys if isinstance(key, dict) and key.get("kid") == kid),
+            None,
+        )
+        if raw_key is None:
+            return None
+        jwk = jwt.PyJWK.from_dict(raw_key)
+        return jwt.decode(
+            id_token,
+            key=jwk.key,
+            algorithms=[str(raw_key.get("alg") or header.get("alg") or "RS256")],
+            audience=client_id,
+            issuer=issuer,
+        )
+    except Exception:
+        return None
 
 
 def verify_telegram_login_data(

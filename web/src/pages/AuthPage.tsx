@@ -165,7 +165,7 @@ export default function AuthPage() {
         >
           <div className={styles.eyebrow}>
             <ShieldCheck size={15} aria-hidden="true" />
-            <span>{miniApp ? 'Telegram Mini App' : 'Telegram OAuth'}</span>
+            <span>{miniApp ? 'Telegram Mini App' : 'Telegram OIDC'}</span>
           </div>
 
           <h1>Seyvix</h1>

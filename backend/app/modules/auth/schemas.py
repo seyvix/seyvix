@@ -68,6 +68,19 @@ class TelegramLoginCodeExchangeRequest(BaseModel):
     )
 
 
+class TelegramOidcCodeExchangeRequest(BaseModel):
+    code: str = Field(
+        min_length=1,
+        description="Authorization code returned by Telegram OIDC.",
+    )
+    state: str = Field(
+        min_length=1,
+        description=(
+            "State value returned by Telegram OIDC and matched against the httpOnly cookie."
+        ),
+    )
+
+
 class UserResponse(BaseModel):
     id: str = Field(description="Unique user identifier.")
     telegram_id: str = Field(description="Telegram user identifier.")

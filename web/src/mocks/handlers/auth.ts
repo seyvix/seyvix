@@ -22,6 +22,7 @@ export const authHandlers = [
   http.post('/api/v1/auth/register', () => HttpResponse.json(tokenResponse)),
   http.post('/api/v1/auth/telegram-web-app', () => HttpResponse.json(tokenResponse)),
   http.post('/api/v1/auth/telegram-result', () => HttpResponse.json(tokenResponse)),
+  http.post('/api/v1/auth/telegram-oidc-code', () => HttpResponse.json(tokenResponse)),
   http.post('/api/v1/auth/telegram-code', () => HttpResponse.json(tokenResponse)),
   http.post('/api/v1/auth/logout', () => HttpResponse.json({ ok: true })),
   http.get('/api/v1/auth/sessions', () => HttpResponse.json([])),

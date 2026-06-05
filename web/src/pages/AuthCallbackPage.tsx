@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { apiTelegramCode, apiTelegramResult } from '../api/auth'
+import { apiTelegramCode, apiTelegramOidcCode, apiTelegramResult } from '../api/auth'
 import { useAuth } from '../contexts/AuthContext'
 
 export default function AuthCallbackPage() {
@@ -31,20 +31,21 @@ export default function AuthCallbackPage() {
       return
     }
 
-    // Dev login: code is in query param
     const code = searchParams.get('code')
+    const state = searchParams.get('state')
     if (!code) {
       navigate('/auth', { replace: true })
       return
     }
 
-    apiTelegramCode(code)
+    const exchange = state ? apiTelegramOidcCode(code, state) : apiTelegramCode(code)
+    exchange
       .then(({ user, access_token }) => {
         loginWithTokens(user, access_token)
         navigate('/notes', { replace: true })
       })
       .catch((err) => {
-        console.error('[AuthCallbackPage] telegram code exchange failed:', err)
+        console.error('[AuthCallbackPage] telegram auth code exchange failed:', err)
         navigate('/auth?error=telegram_code_failed', { replace: true })
       })
   }, [navigate, loginWithTokens, searchParams])
