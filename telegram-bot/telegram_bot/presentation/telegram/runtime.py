@@ -13,7 +13,7 @@ def build_bot(token: str, telegram_api_base: str | None = None) -> Bot:
     session = None
     if telegram_api_base is not None:
         session = AiohttpSession(
-            api=TelegramAPIServer.from_base(telegram_api_base, is_local=True)
+            api=TelegramAPIServer.from_base(telegram_api_base)
         )
     return Bot(
         token=token,
