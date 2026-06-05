@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+import logging
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,6 +29,8 @@ from app.modules.auth.security import (
     verify_telegram_login_data,
     verify_telegram_oidc_id_token,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class TelegramAuthNotConfiguredError(Exception):
@@ -79,11 +82,11 @@ class AuthService:
         self.auth_sessions = AuthSessionRepository(session)
 
     async def telegram_login(
-        self,
-        *,
-        payload: TelegramLoginRequest,
-        user_agent: str | None,
-        ip_address: str | None,
+            self,
+            *,
+            payload: TelegramLoginRequest,
+            user_agent: str | None,
+            ip_address: str | None,
     ) -> tuple[AuthTokensResponse, str]:
         user = await self._resolve_telegram_user(payload)
         auth_response, refresh_token = await self._create_session_response(
@@ -94,11 +97,11 @@ class AuthService:
         return auth_response, refresh_token
 
     async def telegram_web_app_login(
-        self,
-        *,
-        payload: TelegramWebAppLoginRequest,
-        user_agent: str | None,
-        ip_address: str | None,
+            self,
+            *,
+            payload: TelegramWebAppLoginRequest,
+            user_agent: str | None,
+            ip_address: str | None,
     ) -> tuple[AuthTokensResponse, str]:
         user = await self._resolve_telegram_web_app_user(payload)
         auth_response, refresh_token = await self._create_session_response(
@@ -109,12 +112,12 @@ class AuthService:
         return auth_response, refresh_token
 
     async def telegram_oidc_login(
-        self,
-        *,
-        payload: TelegramOidcCodeExchangeRequest,
-        code_verifier: str,
-        user_agent: str | None,
-        ip_address: str | None,
+            self,
+            *,
+            payload: TelegramOidcCodeExchangeRequest,
+            code_verifier: str,
+            user_agent: str | None,
+            ip_address: str | None,
     ) -> tuple[AuthTokensResponse, str]:
         user = await self._resolve_telegram_oidc_user(
             payload=payload,
@@ -128,11 +131,11 @@ class AuthService:
         return auth_response, refresh_token
 
     async def telegram_redirect_login(
-        self,
-        *,
-        payload: TelegramLoginRequest,
-        user_agent: str | None,
-        ip_address: str | None,
+            self,
+            *,
+            payload: TelegramLoginRequest,
+            user_agent: str | None,
+            ip_address: str | None,
     ) -> tuple[str, str]:
         settings = get_settings()
         if not settings.telegram_login_redirect_url:
@@ -149,10 +152,10 @@ class AuthService:
         return raw_login_code, refresh_token
 
     async def telegram_dev_redirect_login(
-        self,
-        *,
-        user_agent: str | None,
-        ip_address: str | None,
+            self,
+            *,
+            user_agent: str | None,
+            ip_address: str | None,
     ) -> tuple[str, str]:
         settings = get_settings()
         if not settings.telegram_dev_login_enabled:
@@ -186,9 +189,9 @@ class AuthService:
         return raw_login_code, refresh_token
 
     async def exchange_telegram_login_code(
-        self,
-        *,
-        payload: TelegramLoginCodeExchangeRequest,
+            self,
+            *,
+            payload: TelegramLoginCodeExchangeRequest,
     ) -> AuthTokensResponse:
         auth_session = await self.auth_sessions.get_active_by_login_code_hash(
             hash_refresh_token(payload.code),
@@ -286,10 +289,10 @@ class AuthService:
         return AuthContext(user=auth_session.user, session=auth_session)
 
     async def list_sessions(
-        self,
-        *,
-        user_id: str,
-        current_session_id: str,
+            self,
+            *,
+            user_id: str,
+            current_session_id: str,
     ) -> list[AuthSessionResponse]:
         sessions = await self.auth_sessions.list_active_for_user(user_id)
         return [
@@ -326,11 +329,11 @@ class AuthService:
         await self.session.commit()
 
     async def _create_session_response(
-        self,
-        *,
-        user: User,
-        user_agent: str | None,
-        ip_address: str | None,
+            self,
+            *,
+            user: User,
+            user_agent: str | None,
+            ip_address: str | None,
     ) -> tuple[AuthTokensResponse, str]:
         auth_session, raw_refresh_token = await self._create_session(
             user=user,
@@ -347,12 +350,12 @@ class AuthService:
         )
 
     async def _create_session(
-        self,
-        *,
-        user: User,
-        user_agent: str | None,
-        ip_address: str | None,
-        raw_login_code: str | None = None,
+            self,
+            *,
+            user: User,
+            user_agent: str | None,
+            ip_address: str | None,
+            raw_login_code: str | None = None,
     ) -> tuple[AuthSession, str]:
         raw_refresh_token = generate_refresh_token()
         settings = get_settings()
@@ -397,9 +400,9 @@ class AuthService:
 
         telegram_data = payload.model_dump(exclude_none=True)
         if not verify_telegram_login_data(
-            telegram_data,
-            bot_token=settings.telegram_bot_token,
-            max_age_seconds=settings.telegram_login_max_age_seconds,
+                telegram_data,
+                bot_token=settings.telegram_bot_token,
+                max_age_seconds=settings.telegram_login_max_age_seconds,
         ):
             raise InvalidTelegramLoginError
 
@@ -455,16 +458,16 @@ class AuthService:
         return user
 
     async def _resolve_telegram_oidc_user(
-        self,
-        *,
-        payload: TelegramOidcCodeExchangeRequest,
-        code_verifier: str,
+            self,
+            *,
+            payload: TelegramOidcCodeExchangeRequest,
+            code_verifier: str,
     ) -> User:
         settings = get_settings()
         if (
-            not settings.telegram_oidc_client_id
-            or not settings.telegram_oidc_client_secret
-            or not settings.telegram_login_redirect_url
+                not settings.telegram_oidc_client_id
+                or not settings.telegram_oidc_client_secret
+                or not settings.telegram_login_redirect_url
         ):
             raise TelegramAuthNotConfiguredError
 
@@ -485,12 +488,31 @@ class AuthService:
                     ),
                     headers={"Accept": "application/json"},
                 )
+
+                if token_response.status_code >= 400:
+                    logger.warning(
+                        "Telegram OIDC token exchange failed: status=%s body=%s",
+                        token_response.status_code,
+                        token_response.text,
+                    )
+
                 token_response.raise_for_status()
                 token_payload = token_response.json()
+
                 jwks_response = await client.get(settings.telegram_oidc_jwks_url)
+
+                if jwks_response.status_code >= 400:
+                    logger.warning(
+                        "Telegram OIDC JWKS request failed: status=%s body=%s",
+                        jwks_response.status_code,
+                        jwks_response.text,
+                    )
+
                 jwks_response.raise_for_status()
                 jwks = jwks_response.json()
+
         except Exception as exc:
+            logger.exception("Telegram OIDC login failed during token exchange or JWKS request")
             raise InvalidTelegramOidcLoginError from exc
 
         id_token = token_payload.get("id_token")
@@ -503,7 +525,13 @@ class AuthService:
             client_id=self._telegram_oidc_audience(),
             issuer=settings.telegram_oidc_issuer,
         )
+
         if claims is None:
+            logger.warning(
+                "Telegram OIDC id_token verification failed: audience=%s issuer=%s",
+                self._telegram_oidc_audience(),
+                settings.telegram_oidc_issuer,
+            )
             raise InvalidTelegramOidcLoginError
 
         telegram_id = claims.get("id") or claims.get("sub")
@@ -517,7 +545,7 @@ class AuthService:
         user = await self.users.upsert_active_telegram_profile(
             telegram_id=str(telegram_id),
             display_name=display_name
-            or self._build_display_name_from_parts(
+                         or self._build_display_name_from_parts(
                 first_name="",
                 last_name=None,
                 username=username if isinstance(username, str) else None,
@@ -534,12 +562,16 @@ class AuthService:
     @staticmethod
     def _telegram_oidc_audience() -> str:
         settings = get_settings()
+
         if settings.telegram_oidc_audience:
             return settings.telegram_oidc_audience
-        if settings.telegram_bot_token and ":" in settings.telegram_bot_token:
-            return settings.telegram_bot_token.split(":", maxsplit=1)[0]
+
         if settings.telegram_oidc_client_id:
             return settings.telegram_oidc_client_id
+
+        if settings.telegram_bot_token and ":" in settings.telegram_bot_token:
+            return settings.telegram_bot_token.split(":", maxsplit=1)[0]
+
         raise TelegramAuthNotConfiguredError
 
     @staticmethod
@@ -553,11 +585,11 @@ class AuthService:
 
     @staticmethod
     def _build_display_name_from_parts(
-        *,
-        first_name: str,
-        last_name: str | None,
-        username: str | None,
-        fallback: str,
+            *,
+            first_name: str,
+            last_name: str | None,
+            username: str | None,
+            fallback: str,
     ) -> str:
         display_name = " ".join(
             part.strip() for part in (first_name, last_name) if part and part.strip()
