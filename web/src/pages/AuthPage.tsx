@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { motion, useMotionValue, useTransform, useSpring } from 'framer-motion'
 import { Bot, ExternalLink, LoaderCircle, ShieldCheck, Sparkles } from 'lucide-react'
@@ -9,7 +9,6 @@ import {
   getTelegramWebApp,
   isTelegramMiniApp,
   prepareTelegramAuthSurface,
-  type TelegramWebApp,
 } from '../utils/telegramWebApp'
 import styles from './AuthPage.module.css'
 
@@ -78,7 +77,7 @@ export default function AuthPage() {
   const navigate = useNavigate()
   const { loginWithTokens } = useAuth()
   const [searchParams] = useSearchParams()
-  const [webApp, setWebApp] = useState<TelegramWebApp | null>(() => getTelegramWebApp())
+  const webApp = useMemo(() => getTelegramWebApp(), [])
   const miniApp = isTelegramMiniApp(webApp)
   const errorCode = searchParams.get('error')
   const [loading, setLoading] = useState(miniApp && !errorCode)
@@ -87,46 +86,6 @@ export default function AuthPage() {
   )
   const miniAppLoginInFlightRef = useRef(false)
   const miniAppAutoAttemptedRef = useRef(false)
-
-  useEffect(() => {
-    let cancelled = false
-
-    const syncWebApp = () => {
-      if (cancelled) return false
-      const nextWebApp = getTelegramWebApp()
-      if (nextWebApp) console.debug('[AuthPage] detected Telegram.WebApp', { initData: nextWebApp.initData?.slice?.(0, 40) })
-      setWebApp(prev => (prev === nextWebApp ? prev : nextWebApp))
-      return Boolean(nextWebApp)
-    }
-
-    if (syncWebApp()) {
-      return () => {
-        cancelled = true
-      }
-    }
-
-    // Poll for Telegram.WebApp availability. Increase timeout/interval to
-    // be robust: some Telegram clients inject the WebApp object with a
-    // noticeable delay, so short polling windows (2s) can miss it and the
-    // UI will not attempt automatic login.
-    const intervalId = window.setInterval(() => {
-      if (syncWebApp()) {
-        window.clearInterval(intervalId)
-      }
-    }, 100)
-
-    // Give the Telegram WebApp up to 10 seconds to initialize before
-    // stopping the polling. This covers slow mobile clients and webviews.
-    const timeoutId = window.setTimeout(() => {
-      window.clearInterval(intervalId)
-    }, 10000)
-
-    return () => {
-      cancelled = true
-      window.clearInterval(intervalId)
-      window.clearTimeout(timeoutId)
-    }
-  }, [])
 
   const errorMessage = errorCode
     ? (ERROR_MESSAGES[errorCode] ?? 'Что-то пошло не так. Попробуй ещё раз.')
@@ -166,7 +125,6 @@ export default function AuthPage() {
 
     if (webApp.initData && !errorCode && !miniAppAutoAttemptedRef.current) {
       miniAppAutoAttemptedRef.current = true
-      console.debug('[AuthPage] auto-attempting mini app login')
       void completeMiniAppLogin()
     }
 
