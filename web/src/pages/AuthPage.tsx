@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { motion, useMotionValue, useTransform, useSpring } from 'framer-motion'
 import { Bot, ExternalLink, LoaderCircle, ShieldCheck, Sparkles } from 'lucide-react'
@@ -9,6 +9,7 @@ import {
   getTelegramWebApp,
   isTelegramMiniApp,
   prepareTelegramAuthSurface,
+  type TelegramWebApp,
 } from '../utils/telegramWebApp'
 import styles from './AuthPage.module.css'
 
@@ -77,7 +78,7 @@ export default function AuthPage() {
   const navigate = useNavigate()
   const { loginWithTokens } = useAuth()
   const [searchParams] = useSearchParams()
-  const webApp = useMemo(() => getTelegramWebApp(), [])
+  const [webApp, setWebApp] = useState<TelegramWebApp | null>(() => getTelegramWebApp())
   const miniApp = isTelegramMiniApp(webApp)
   const errorCode = searchParams.get('error')
   const [loading, setLoading] = useState(miniApp && !errorCode)
@@ -86,6 +87,39 @@ export default function AuthPage() {
   )
   const miniAppLoginInFlightRef = useRef(false)
   const miniAppAutoAttemptedRef = useRef(false)
+
+  useEffect(() => {
+    let cancelled = false
+
+    const syncWebApp = () => {
+      if (cancelled) return false
+      const nextWebApp = getTelegramWebApp()
+      setWebApp(prev => (prev === nextWebApp ? prev : nextWebApp))
+      return Boolean(nextWebApp)
+    }
+
+    if (syncWebApp()) {
+      return () => {
+        cancelled = true
+      }
+    }
+
+    const intervalId = window.setInterval(() => {
+      if (syncWebApp()) {
+        window.clearInterval(intervalId)
+      }
+    }, 50)
+
+    const timeoutId = window.setTimeout(() => {
+      window.clearInterval(intervalId)
+    }, 2000)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+      window.clearTimeout(timeoutId)
+    }
+  }, [])
 
   const errorMessage = errorCode
     ? (ERROR_MESSAGES[errorCode] ?? 'Что-то пошло не так. Попробуй ещё раз.')
