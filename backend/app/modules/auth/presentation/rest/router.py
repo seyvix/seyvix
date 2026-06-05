@@ -4,6 +4,11 @@ from typing import Annotated
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
+from fastapi import APIRouter, Depends, Query, Request, Response, Security, status
+from fastapi.responses import RedirectResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.api.dependencies import get_db_session
 from app.api.errors import AppError
 from app.api.schemas import ErrorResponse
@@ -14,6 +19,7 @@ from app.modules.auth.schemas import (
     TelegramAuthResultRequest,
     TelegramLoginCodeExchangeRequest,
     TelegramLoginRequest,
+    TelegramWebAppLoginRequest,
     UserResponse,
 )
 from app.modules.auth.service import (
@@ -23,14 +29,11 @@ from app.modules.auth.service import (
     InvalidRefreshTokenError,
     InvalidTelegramLoginCodeError,
     InvalidTelegramLoginError,
+    InvalidTelegramWebAppLoginError,
     SessionNotFoundError,
     TelegramAuthNotConfiguredError,
     TelegramDevLoginDisabledError,
 )
-from fastapi import APIRouter, Depends, Query, Request, Response, Security, status
-from fastapi.responses import RedirectResponse
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 bearer_auth_scheme = HTTPBearer(scheme_name="BearerAuth", auto_error=False)
@@ -350,6 +353,51 @@ async def exchange_telegram_auth_result(
             status_code=status.HTTP_401_UNAUTHORIZED,
             code="invalid_telegram_login",
             message="Invalid Telegram login data.",
+        ) from exc
+    except TelegramAuthNotConfiguredError as exc:
+        raise AppError(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            code="telegram_auth_not_configured",
+            message="Telegram authentication is not configured.",
+        ) from exc
+
+    _set_refresh_cookie(response, refresh_token)
+    return auth_response
+
+
+@router.post(
+    "/telegram-web-app",
+    response_model=AuthTokensResponse,
+    summary="Login with Telegram Mini App",
+    description=(
+        "Verifies Telegram.WebApp.initData from a Telegram Mini App, creates or updates "
+        "the user profile, starts an authenticated session, returns an access token, and "
+        "sets a refresh token in an httpOnly cookie."
+    ),
+    responses={
+        200: {"description": "User authenticated with Telegram Mini App initData."},
+        401: {"model": ErrorResponse, "description": "Invalid Telegram Mini App initData."},
+        503: {"model": ErrorResponse, "description": "Telegram authentication is not configured."},
+        422: {"model": ErrorResponse, "description": "Validation error in input payload."},
+    },
+)
+async def telegram_web_app_login(
+    payload: TelegramWebAppLoginRequest,
+    request: Request,
+    response: Response,
+    service: Annotated[AuthService, Depends(get_auth_service)],
+) -> AuthTokensResponse:
+    try:
+        auth_response, refresh_token = await service.telegram_web_app_login(
+            payload=payload,
+            user_agent=request.headers.get("user-agent"),
+            ip_address=request.client.host if request.client else None,
+        )
+    except InvalidTelegramWebAppLoginError as exc:
+        raise AppError(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            code="invalid_telegram_web_app_login",
+            message="Invalid Telegram Mini App login data.",
         ) from exc
     except TelegramAuthNotConfiguredError as exc:
         raise AppError(

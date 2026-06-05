@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 
 from aiogram import Dispatcher, Router
+
 from telegram_bot.application.use_cases import BotUseCases
 from telegram_bot.domain.models import InboundMaterial, MaterialType
 from telegram_bot.presentation.telegram.factory import build_dispatcher
 from telegram_bot.presentation.telegram.router import build_router
+from telegram_bot.presentation.telegram.runtime import configure_web_app_menu_button
 
 
 class FakeBackend:
@@ -34,6 +36,22 @@ def test_bot_composition_uses_aiogram_dispatcher_and_router() -> None:
 
     assert isinstance(router, Router)
     assert isinstance(dispatcher, Dispatcher)
+
+
+def test_configure_web_app_menu_button_sets_mini_app_entrypoint() -> None:
+    class FakeBot:
+        def __init__(self) -> None:
+            self.menu_button = None
+
+        async def set_chat_menu_button(self, *, menu_button) -> None:
+            self.menu_button = menu_button
+
+    bot = FakeBot()
+
+    asyncio.run(configure_web_app_menu_button(bot, "https://app.example.com"))
+
+    assert bot.menu_button.text == "Seyvix"
+    assert bot.menu_button.web_app.url == "https://app.example.com"
 
 
 def test_use_case_sends_inbound_material_to_backend() -> None:

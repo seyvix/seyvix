@@ -111,6 +111,17 @@ export async function apiTelegramResult(tgAuthResult: string): Promise<AuthToken
   return res.json()
 }
 
+export async function apiTelegramWebApp(initData: string): Promise<AuthTokensResponse> {
+  const res = await fetch(`${BASE}/telegram-web-app`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ init_data: initData }),
+    credentials: 'include',
+  })
+  if (!res.ok) throw await parseError(res)
+  return res.json()
+}
+
 export async function apiTelegramCode(code: string): Promise<AuthTokensResponse> {
   const res = await fetch(`${BASE}/telegram-code`, {
     method: 'POST',

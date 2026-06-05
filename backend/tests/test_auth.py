@@ -1,19 +1,22 @@
 import asyncio
 import hashlib
 import hmac
+import json
 import os
 from datetime import UTC, datetime, timedelta
+from urllib.parse import urlencode
 
 import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
+
 from app.core.config import get_settings
 from app.core.database import Base, build_session_factory
 from app.main import app
 from app.modules.auth.presentation.rest import router as auth_router
 from app.modules.auth.schemas import TelegramLoginRequest
 from app.modules.auth.service import AuthService
-from fastapi.testclient import TestClient
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 TELEGRAM_BOT_TOKEN = "123456:test-bot-token"
 
@@ -38,7 +41,7 @@ def _test_database_url() -> str:
 @pytest.fixture
 def auth_client() -> TestClient:
     os.environ["TELEGRAM_BOT_TOKEN"] = TELEGRAM_BOT_TOKEN
-    os.environ["TELEGRAM_LOGIN_REDIRECT_URL"] = "http://localhost:3000/auth/telegram"
+    os.environ["TELEGRAM_LOGIN_REDIRECT_URL"] = "http://localhost:3000/auth/callback"
     os.environ["TELEGRAM_DEV_LOGIN_ENABLED"] = "false"
     get_settings.cache_clear()
     database_url = _test_database_url()
@@ -91,6 +94,45 @@ def _telegram_payload(
     return payload
 
 
+def _telegram_web_app_init_data(
+    *,
+    telegram_id: int = 100500,
+    first_name: str = "Telegram",
+    last_name: str | None = "User",
+    username: str | None = "telegram_user",
+    photo_url: str | None = "https://t.me/i/userpic/320/example.jpg",
+    auth_date: int | None = None,
+) -> str:
+    user: dict[str, object] = {
+        "id": telegram_id,
+        "first_name": first_name,
+    }
+    if last_name is not None:
+        user["last_name"] = last_name
+    if username is not None:
+        user["username"] = username
+    if photo_url is not None:
+        user["photo_url"] = photo_url
+
+    payload: dict[str, str] = {
+        "query_id": "AAEAAAE",
+        "user": json.dumps(user, ensure_ascii=False, separators=(",", ":")),
+        "auth_date": str(auth_date or int(datetime.now(UTC).timestamp())),
+    }
+    check_string = "\n".join(f"{key}={value}" for key, value in sorted(payload.items()))
+    secret_key = hmac.new(
+        b"WebAppData",
+        TELEGRAM_BOT_TOKEN.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    payload["hash"] = hmac.new(
+        secret_key,
+        check_string.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return urlencode(payload)
+
+
 def _telegram_login(auth_client: TestClient, **payload_overrides: object) -> dict[str, object]:
     response = auth_client.post(
         "/api/v1/auth/telegram-login",
@@ -98,6 +140,47 @@ def _telegram_login(auth_client: TestClient, **payload_overrides: object) -> dic
     )
     assert response.status_code == 200
     return response.json()
+
+
+def test_telegram_web_app_login_creates_user_and_sets_refresh_cookie(
+    auth_client: TestClient,
+) -> None:
+    response = auth_client.post(
+        "/api/v1/auth/telegram-web-app",
+        json={"init_data": _telegram_web_app_init_data()},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["access_token"]
+    assert payload["user"]["telegram_id"] == "100500"
+    assert payload["user"]["telegram_username"] == "telegram_user"
+    assert payload["user"]["display_name"] == "Telegram User"
+    assert auth_client.cookies.get("refresh_token")
+
+
+def test_telegram_web_app_login_rejects_invalid_hash(auth_client: TestClient) -> None:
+    init_data = _telegram_web_app_init_data().replace("hash=", "hash=invalid")
+
+    response = auth_client.post(
+        "/api/v1/auth/telegram-web-app",
+        json={"init_data": init_data},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "invalid_telegram_web_app_login"
+
+
+def test_telegram_web_app_login_rejects_expired_auth_date(auth_client: TestClient) -> None:
+    auth_date = int((datetime.now(UTC) - timedelta(days=2)).timestamp())
+
+    response = auth_client.post(
+        "/api/v1/auth/telegram-web-app",
+        json={"init_data": _telegram_web_app_init_data(auth_date=auth_date)},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "invalid_telegram_web_app_login"
 
 
 def test_telegram_dev_login_is_disabled_by_default(auth_client: TestClient) -> None:
@@ -124,7 +207,7 @@ def test_telegram_dev_login_redirects_with_login_code(auth_client: TestClient) -
     )
 
     assert response.status_code == 307
-    assert response.headers["location"].startswith("http://localhost:3000/auth/telegram?")
+    assert response.headers["location"].startswith("http://localhost:3000/auth/callback?")
     assert "code=" in response.headers["location"]
     assert auth_client.cookies.get("refresh_token")
 
@@ -167,7 +250,7 @@ def test_telegram_redirect_callback_sets_cookie_and_returns_login_code(
     )
 
     assert response.status_code == 307
-    assert response.headers["location"].startswith("http://localhost:3000/auth/telegram?")
+    assert response.headers["location"].startswith("http://localhost:3000/auth/callback?")
     assert "code=" in response.headers["location"]
     assert auth_client.cookies.get("refresh_token")
 
@@ -221,7 +304,7 @@ def test_telegram_redirect_callback_redirects_error_for_invalid_payload(
 
     assert response.status_code == 307
     assert response.headers["location"] == (
-        "http://localhost:3000/auth/telegram?error=invalid_telegram_login"
+        "http://localhost:3000/auth/callback?error=invalid_telegram_login"
     )
 
 

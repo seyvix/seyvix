@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.config import get_settings
 from app.modules.auth.infrastructure.repositories import AuthSessionRepository, UserRepository
 from app.modules.auth.models import AuthSession, User
@@ -11,6 +13,7 @@ from app.modules.auth.schemas import (
     AuthTokensResponse,
     TelegramLoginCodeExchangeRequest,
     TelegramLoginRequest,
+    TelegramWebAppLoginRequest,
     UserResponse,
 )
 from app.modules.auth.security import (
@@ -18,10 +21,10 @@ from app.modules.auth.security import (
     decode_access_token,
     generate_refresh_token,
     hash_refresh_token,
+    parse_telegram_web_app_init_data,
     refresh_token_expires_at,
     verify_telegram_login_data,
 )
-from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class TelegramAuthNotConfiguredError(Exception):
@@ -33,6 +36,10 @@ class TelegramDevLoginDisabledError(Exception):
 
 
 class InvalidTelegramLoginError(Exception):
+    pass
+
+
+class InvalidTelegramWebAppLoginError(Exception):
     pass
 
 
@@ -72,6 +79,21 @@ class AuthService:
         ip_address: str | None,
     ) -> tuple[AuthTokensResponse, str]:
         user = await self._resolve_telegram_user(payload)
+        auth_response, refresh_token = await self._create_session_response(
+            user=user,
+            user_agent=user_agent,
+            ip_address=ip_address,
+        )
+        return auth_response, refresh_token
+
+    async def telegram_web_app_login(
+        self,
+        *,
+        payload: TelegramWebAppLoginRequest,
+        user_agent: str | None,
+        ip_address: str | None,
+    ) -> tuple[AuthTokensResponse, str]:
+        user = await self._resolve_telegram_web_app_user(payload)
         auth_response, refresh_token = await self._create_session_response(
             user=user,
             user_agent=user_agent,
@@ -364,6 +386,45 @@ class AuthService:
         )
         if user is None:
             raise InvalidTelegramLoginError
+
+        return user
+
+    async def _resolve_telegram_web_app_user(self, payload: TelegramWebAppLoginRequest) -> User:
+        settings = get_settings()
+        if not settings.telegram_bot_token:
+            raise TelegramAuthNotConfiguredError
+
+        telegram_data = parse_telegram_web_app_init_data(
+            payload.init_data,
+            bot_token=settings.telegram_bot_token,
+            max_age_seconds=settings.telegram_login_max_age_seconds,
+        )
+        if telegram_data is None:
+            raise InvalidTelegramWebAppLoginError
+
+        telegram_id = telegram_data.get("id")
+        first_name = telegram_data.get("first_name")
+        if not isinstance(telegram_id, int) or telegram_id <= 0:
+            raise InvalidTelegramWebAppLoginError
+        if not isinstance(first_name, str) or not first_name.strip():
+            raise InvalidTelegramWebAppLoginError
+
+        last_name = telegram_data.get("last_name")
+        username = telegram_data.get("username")
+        photo_url = telegram_data.get("photo_url")
+        user = await self.users.upsert_active_telegram_profile(
+            telegram_id=str(telegram_id),
+            display_name=self._build_display_name_from_parts(
+                first_name=first_name,
+                last_name=last_name if isinstance(last_name, str) else None,
+                username=username if isinstance(username, str) else None,
+                fallback=str(telegram_id),
+            ),
+            telegram_username=username if isinstance(username, str) else None,
+            telegram_photo_url=photo_url if isinstance(photo_url, str) else None,
+        )
+        if user is None:
+            raise InvalidTelegramWebAppLoginError
 
         return user
 

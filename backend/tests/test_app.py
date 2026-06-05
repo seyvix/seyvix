@@ -1,7 +1,8 @@
-from app.core.config import Settings, get_settings
-from app.main import app, configure_cors
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+from app.core.config import Settings, get_settings
+from app.main import app, configure_cors
 
 client = TestClient(app)
 
@@ -142,6 +143,7 @@ def test_openapi_documents_auth_contracts() -> None:
     telegram_callback_operation = schema["paths"]["/api/v1/auth/telegram-callback"]["get"]
     telegram_code_operation = schema["paths"]["/api/v1/auth/telegram-code"]["post"]
     telegram_login_operation = schema["paths"]["/api/v1/auth/telegram-login"]["post"]
+    telegram_web_app_operation = schema["paths"]["/api/v1/auth/telegram-web-app"]["post"]
     refresh_operation = schema["paths"]["/api/v1/auth/refresh"]["post"]
     me_operation = schema["paths"]["/api/v1/auth/me"]["get"]
 
@@ -150,6 +152,7 @@ def test_openapi_documents_auth_contracts() -> None:
     assert telegram_callback_operation["summary"] == "Telegram redirect callback"
     assert telegram_code_operation["summary"] == "Exchange Telegram login code"
     assert telegram_login_operation["summary"] == "Login with Telegram"
+    assert telegram_web_app_operation["summary"] == "Login with Telegram Mini App"
     assert telegram_login_operation["responses"]["401"]["description"] == (
         "Invalid Telegram login data."
     )
@@ -158,6 +161,7 @@ def test_openapi_documents_auth_contracts() -> None:
     )
     assert me_operation["responses"]["401"]["description"] == "Missing or invalid access token."
     assert "TelegramLoginRequest" in schema["components"]["schemas"]
+    assert "TelegramWebAppLoginRequest" in schema["components"]["schemas"]
     assert "AuthTokensResponse" in schema["components"]["schemas"]
     assert "ErrorResponse" in schema["components"]["schemas"]
     assert "ErrorDetail" in schema["components"]["schemas"]

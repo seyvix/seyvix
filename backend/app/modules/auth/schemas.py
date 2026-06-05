@@ -1,5 +1,6 @@
-from app.core.config import get_settings
 from pydantic import BaseModel, ConfigDict, Field, computed_field
+
+from app.core.config import get_settings
 
 
 class TelegramLoginRequest(BaseModel):
@@ -49,6 +50,13 @@ class TelegramAuthResultRequest(BaseModel):
     tg_auth_result: str = Field(
         min_length=1,
         description="base64url-encoded JSON auth result from oauth.telegram.org redirect.",
+    )
+
+
+class TelegramWebAppLoginRequest(BaseModel):
+    init_data: str = Field(
+        min_length=1,
+        description="Raw Telegram.WebApp.initData query string from a Telegram Mini App.",
     )
 
 

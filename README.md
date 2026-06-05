@@ -27,6 +27,7 @@ cp .env.example .env
 - `POSTGRES_PASSWORD`
 - `S3_SECRET_KEY`
 - `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_WEB_APP_URL`
 - `TELEGRAM_LOGIN_REDIRECT_URL`
 - `CORS_ALLOWED_ORIGINS`
 - `APP_SERVER_NAME`, `WEB_SERVER_NAME`, `API_SERVER_NAME`, если используются реальные домены
@@ -137,7 +138,8 @@ docker compose -f docker-compose.yml -f docker-compose.deploy.yml up -d --no-bui
 ```env
 APP_PORT=8080
 APP_SERVER_NAME=example.com
-TELEGRAM_LOGIN_REDIRECT_URL=https://example.com/auth/telegram
+TELEGRAM_WEB_APP_URL=https://example.com
+TELEGRAM_LOGIN_REDIRECT_URL=https://example.com/auth/callback
 CORS_ALLOWED_ORIGINS=["https://example.com"]
 ```
 
@@ -147,7 +149,8 @@ CORS_ALLOWED_ORIGINS=["https://example.com"]
 APP_SERVER_NAME=example.com
 WEB_SERVER_NAME=app.example.com
 API_SERVER_NAME=api.example.com
-TELEGRAM_LOGIN_REDIRECT_URL=https://app.example.com/auth/telegram
+TELEGRAM_WEB_APP_URL=https://app.example.com
+TELEGRAM_LOGIN_REDIRECT_URL=https://app.example.com/auth/callback
 CORS_ALLOWED_ORIGINS=["https://example.com","https://app.example.com","https://api.example.com"]
 ```
 
