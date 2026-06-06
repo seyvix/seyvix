@@ -48,6 +48,8 @@ import { useAddFilesToNote } from '../../hooks/useAddFilesToNote'
 import { useCreateNote } from '../../hooks/useCreateNote'
 import { useUpdateNote } from '../../hooks/useUpdateNote'
 import { useDragContext } from '../../contexts/DragContext'
+import { useUploadContext } from '../../contexts/UploadContext'
+import { partitionUploadFiles } from '../../utils/uploadGuard'
 import { getObjectDisplayText, getObjectPreviewSource } from '../../utils/notePreview'
 import { collectSourceChips, getSavedDateLabel } from '../../utils/noteCardPresentation'
 import { normalizedHighlightRanges } from '../../utils/searchHighlight'
@@ -584,12 +586,15 @@ export function NoteCard({ note, isNew, isDragging, onTagClick }: { note: Note; 
   const { mutate: upload }   = useUploadFiles()
   const { mutate: addFiles } = useAddFilesToNote()
   const { mutate: syncLocal, isPending: isSyncing } = useSyncLocalNote()
+  const { pushNotice } = useUploadContext()
 
   // Стабильные рефы, чтобы useEffect не переподписывался на каждый рендер
   const uploadRef   = useRef(upload)
   const addFilesRef = useRef(addFiles)
+  const pushNoticeRef = useRef(pushNotice)
   useEffect(() => { uploadRef.current   = upload   })
   useEffect(() => { addFilesRef.current = addFiles })
+  useEffect(() => { pushNoticeRef.current = pushNotice })
 
   const dragEnterTimeRef = useRef(0)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -616,10 +621,13 @@ export function NoteCard({ note, isNew, isDragging, onTagClick }: { note: Note; 
         const files = getFiles({ source })
         setFileHoverState(null)
         if (files.length === 0) return
+        const { accepted, rejected } = partitionUploadFiles(files)
+        for (const r of rejected) pushNoticeRef.current(r.reason)
+        if (accepted.length === 0) return
         if (elapsed < FILE_HOVER_THRESHOLD_MS) {
-          uploadRef.current({ files })
+          uploadRef.current({ files: accepted })
         } else {
-          addFilesRef.current({ noteId: note.id, files })
+          addFilesRef.current({ noteId: note.id, files: accepted })
         }
       },
     })
@@ -737,16 +745,20 @@ export function AddNoteCard({ onClick }: { onClick?: () => void }) {
   const { mutate: upload } = useUploadFiles()
   const { mutate: create } = useCreateNote()
   const { isFileDragging } = useDragContext()
+  const { pushNotice } = useUploadContext()
 
   const attachFiles = useCallback((incoming: File[], insertImages: boolean) => {
     if (incoming.length === 0) return
-    setFiles(prev => [...prev, ...incoming])
+    const { accepted, rejected } = partitionUploadFiles(incoming)
+    for (const r of rejected) pushNotice(r.reason)
+    if (accepted.length === 0) return
+    setFiles(prev => [...prev, ...accepted])
 
     if (!insertImages) return
     const editor = editorRef.current
     if (!editor) return
 
-    incoming
+    accepted
       .filter(file => file.type.startsWith('image/'))
       .forEach((file, index) => {
         const name = file.name || `pasted-image-${Date.now()}-${index + 1}.png`
@@ -874,10 +886,13 @@ export function AddNoteCard({ onClick }: { onClick?: () => void }) {
         setIsOver(false)
         const dropped = getFiles({ source })
         if (dropped.length === 0) return
-        upload({ files: dropped })
+        const { accepted, rejected } = partitionUploadFiles(dropped)
+        for (const r of rejected) pushNotice(r.reason)
+        if (accepted.length === 0) return
+        upload({ files: accepted })
       },
     })
-  }, [upload])
+  }, [upload, pushNotice])
 
   useEffect(() => {
     if (!isEditing) return

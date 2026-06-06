@@ -110,3 +110,46 @@
 .progressBarDone {
   background: #22c55e;
 }
+
+.notice {
+  border-color: rgba(255, 213, 116, 0.32);
+  background: rgba(40, 28, 8, 0.92);
+}
+
+.notice .jobHeader {
+  align-items: flex-start;
+  margin-bottom: 0;
+  gap: 8px;
+}
+
+.iconWarn {
+  color: rgba(255, 213, 116, 0.9);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.noticeText {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-primary);
+  line-height: 1.4;
+  flex: 1;
+}
+
+.noticeClose {
+  all: unset;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+  transition: background var(--duration-fast), color var(--duration-fast);
+}
+
+.noticeClose:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--color-text-primary);
+}
