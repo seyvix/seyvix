@@ -4,6 +4,7 @@ import json
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
+
 from tests.test_content import TELEGRAM_BOT_TOKEN, _auth_headers
 
 
@@ -68,6 +69,40 @@ def test_telegram_ingest_rejects_unlinked_user(content_client: TestClient) -> No
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "telegram_user_not_linked"
+
+
+def test_telegram_status_returns_linked_user_context(content_client: TestClient) -> None:
+    _auth_headers(content_client)
+
+    response = content_client.get(
+        "/api/v1/integrations/telegram/status",
+        headers=_internal_headers(),
+        params={"telegram_user_id": "100500"},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["user_id"]
+    assert payload == {
+        "linked": True,
+        "user_id": payload["user_id"],
+        "display_name": "User",
+    }
+
+
+def test_telegram_status_returns_unlinked_without_error(content_client: TestClient) -> None:
+    response = content_client.get(
+        "/api/v1/integrations/telegram/status",
+        headers=_internal_headers(),
+        params={"telegram_user_id": "404404"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "linked": False,
+        "user_id": None,
+        "display_name": None,
+    }
 
 
 def test_telegram_ingest_text_creates_markdown_note(content_client: TestClient) -> None:
@@ -256,24 +291,36 @@ def test_telegram_default_mode_groups_fast_message_series(
     second = _ingest_text(content_client, text="Second forwarded note", message_id=2)
 
     assert first["note"]["type"] == "simple"
-    assert second["status"] == "collection_updated"
-    assert second["note"]["type"] == "collection"
-    assert [obj["content"] for obj in second["note"]["objects"]] == [
-        "First forwarded note",
-        "Second forwarded note",
-    ]
+    assert second["status"] == "saved"
+    assert second["note"]["type"] == "simple"
+    assert second["note"]["objects"][0]["content"] == "Second forwarded note"
 
 
-def test_telegram_mode_endpoint_switches_to_grouped_notes(
+def test_telegram_ingest_appends_to_explicit_target_collection(
     content_client: TestClient,
 ) -> None:
     _auth_headers(content_client)
 
+    first = _ingest_text(content_client, text="First collection item", message_id=1)
     response = content_client.post(
-        "/api/v1/integrations/telegram/mode",
+        "/api/v1/integrations/telegram/ingest",
         headers=_internal_headers(),
-        json={"telegram_user_id": "100500", "mode": "grouped_notes"},
+        data={
+            "telegram_user_id": "100500",
+            "telegram_chat_id": "9001",
+            "telegram_message_id": "2",
+            "message_date": datetime.now(UTC).isoformat(),
+            "material_type": "text",
+            "text": "Second collection item",
+            "target_collection_id": first["note"]["id"],
+        },
     )
 
-    assert response.status_code == 200, response.text
-    assert response.json() == {"mode": "grouped_notes"}
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    assert payload["status"] == "collection_updated"
+    assert payload["note"]["type"] == "collection"
+    assert [obj["content"] for obj in payload["note"]["objects"]] == [
+        "First collection item",
+        "Second collection item",
+    ]

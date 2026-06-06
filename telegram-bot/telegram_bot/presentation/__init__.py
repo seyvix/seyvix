@@ -1,1 +1,0 @@
-"""Presentation adapters."""
