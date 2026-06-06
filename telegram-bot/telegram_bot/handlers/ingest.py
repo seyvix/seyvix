@@ -47,6 +47,16 @@ async def ingest_handler(
         await message.answer(UNSUPPORTED_MESSAGE, reply_markup=web_app_keyboard(web_app_url))
         return
 
+    logger.info(
+        "Telegram material received user=%s chat=%s message=%s type=%s "
+        "has_attachment=%s group_id=%s",
+        material.telegram_user_id,
+        material.telegram_chat_id,
+        material.telegram_message_id,
+        material.material_type.value,
+        material.attachment is not None,
+        material.source.group_id if material.source else None,
+    )
     status_message = await message.reply(
         loading_text(material),
         reply_markup=web_app_keyboard(web_app_url),
@@ -56,8 +66,25 @@ async def ingest_handler(
     attachment = material.attachment
     if attachment is not None:
         try:
+            logger.info(
+                "Downloading Telegram attachment user=%s chat=%s message=%s file_id=%s filename=%s",
+                material.telegram_user_id,
+                material.telegram_chat_id,
+                material.telegram_message_id,
+                attachment.file_id,
+                attachment.filename,
+            )
+            data = await _download_attachment(bot, attachment.file_id)
+            logger.info(
+                "Downloaded Telegram attachment user=%s chat=%s message=%s file_id=%s bytes=%s",
+                material.telegram_user_id,
+                material.telegram_chat_id,
+                material.telegram_message_id,
+                attachment.file_id,
+                len(data),
+            )
             material = material.with_attachment_data(
-                await _download_attachment(bot, attachment.file_id)
+                data
             )
         except Exception as exc:
             logger.exception(

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from aiogram import Router
 
-from telegram_bot.handlers import app, help, ingest, modes, settings, start, unknown
+from telegram_bot.handlers import help, ingest, modes, start, unknown
 
 
 def build_router() -> Router:
@@ -10,8 +10,6 @@ def build_router() -> Router:
     for child in (
         start.router,
         help.router,
-        app.router,
-        settings.router,
         modes.router,
         unknown.router,
         ingest.router,

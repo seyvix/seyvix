@@ -9,8 +9,7 @@ AUTH_REQUIRED = (
 UNKNOWN_COMMAND = (
     "Не понял команду.\n\n"
     "Основные команды:\n"
-    "/app — открыть Seyvix\n"
-    "/settings — настройки\n"
+    "/mode — режим сохранения\n"
     "/help — помощь"
 )
 
