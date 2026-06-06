@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { deleteNotes } from '../api/notes'
 import { useLocalNotes } from '../contexts/LocalNotesContext'
 import { useBulkSelect } from '../contexts/BulkSelectContext'
+import { SEARCH_CAPABILITIES_QUERY_KEY } from './useSearchCapabilities'
 import type { Note } from '../types'
 
 export function useBulkDeleteNotes() {
@@ -29,6 +30,7 @@ export function useBulkDeleteNotes() {
     onSuccess: (_data, _vars, ctx) => {
       // Ensure server state is consistent
       queryClient.invalidateQueries({ queryKey: ['notes'] })
+      queryClient.invalidateQueries({ queryKey: SEARCH_CAPABILITIES_QUERY_KEY })
       clearSelection()
       toggleBulk()
     },
@@ -36,6 +38,7 @@ export function useBulkDeleteNotes() {
     onError: (_err, _vars, _ctx) => {
       // Revert: re-fetch from server
       queryClient.invalidateQueries({ queryKey: ['notes'] })
+      queryClient.invalidateQueries({ queryKey: SEARCH_CAPABILITIES_QUERY_KEY })
     },
   })
 }

@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { createNote } from '../api/notes'
 import { useLocalNotes } from '../contexts/LocalNotesContext'
+import { SEARCH_CAPABILITIES_QUERY_KEY } from './useSearchCapabilities'
 import type { Note } from '../types'
 
 function makeTempId() {
@@ -50,6 +51,7 @@ export function useCreateNote() {
           ? [{ ...serverNote, stableKey: ctx.stableKey }, ...old.filter(n => n.id !== serverNote.id)]
           : [serverNote],
       )
+      queryClient.invalidateQueries({ queryKey: SEARCH_CAPABILITIES_QUERY_KEY })
     },
 
     onError: (_err, _vars, ctx) => {

@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { updateNote } from '../api/notes'
+import { SEARCH_CAPABILITIES_QUERY_KEY } from './useSearchCapabilities'
 import type { Note } from '../types'
 
 export function useUpdateNote() {
@@ -17,6 +18,7 @@ export function useUpdateNote() {
           : old,
       )
       queryClient.invalidateQueries({ queryKey: ['notes'] })
+      queryClient.invalidateQueries({ queryKey: SEARCH_CAPABILITIES_QUERY_KEY })
     },
   })
 }
