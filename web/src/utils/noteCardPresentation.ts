@@ -15,6 +15,18 @@ export type TelegramCardModel = {
   itemCount: number
 }
 
+const CARD_VISUAL_OBJECT_TYPES = new Set<NoteObject['type']>([
+  'image',
+  'video',
+  'audio',
+  'document',
+  'link',
+])
+
+export function isCardVisualObjectType(type: NoteObject['type']): boolean {
+  return CARD_VISUAL_OBJECT_TYPES.has(type)
+}
+
 export function stripTelegramEmojiMarkers(text: string): string {
   return text.replace(/\{\{tg_emoji:[0-9]+\|([^}]+)\}\}/g, '$1')
 }

@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 from xml.etree import ElementTree
 
 import httpx
+
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.modules.content.models import ContentAsset, ContentObject
@@ -28,6 +29,7 @@ from app.modules.snapshots.extraction.office import (
 
 THUMBNAIL_MAX_WIDTH = 512
 THUMBNAIL_MAX_HEIGHT = 512
+VIDEO_THUMBNAIL_TIMEOUT_SECONDS = 30
 
 logger = get_logger(__name__)
 
@@ -118,6 +120,12 @@ class SnapshotArtifactGenerator:
             )
         if asset.media_type == "image":
             return self._render_image_thumbnail(
+                source_path=source_path,
+                output_dir=output_dir,
+                filename="thumbnail.jpg",
+            )
+        if asset.media_type == "video":
+            return self._render_video_thumbnail(
                 source_path=source_path,
                 output_dir=output_dir,
                 filename="thumbnail.jpg",
@@ -575,6 +583,129 @@ class SnapshotArtifactGenerator:
             page = doc[0]
             zoom = self._thumbnail_zoom(width=page.rect.width, height=page.rect.height)
             pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+            path = output_dir / filename
+            pix.save(str(path))
+            return GeneratedArtifact(
+                filename=filename,
+                mime_type="image/jpeg",
+                path=path,
+                width=pix.width,
+                height=pix.height,
+            )
+        finally:
+            doc.close()
+
+    def _render_video_thumbnail(
+        self,
+        *,
+        source_path: Path,
+        output_dir: Path,
+        filename: str,
+    ) -> GeneratedArtifact:
+        frame_path = output_dir / "video-frame.png"
+        command = [
+            "ffmpeg",
+            "-y",
+            "-ss",
+            "0",
+            "-i",
+            str(source_path),
+            "-frames:v",
+            "1",
+            "-f",
+            "image2",
+            str(frame_path),
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=VIDEO_THUMBNAIL_TIMEOUT_SECONDS,
+            )
+        except FileNotFoundError as exc:
+            raise UnsupportedSnapshotError(
+                "ffmpeg is required to render video thumbnails."
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise UnsupportedSnapshotError("Video thumbnail rendering timed out.") from exc
+
+        if result.returncode != 0 or not frame_path.exists() or frame_path.stat().st_size == 0:
+            stderr_tail = (result.stderr or "")[-500:]
+            logger.warning(
+                "snapshot.video_thumbnail.ffmpeg_failed",
+                source_path=str(source_path),
+                returncode=result.returncode,
+                stderr_tail=stderr_tail,
+            )
+            raise UnsupportedSnapshotError("Video thumbnail frame could not be extracted.")
+
+        return self._render_video_frame_thumbnail(
+            frame_path=frame_path,
+            output_dir=output_dir,
+            filename=filename,
+        )
+
+    def _render_video_frame_thumbnail(
+        self,
+        *,
+        frame_path: Path,
+        output_dir: Path,
+        filename: str,
+    ) -> GeneratedArtifact:
+        try:
+            fitz = _load_fitz()
+        except ImportError as exc:
+            raise UnsupportedSnapshotError(
+                "PyMuPDF is required to render video thumbnails."
+            ) from exc
+
+        try:
+            frame_doc = fitz.open(str(frame_path))
+        except Exception as exc:  # noqa: BLE001
+            raise UnsupportedSnapshotError("Video thumbnail frame cannot be decoded.") from exc
+
+        try:
+            if frame_doc.page_count == 0:
+                raise UnsupportedSnapshotError("Cannot render an empty video frame.")
+            frame_page = frame_doc[0]
+            zoom = self._thumbnail_zoom(width=frame_page.rect.width, height=frame_page.rect.height)
+            frame_pix = frame_page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+        finally:
+            frame_doc.close()
+
+        doc = fitz.open()
+        try:
+            page = doc.new_page(width=frame_pix.width, height=frame_pix.height)
+            rect = fitz.Rect(0, 0, frame_pix.width, frame_pix.height)
+            page.insert_image(rect, stream=frame_pix.tobytes("jpeg"))
+            center = fitz.Point(frame_pix.width / 2, frame_pix.height / 2)
+            radius = max(18, min(frame_pix.width, frame_pix.height) * 0.13)
+            page.draw_circle(
+                center,
+                radius,
+                color=(1, 1, 1),
+                fill=(0, 0, 0),
+                width=2,
+                stroke_opacity=0.9,
+                fill_opacity=0.42,
+            )
+            triangle = [
+                fitz.Point(center.x - radius * 0.28, center.y - radius * 0.46),
+                fitz.Point(center.x - radius * 0.28, center.y + radius * 0.46),
+                fitz.Point(center.x + radius * 0.5, center.y),
+            ]
+            page.draw_polyline(
+                triangle,
+                color=(1, 1, 1),
+                fill=(1, 1, 1),
+                width=1,
+                closePath=True,
+                stroke_opacity=0.96,
+                fill_opacity=0.96,
+            )
+            pix = page.get_pixmap(alpha=False)
             path = output_dir / filename
             pix.save(str(path))
             return GeneratedArtifact(

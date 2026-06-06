@@ -9,6 +9,7 @@ import {
   getSavedDateLabel,
   getTelegramCardModel,
   isRedundantTextTitle,
+  isCardVisualObjectType,
   truncateMarkdownInline,
 } from './noteCardPresentation.ts'
 
@@ -115,4 +116,13 @@ test('truncated inline markdown closes open formatting markers', () => {
     truncateMarkdownInline('**За слово «обезьяна» в РФ могут ОШТРАФОВАТЬ** на сумму', 32),
     '**За слово «обезьяна» в РФ могут**...',
   )
+})
+
+test('card visual object types include media and files but not text', () => {
+  assert.equal(isCardVisualObjectType('image'), true)
+  assert.equal(isCardVisualObjectType('video'), true)
+  assert.equal(isCardVisualObjectType('audio'), true)
+  assert.equal(isCardVisualObjectType('document'), true)
+  assert.equal(isCardVisualObjectType('link'), true)
+  assert.equal(isCardVisualObjectType('text'), false)
 })

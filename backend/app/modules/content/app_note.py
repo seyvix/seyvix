@@ -215,7 +215,7 @@ def _collection_item_to_object(item: NoteCardResponse) -> AppNoteObject:
     else:
         content = (first.url if first else None) or item.download_url
     thumb = None
-    if ot in ("document", "link") and first is not None:
+    if ot in ("document", "link", "video") and first is not None:
         thumb = first.thumbnail_url
     cover = None if ot == "document" else (first.url if first else None)
     snaps = _snapshots(first.snapshot_views) if first is not None else []

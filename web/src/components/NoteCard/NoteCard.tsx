@@ -35,6 +35,7 @@ import {
   Underline,
   UploadCloud,
   Video,
+  Volume2,
 } from 'lucide-react'
 import { useSyncLocalNote } from '../../hooks/useSyncLocalNote'
 import { useBulkSelect } from '../../contexts/BulkSelectContext'
@@ -52,7 +53,7 @@ import { useDragContext } from '../../contexts/DragContext'
 import { useUploadContext } from '../../contexts/UploadContext'
 import { partitionUploadFiles } from '../../utils/uploadGuard'
 import { getObjectDisplayMarkdown, getObjectDisplayText, getObjectPreviewSource } from '../../utils/notePreview'
-import { collectSourceChips, getNoteDisplayTitle, getSavedDateLabel } from '../../utils/noteCardPresentation'
+import { collectSourceChips, getNoteDisplayTitle, getSavedDateLabel, isCardVisualObjectType } from '../../utils/noteCardPresentation'
 import { normalizedHighlightRanges } from '../../utils/searchHighlight'
 import { htmlToMarkdown, makeMarkdownTitle, replaceBlobImageSources } from '../../utils/markdownPaste'
 import { useFavicon } from '../../hooks/useFavicon'
@@ -143,6 +144,40 @@ function textDensityClass(text: string | null | undefined): string {
   if (length < 90) return styles.cardTextShort
   if (length > 280) return styles.cardTextLong
   return styles.cardTextMedium
+}
+
+function MediaPlaceholder({ type, className, label }: { type: 'audio' | 'video' | 'document'; className?: string; label?: string | null }) {
+  const Icon = type === 'audio' ? Volume2 : type === 'video' ? Video : FileText
+  return (
+    <div
+      className={[
+        styles.mediaPlaceholder,
+        type === 'audio' ? styles.audioPlaceholder : type === 'video' ? styles.videoPlaceholder : styles.filePlaceholder,
+        className ?? '',
+      ].filter(Boolean).join(' ')}
+    >
+      <Icon size={type === 'audio' ? 30 : 32} />
+      {label && <span>{label}</span>}
+    </div>
+  )
+}
+
+function SimpleVisual({ obj }: { obj: NoteObject }) {
+  if (obj.type === 'image') {
+    return <AuthImage className={styles.simpleImageMedia} src={getObjectPreviewSource(obj)} alt="" />
+  }
+  if (obj.type === 'video') {
+    return obj.thumbnailUrl
+      ? <AuthImage className={styles.simpleImageMedia} src={obj.thumbnailUrl} alt="" />
+      : <MediaPlaceholder type="video" className={styles.simpleImageMedia} />
+  }
+  if (obj.type === 'document') {
+    const thumb = obj.thumbnailUrl ?? obj.cover
+    return thumb
+      ? <AuthImage className={styles.simpleImageMedia} src={thumb} alt="" />
+      : <MediaPlaceholder type="document" className={styles.simpleImageMedia} label={obj.filename ?? null} />
+  }
+  return <MediaPlaceholder type="audio" className={styles.simpleImageMedia} />
 }
 
 function SearchMatchSnippet({ note }: { note: Note }) {
@@ -254,43 +289,39 @@ function SoftOverlay({
 
 function SimpleCard({ note, onTagClick }: { note: Note; onTagClick?: (name: string) => void }) {
   const imageObj = note.objects.find(o => o.type === 'image')
+  const videoObj = note.objects.find(o => o.type === 'video')
+  const audioObj = note.objects.find(o => o.type === 'audio')
+  const documentObj = note.objects.find(o => o.type === 'document')
+  const mediaObj = imageObj ?? videoObj ?? audioObj ?? documentObj
   const textObj  = note.objects.find(o => o.type === 'text')
   const text = textObj ? getObjectDisplayMarkdown(textObj) : null
   const title = getNoteDisplayTitle(note, textObj?.content)
   const titleNode = title ? <div className={styles.title}>{title}</div> : null
 
-  // Только картинка — без заголовка, изображение в край
-  if (imageObj && !textObj) {
+  // Только медиа — без текстового cover, медиа в край
+  if (mediaObj && !textObj) {
     return (
       <Link
         draggable={false}
         to={notePageHref(note)}
         className={`${styles.card} ${styles.cardMedia} ${styles.cardSimpleImage}`}
-        style={visualRatioStyle(imageObj, 0.82)}
+        style={visualRatioStyle(mediaObj, mediaObj.type === 'audio' ? 1.32 : 0.82)}
       >
-        <AuthImage
-          className={styles.simpleImageMedia}
-          src={getObjectPreviewSource(imageObj)}
-          alt={title ?? ''}
-        />
+        <SimpleVisual obj={mediaObj} />
         <SoftOverlay note={note} onTagClick={onTagClick} />
       </Link>
     )
   }
 
-  if (imageObj && textObj) {
+  if (mediaObj && textObj) {
     return (
       <Link
         draggable={false}
         to={notePageHref(note)}
         className={`${styles.card} ${styles.cardMedia} ${styles.cardSimpleImage} ${styles.cardImageText} ${textDensityClass(text)}`}
-        style={visualRatioStyle(imageObj, text && text.length > 220 ? 0.92 : 1.08)}
+        style={visualRatioStyle(mediaObj, mediaObj.type === 'audio' ? 1.24 : text && text.length > 220 ? 0.92 : 1.08)}
       >
-        <AuthImage
-          className={styles.simpleImageMedia}
-          src={getObjectPreviewSource(imageObj)}
-          alt={title ?? ''}
-        />
+        <SimpleVisual obj={mediaObj} />
         <SoftOverlay
           note={note}
           titleNode={titleNode}
@@ -340,28 +371,16 @@ function LayerContent({ obj, fallback }: { obj: NoteObject | undefined; fallback
   if (obj.type === 'video') {
     const thumb = obj.thumbnailUrl ?? null
     if (thumb) return <AuthImage src={thumb} alt="" className={styles.collectionLayerImg} />
-    return (
-      <div className={`${styles.collectionLayerBg} ${styles.collectionLayerVideo}`} style={{ background: fallback }}>
-        <Video size={26} />
-      </div>
-    )
+    return <MediaPlaceholder type="video" className={styles.collectionLayerBg} />
+  }
+  if (obj.type === 'audio') {
+    return <MediaPlaceholder type="audio" className={styles.collectionLayerBg} />
   }
   if (obj.type === 'document') {
     const thumb = obj.thumbnailUrl ?? obj.cover
     const thumbStyle = obj.imageWidth && obj.imageHeight ? { aspectRatio: `${obj.imageWidth}/${obj.imageHeight}` } : undefined
     if (thumb) return <AuthImage src={thumb} alt="" className={styles.collectionLayerImg} style={thumbStyle} />
-    if (obj.thumbnailUrl === null) {
-      return (
-        <div className={styles.thumbPending} style={thumbStyle}>
-          <LoaderSpinner size="md" />
-        </div>
-      )
-    }
-    return (
-      <div className={`${styles.collectionLayerBg} ${styles.collectionLayerDoc}`} style={{ background: fallback }}>
-        <FileText size={24} />
-      </div>
-    )
+    return <MediaPlaceholder type="document" className={styles.collectionLayerBg} label={obj.filename ?? null} />
   }
   if (obj.type === 'link') {
     if (obj.thumbnailUrl) {
@@ -381,6 +400,8 @@ function LayerContent({ obj, fallback }: { obj: NoteObject | undefined; fallback
 
 const OBJECT_TYPE_ICON: Record<string, React.ReactNode> = {
   image:    <ImageIcon size={11} />,
+  video:    <Video     size={11} />,
+  audio:    <Volume2   size={11} />,
   document: <FileText  size={11} />,
   link:     <Link2     size={11} />,
   text:     <AlignLeft size={11} />,
@@ -391,7 +412,7 @@ function CollectionStats({ objects }: { objects: Note['objects'] }) {
     acc[o.type] = (acc[o.type] ?? 0) + 1
     return acc
   }, {})
-  const order = ['image', 'document', 'link', 'text']
+  const order = ['image', 'video', 'audio', 'document', 'link', 'text']
   const entries = order.filter(t => counts[t])
 
   return (
@@ -407,7 +428,7 @@ function CollectionStats({ objects }: { objects: Note['objects'] }) {
 }
 
 function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClick?: (name: string) => void; titleNode?: ReactNode | null }) {
-  const visualObjs = note.objects.filter(o => o.type === 'image' || o.type === 'video' || o.type === 'document' || o.type === 'link').slice(0, 5)
+  const visualObjs = note.objects.filter(o => isCardVisualObjectType(o.type)).slice(0, 5)
   const textObj = note.objects.find(o => o.type === 'text')
   const text = textObj ? getObjectDisplayMarkdown(textObj) : null
   const description = textObj && text ? <MarkdownSnippet text={text} source={textObj.source} /> : null
@@ -421,6 +442,18 @@ function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClic
       visual = <AuthImage src={getObjectPreviewSource(obj)} alt="" className={styles.collectionSingle} />
     } else if (obj.type === 'video' && obj.thumbnailUrl) {
       visual = <AuthImage src={obj.thumbnailUrl} alt="" className={styles.collectionSingle} />
+    } else if (obj.type === 'audio') {
+      visual = (
+        <div className={styles.collectionSingleNonImage}>
+          <MediaPlaceholder type="audio" className={styles.collectionLayerBg} />
+        </div>
+      )
+    } else if (obj.type === 'document' && !obj.thumbnailUrl && !obj.cover) {
+      visual = (
+        <div className={styles.collectionSingleNonImage}>
+          <MediaPlaceholder type="document" className={styles.collectionLayerBg} label={obj.filename ?? null} />
+        </div>
+      )
     } else if (obj.type === 'link' && obj.thumbnailUrl) {
       visual = <AuthImage src={obj.thumbnailUrl} alt="" className={styles.collectionSingle} />
     } else {
@@ -438,6 +471,14 @@ function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClic
             ? <AuthImage key={obj.id} src={getObjectPreviewSource(obj)} alt="" className={styles.collectionPairImg} />
             : obj.type === 'video' && obj.thumbnailUrl
               ? <AuthImage key={obj.id} src={obj.thumbnailUrl} alt="" className={styles.collectionPairImg} />
+            : obj.type === 'audio'
+              ? <div key={obj.id} className={styles.collectionPairSlot}>
+                  <MediaPlaceholder type="audio" className={styles.collectionLayerBg} />
+                </div>
+            : obj.type === 'document' && !obj.thumbnailUrl && !obj.cover
+              ? <div key={obj.id} className={styles.collectionPairSlot}>
+                  <MediaPlaceholder type="document" className={styles.collectionLayerBg} label={obj.filename ?? null} />
+                </div>
             : obj.type === 'link' && obj.thumbnailUrl
               ? <AuthImage key={obj.id} src={obj.thumbnailUrl} alt="" className={styles.collectionPairImg} />
               : <div key={obj.id} className={styles.collectionPairSlot}>
@@ -540,6 +581,7 @@ function DocChip({ obj }: { obj: NoteObject }) {
 function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick?: (name: string) => void; titleNode?: ReactNode | null }) {
   const imageObj  = note.objects.find(o => o.type === 'image')
   const videoObj  = note.objects.find(o => o.type === 'video')
+  const audioObj  = note.objects.find(o => o.type === 'audio')
   const textObj   = note.objects.find(o => o.type === 'text')
   const links     = note.objects.filter(o => o.type === 'link')
   const docs      = note.objects.filter(o => o.type === 'document')
@@ -548,7 +590,7 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
   const firstLink = links[0]
   const firstLinkThumb = firstLink?.thumbnailUrl ?? null
   const videoThumb = videoObj?.thumbnailUrl ?? null
-  const visualObject = imageObj ?? (videoObj ? videoObj : undefined) ?? (docThumb ? firstDoc : undefined) ?? (firstLinkThumb ? firstLink : undefined)
+  const visualObject = imageObj ?? videoObj ?? audioObj ?? firstDoc ?? (firstLinkThumb ? firstLink : undefined)
   const text = textObj ? getObjectDisplayMarkdown(textObj) : null
   const hasAttachmentFooter = links.length > 0 || docs.length > 0
   const shouldOverlayText = Boolean(visualObject && text && !/^https?:\/\//.test(textObj?.content ?? ''))
@@ -568,19 +610,13 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
           : videoObj
             ? videoThumb
               ? <AuthImage src={videoThumb} alt="" className={styles.compositeCoverImg} />
-              : (
-                <div className={styles.compositeCoverEmpty}>
-                  <Video size={30} />
-                </div>
-              )
+              : <MediaPlaceholder type="video" className={styles.compositeCoverEmpty} />
+          : audioObj
+            ? <MediaPlaceholder type="audio" className={styles.compositeCoverEmpty} />
           : docThumb
             ? <AuthImage src={docThumb} alt="" className={styles.compositeCoverImg} style={firstDoc?.imageWidth && firstDoc?.imageHeight ? { aspectRatio: `${firstDoc.imageWidth}/${firstDoc.imageHeight}` } : undefined} />
-            : firstDoc?.thumbnailUrl === null
-              ? (
-                <div className={styles.thumbPending}>
-                  <LoaderSpinner size="md" />
-                </div>
-              )
+            : firstDoc
+              ? <MediaPlaceholder type="document" className={styles.compositeCoverEmpty} label={firstDoc.filename ?? null} />
               : firstLink
                 ? firstLinkThumb
                   ? <AuthImage src={firstLinkThumb} alt="" className={styles.compositeCoverImg} />
