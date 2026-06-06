@@ -164,12 +164,18 @@ def test_telegram_ingest_returns_universal_source_metadata(
     assert obj["source"]["rawPayload"]["message_id"] == 28
 
 
-def test_telegram_media_group_creates_single_collection_with_item_sources(
+def test_telegram_media_group_appends_to_explicit_collection_with_item_sources(
     content_client: TestClient,
 ) -> None:
     _auth_headers(content_client)
 
-    def ingest_photo(message_id: int, original_message_id: int, caption: str | None) -> dict:
+    def ingest_photo(
+        message_id: int,
+        original_message_id: int,
+        caption: str | None,
+        *,
+        target_collection_id: str | None = None,
+    ) -> dict:
         source = {
             "provider": "telegram",
             "provider_label": "Telegram",
@@ -204,6 +210,7 @@ def test_telegram_media_group_creates_single_collection_with_item_sources(
                 "filename": f"telegram-photo-{message_id}.jpg",
                 "mime_type": "image/jpeg",
                 "source": json.dumps(source),
+                "target_collection_id": target_collection_id,
             },
             files=files,
         )
@@ -211,7 +218,7 @@ def test_telegram_media_group_creates_single_collection_with_item_sources(
         return response.json()
 
     first = ingest_photo(29, 28305, "Caption from first album item")
-    second = ingest_photo(30, 28306, None)
+    second = ingest_photo(30, 28306, None, target_collection_id=first["note"]["id"])
 
     assert first["note"]["type"] == "composite"
     assert second["status"] == "collection_updated"
