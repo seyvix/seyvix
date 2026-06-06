@@ -9,12 +9,27 @@ import { BulkToolbar } from '../components/BulkToolbar/BulkToolbar'
 import { BulkSelectProvider } from '../contexts/BulkSelectContext'
 import { useThumbnailPoller } from '../hooks/useThumbnailPoller'
 import { nextSearchHistory, readSearchHistory, writeSearchHistory } from '../utils/searchHistory'
+import { useSearchCapabilities } from '../hooks/useSearchCapabilities'
+import { normalizeSearchMode } from '../utils/searchMode'
 
 export default function NotesPage() {
   const [searchParams, setSearchParams] = useSearchParams()
 
   const search     = searchParams.get('search') ?? ''
-  const searchMode = parseSearchMode(searchParams.get('searchMode'))
+  const { capabilities } = useSearchCapabilities()
+  const rawSearchMode = searchParams.get('searchMode')
+  const searchMode = normalizeSearchMode(rawSearchMode, capabilities)
+
+  useEffect(() => {
+    if (rawSearchMode && rawSearchMode !== searchMode) {
+      setSearchParams(prev => {
+        const next = new URLSearchParams(prev)
+        if (searchMode === capabilities.defaultMode) next.delete('searchMode')
+        else next.set('searchMode', searchMode)
+        return next
+      }, { replace: true })
+    }
+  }, [rawSearchMode, searchMode, capabilities.defaultMode, setSearchParams])
   const activeTags = searchParams.get('tags')?.split(',').filter(Boolean) ?? []
   const activeFolders = searchParams.get('folders')?.split(',').filter(Boolean) ?? []
 
@@ -99,7 +114,7 @@ export default function NotesPage() {
   function handleSearchModeChange(value: SearchMode) {
     setSearchParams(prev => {
       const next = new URLSearchParams(prev)
-      if (value === 'hybrid') next.delete('searchMode')
+      if (value === capabilities.defaultMode) next.delete('searchMode')
       else next.set('searchMode', value)
       return next
     }, { replace: true })
@@ -117,6 +132,7 @@ export default function NotesPage() {
         activeTags={activeTags}
         searchMode={searchMode}
         searchHistory={searchHistory}
+        capabilities={capabilities}
         onSearchChange={handleSearchChange}
         onSearchModeChange={handleSearchModeChange}
         onHistorySelect={handleHistorySelect}
@@ -129,9 +145,4 @@ export default function NotesPage() {
       )}
     </BulkSelectProvider>
   )
-}
-
-function parseSearchMode(value: string | null): SearchMode {
-  if (value === 'full_text' || value === 'semantic' || value === 'hybrid') return value
-  return 'hybrid'
 }

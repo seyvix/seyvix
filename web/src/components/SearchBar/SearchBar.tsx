@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import { Clock3, Search, Settings, X } from 'lucide-react'
+import { Clock3, Info, Search, Settings, X } from 'lucide-react'
 import { getTagColor } from '../../utils/tagColor'
+import type { SearchCapabilities } from '../../api/search'
 import styles from './SearchBar.module.css'
 
 export type SearchMode = 'full_text' | 'semantic' | 'hybrid'
@@ -10,6 +11,7 @@ interface SearchBarProps {
   activeTags: string[]
   searchMode: SearchMode
   searchHistory: string[]
+  capabilities: SearchCapabilities
   onSearchChange: (value: string) => void
   onSearchModeChange: (value: SearchMode) => void
   onHistorySelect: (value: string) => void
@@ -23,11 +25,14 @@ const SEARCH_MODES: Array<{ value: SearchMode; label: string }> = [
   { value: 'full_text', label: 'Полнотекстовый' },
 ]
 
+const VECTOR_MODES = new Set<SearchMode>(['semantic', 'hybrid'])
+
 export function SearchBar({
   search,
   activeTags,
   searchMode,
   searchHistory,
+  capabilities,
   onSearchChange,
   onSearchModeChange,
   onHistorySelect,
@@ -39,6 +44,14 @@ export function SearchBar({
   const [isHistoryOpen, setHistoryOpen] = useState(false)
   const activeMode = SEARCH_MODES.find(mode => mode.value === searchMode) ?? SEARCH_MODES[0]
   const visibleHistory = searchHistory.filter(item => item.trim())
+
+  const unlockedSet = new Set(capabilities.unlockedModes)
+  const availableModes = SEARCH_MODES.filter(
+    mode => unlockedSet.has(mode.value) || VECTOR_MODES.has(mode.value),
+  )
+  const anyVectorMode = availableModes.some(mode => VECTOR_MODES.has(mode.value))
+  const anyLockedMode = availableModes.some(mode => !unlockedSet.has(mode.value))
+  const showModeButton = availableModes.length > 1 || anyVectorMode
 
   return (
     <label className={styles.bar}>
@@ -95,39 +108,66 @@ export function SearchBar({
           </div>
         )}
       </div>
-      <div className={styles.mode}>
-        <button
-          type="button"
-          className={styles.modeButton}
-          title={`Режим поиска: ${activeMode.label}`}
-          aria-label={`Режим поиска: ${activeMode.label}`}
-          aria-expanded={isModeMenuOpen}
-          onClick={e => {
-            e.preventDefault()
-            setModeMenuOpen(value => !value)
-          }}
-        >
-          <Settings size={18} />
-        </button>
-        {isModeMenuOpen && (
-          <div className={styles.modeMenu}>
-            {SEARCH_MODES.map(mode => (
-              <button
-                key={mode.value}
-                type="button"
-                className={mode.value === searchMode ? styles.modeItemActive : styles.modeItem}
-                onClick={e => {
-                  e.preventDefault()
-                  onSearchModeChange(mode.value)
-                  setModeMenuOpen(false)
-                }}
-              >
-                {mode.label}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
+      {showModeButton && (
+        <div className={styles.mode}>
+          <button
+            type="button"
+            className={styles.modeButton}
+            title={`Режим поиска: ${activeMode.label}`}
+            aria-label={`Режим поиска: ${activeMode.label}`}
+            aria-expanded={isModeMenuOpen}
+            onClick={e => {
+              e.preventDefault()
+              setModeMenuOpen(value => !value)
+            }}
+          >
+            <Settings size={18} />
+          </button>
+          {isModeMenuOpen && (
+            <div className={styles.modeMenu} role="menu">
+              {availableModes.map(mode => {
+                const locked = !unlockedSet.has(mode.value)
+                const isActive = mode.value === searchMode
+                const progress = `${capabilities.noteCount} / ${capabilities.threshold}`
+                return (
+                  <button
+                    key={mode.value}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={isActive}
+                    aria-disabled={locked}
+                    disabled={locked}
+                    title={locked ? `Доступно после ${progress} заметок` : undefined}
+                    className={[
+                      isActive ? styles.modeItemActive : styles.modeItem,
+                      locked ? styles.modeItemLocked : '',
+                    ].filter(Boolean).join(' ')}
+                    onClick={e => {
+                      e.preventDefault()
+                      if (locked) return
+                      onSearchModeChange(mode.value)
+                      setModeMenuOpen(false)
+                    }}
+                  >
+                    <span>{mode.label}</span>
+                    {locked && (
+                      <span className={styles.modeProgress}>{progress}</span>
+                    )}
+                  </button>
+                )
+              })}
+              {anyLockedMode && (
+                <div className={styles.modeHint}>
+                  <Info size={12} />
+                  <span>
+                    Векторные режимы открываются после {capabilities.threshold} заметок
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       {hasContent && (
         <button
           className={styles.clearBtn}
