@@ -984,3 +984,42 @@ def test_search_capabilities_without_meilisearch_offers_only_full_text(
     body = response.json()
     assert body["unlockedModes"] == ["full_text"]
     assert body["defaultMode"] == "full_text"
+
+
+def test_list_notes_downgrades_locked_mode_silently(
+    content_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    An old client (or a stale tab) could still send search_mode=hybrid
+    after the user dropped below the threshold. The backend must serve
+    full_text results instead of refusing — no 4xx — and log it.
+    """
+    headers = _auth_headers(content_client)
+    settings = get_settings()
+    settings.search_vector_modes_min_notes = 5
+    settings.search_engine = "meilisearch"
+    settings.search_meilisearch_url = "http://meilisearch:7700"
+
+    # Capture the mode actually used to query content
+    used_mode: list[str] = []
+
+    async def fake_search(self, *, owner_user_id, query, limit, mode, filters):  # type: ignore[no-untyped-def]
+        used_mode.append(mode)
+        return {}
+
+    monkeypatch.setattr(
+        "app.modules.search.service.SemanticSearchService."
+        "search_content_object_matches",
+        fake_search,
+    )
+
+    _create_text_note(content_client, headers, title="A", text="alpha")
+
+    response = content_client.get(
+        "/api/v1/notes",
+        headers=headers,
+        params={"search": "alpha", "search_mode": "hybrid"},
+    )
+    assert response.status_code == 200
+    assert used_mode == ["full_text"]

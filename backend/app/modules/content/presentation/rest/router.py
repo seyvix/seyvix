@@ -11,6 +11,7 @@ from starlette.background import BackgroundTask
 from app.api.dependencies import get_db_session
 from app.api.errors import AppError
 from app.api.schemas import ErrorResponse
+from app.core.logging import get_logger
 from app.modules.auth.presentation.rest.router import get_auth_context
 from app.modules.auth.service import AuthContext
 from app.modules.content.app_note import (
@@ -21,6 +22,7 @@ from app.modules.content.app_note import (
     note_card_to_app_note,
     upload_result_to_json_bytes,
 )
+from app.modules.content.infrastructure.repositories import ContentRepository
 from app.modules.content.schemas import (
     BulkDeleteRequest,
     CreateNoteRequest,
@@ -43,6 +45,8 @@ from app.modules.content.service import (
 from app.modules.search.infrastructure.meilisearch import MeilisearchUnavailableError
 from app.modules.search.schemas import SearchFilters, SearchMode
 from app.modules.search.service import SearchValidationError, SemanticSearchService
+
+logger = get_logger(__name__)
 
 router = APIRouter(tags=["content"])
 
@@ -203,12 +207,36 @@ async def list_notes(
     folders: Annotated[str | None, Query(max_length=1024)] = None,
     sort: Annotated[NoteSort, Query()] = "newest",
 ) -> AppNoteListResponse:
+    search_service = SemanticSearchService(service.session)
+    settings = search_service.settings
+    normalized_search = search.strip() if search else None
+    if (
+        normalized_search
+        and search_mode in ("semantic", "hybrid")
+    ):
+        meilisearch_available = (
+            settings.search_engine == "meilisearch"
+            and bool(settings.search_meilisearch_url)
+        )
+        below_threshold = False
+        if meilisearch_available:
+            content_repo = ContentRepository(service.session)
+            note_count = await content_repo.count_owned_notes(
+                owner_user_id=context.user.id,
+            )
+            below_threshold = note_count < settings.search_vector_modes_min_notes
+        if not meilisearch_available or below_threshold:
+            logger.info(
+                "search.mode.downgrade",
+                requested=search_mode,
+                applied="full_text",
+                owner_user_id=context.user.id,
+            )
+            search_mode = "full_text"
     search_result_ids: list[str] | None = None
     search_matches_by_object_id = None
-    normalized_search = search.strip() if search else None
-    search_service = SemanticSearchService(service.session)
     if normalized_search and (
-        search_service.settings.search_engine == "meilisearch" or search_mode != "hybrid"
+        settings.search_engine == "meilisearch" or search_mode != "hybrid"
     ):
         try:
             search_matches_by_object_id = await search_service.search_content_object_matches(
