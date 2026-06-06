@@ -13,6 +13,8 @@ from telegram_bot.infrastructure.backend_client import HttpSeyvixBackend
 from telegram_bot.services.state import BotStateRepository
 
 StatusMessage = TypeVar("StatusMessage")
+SendLoading = Callable[[InboundMaterial], Awaitable[StatusMessage]]
+PrepareMaterial = Callable[[InboundMaterial, StatusMessage | None], Awaitable[InboundMaterial]]
 UpdateSaved = Callable[[StatusMessage, SavedMaterial], Awaitable[None]]
 UpdateError = Callable[[StatusMessage, Exception], Awaitable[None]]
 logger = logging.getLogger(__name__)
@@ -22,8 +24,9 @@ logger = logging.getLogger(__name__)
 class _Bucket:
     state: BotState
     materials: list[InboundMaterial]
-    statuses: list[object]
+    status: object
     task: asyncio.Task[None]
+    pending: int = 0
 
 
 class TelegramIngestService:
@@ -46,7 +49,8 @@ class TelegramIngestService:
         *,
         material: InboundMaterial,
         state: BotState,
-        status: StatusMessage,
+        send_loading: SendLoading[StatusMessage],
+        prepare_material: PrepareMaterial[StatusMessage],
         update_saved: UpdateSaved[StatusMessage],
         update_error: UpdateError[StatusMessage],
     ) -> None:
@@ -61,10 +65,22 @@ class TelegramIngestService:
             key or "immediate",
         )
         if key is None:
+            status = await send_loading(material)
+            try:
+                prepared = await prepare_material(material, status)
+            except Exception as exc:
+                logger.exception(
+                    "Telegram material prepare failed user=%s chat=%s message=%s",
+                    material.telegram_user_id,
+                    material.telegram_chat_id,
+                    material.telegram_message_id,
+                )
+                await update_error(status, exc)
+                return
             await self._save_and_update(
-                statuses=[status],
+                status=status,
                 state=state,
-                materials=[material],
+                materials=[prepared],
                 update_saved=update_saved,
                 update_error=update_error,
             )
@@ -72,19 +88,46 @@ class TelegramIngestService:
 
         bucket = self._buckets.get(key)
         if bucket is None:
+            prepare_status: StatusMessage | None = await send_loading(material)
             placeholder = asyncio.create_task(asyncio.sleep(0))
-            bucket = _Bucket(state=state, materials=[], statuses=[], task=placeholder)
+            bucket = _Bucket(
+                state=state,
+                materials=[],
+                status=prepare_status,
+                task=placeholder,
+            )
             self._buckets[key] = bucket
             logger.info("Telegram ingest bucket opened key=%s", key)
         else:
             bucket.task.cancel()
+            prepare_status = None
 
-        bucket.materials.append(material)
-        bucket.statuses.append(status)
+        bucket.pending += 1
+        try:
+            prepared = await prepare_material(material, prepare_status)
+        except Exception as exc:
+            bucket.pending -= 1
+            current_bucket = self._buckets.pop(key, None)
+            if current_bucket is not None:
+                current_bucket.task.cancel()
+            logger.exception(
+                "Telegram bucket material prepare failed key=%s user=%s chat=%s message=%s",
+                key,
+                material.telegram_user_id,
+                material.telegram_chat_id,
+                material.telegram_message_id,
+            )
+            await update_error(cast(StatusMessage, bucket.status), exc)
+            return
+
+        bucket.materials.append(prepared)
+        bucket.pending -= 1
+        bucket.task.cancel()
         logger.info(
-            "Telegram ingest bucket appended key=%s count=%s",
+            "Telegram ingest bucket appended key=%s count=%s pending=%s",
             key,
             len(bucket.materials),
+            bucket.pending,
         )
         bucket.task = asyncio.create_task(
             self._flush_later(
@@ -111,14 +154,29 @@ class TelegramIngestService:
         bucket = self._buckets.pop(key, None)
         if bucket is None:
             return
+        if bucket.pending > 0:
+            self._buckets[key] = bucket
+            bucket.task = asyncio.create_task(
+                self._flush_later(
+                    key=key,
+                    delay=delay,
+                    update_saved=update_saved,
+                    update_error=update_error,
+                )
+            )
+            logger.info(
+                "Telegram ingest bucket flush postponed key=%s pending=%s",
+                key,
+                bucket.pending,
+            )
+            return
         logger.info(
-            "Telegram ingest bucket flushing key=%s count=%s statuses=%s",
+            "Telegram ingest bucket flushing key=%s count=%s",
             key,
             len(bucket.materials),
-            len(bucket.statuses),
         )
         await self._save_and_update(
-            statuses=[cast(StatusMessage, status) for status in bucket.statuses],
+            status=cast(StatusMessage, bucket.status),
             state=bucket.state,
             materials=_deduplicate_repeated_captions(_sort_materials(bucket.materials)),
             update_saved=update_saved,
@@ -128,7 +186,7 @@ class TelegramIngestService:
     async def _save_and_update(
         self,
         *,
-        statuses: list[StatusMessage],
+        status: StatusMessage,
         state: BotState,
         materials: list[InboundMaterial],
         update_saved: UpdateSaved[StatusMessage],
@@ -145,7 +203,7 @@ class TelegramIngestService:
                 state.mode.value,
                 len(materials),
             )
-            await asyncio.gather(*(update_error(status, exc) for status in statuses))
+            await update_error(status, exc)
             return
         first = materials[0]
         logger.info(
@@ -157,7 +215,7 @@ class TelegramIngestService:
             saved.id,
             saved.status,
         )
-        await asyncio.gather(*(update_saved(status, saved) for status in statuses))
+        await update_saved(status, saved)
 
     async def _save_materials(
         self,
