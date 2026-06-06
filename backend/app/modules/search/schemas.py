@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 SearchMode = Literal["full_text", "semantic", "hybrid"]
 
@@ -97,3 +97,14 @@ class SearchContentMatch(BaseModel):
     text: str
     score: float
     highlight_ranges: list[SearchHighlightRange] = Field(default_factory=list)
+
+
+class SearchCapabilitiesResponse(BaseModel):
+    """Capabilities of the search subsystem for the current user."""
+
+    note_count: int = Field(serialization_alias="noteCount")
+    threshold: int
+    unlocked_modes: list[SearchMode] = Field(serialization_alias="unlockedModes")
+    default_mode: SearchMode = Field(serialization_alias="defaultMode")
+
+    model_config = ConfigDict(serialize_by_alias=True)
