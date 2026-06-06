@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { apiLogin, apiLogout, apiRefresh, apiRegister } from '../api/auth'
 import type { UserResponse } from '../api/auth'
-import { configureApiClient } from '../lib/apiClient'
+import { configureApiClient, refreshApiToken } from '../lib/apiClient'
 import { shouldRenderBeforeAuthRefresh, shouldSkipInitialRefresh } from '../utils/authBootstrap'
 
 interface AuthContextValue {
@@ -60,8 +60,19 @@ export function AuthProvider({
 
   // Bootstrap: пробуем refresh при старте приложения
   useEffect(() => {
-    if (initialUser && initialAccessToken) {
+    if (initialUser) {
       setIsReady(true)
+      if (!initialAccessToken) {
+        refreshApiToken()
+          .then(({ user, access_token }) => {
+            tokenRef.current = access_token
+            setUser(user)
+          })
+          .catch(() => {
+            tokenRef.current = null
+            setUser(null)
+          })
+      }
       return
     }
 

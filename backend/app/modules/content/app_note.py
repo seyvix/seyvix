@@ -88,6 +88,8 @@ class AppNoteObject(BaseModel):
     thumbnailText: str | None = None
     imageWidth: int | None = None
     imageHeight: int | None = None
+    visualWidth: int | None = None
+    visualHeight: int | None = None
     snapshotViews: list[AppSnapshotView] = Field(default_factory=list)
     filename: str | None = None
     mimeType: str | None = None
@@ -195,6 +197,8 @@ def _map_asset(asset: NoteAssetResponse, download_url: str, created_at: datetime
         thumbnailText=asset.thumbnail_text,
         imageWidth=asset.image_width,
         imageHeight=asset.image_height,
+        visualWidth=asset.image_width,
+        visualHeight=asset.image_height,
         snapshotViews=_snapshots(asset.snapshot_views),
         filename=asset.filename,
         mimeType=asset.mime_type,
@@ -205,7 +209,8 @@ def _map_asset(asset: NoteAssetResponse, download_url: str, created_at: datetime
 
 
 def _collection_item_to_object(item: NoteCardResponse) -> AppNoteObject:
-    first = item.assets[0] if item.assets else None
+    first = next((asset for asset in item.assets if asset.media_type != "text"), None)
+    first = first or (item.assets[0] if item.assets else None)
     text_asset = next((asset for asset in item.assets if asset.media_type == "text"), None)
     ot = _media_to_object_type(first.media_type if first else item.media_type)
     if ot in ("text", "link"):
@@ -233,6 +238,8 @@ def _collection_item_to_object(item: NoteCardResponse) -> AppNoteObject:
         thumbnailText=first.thumbnail_text if first else None,
         imageWidth=first.image_width if first else None,
         imageHeight=first.image_height if first else None,
+        visualWidth=first.image_width if first else None,
+        visualHeight=first.image_height if first else None,
         snapshotViews=snaps,
         slug=item.slug,
         filename=first.filename if first else None,

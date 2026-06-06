@@ -116,6 +116,8 @@ export interface NoteObject {
   thumbnailText?: string | null
   imageWidth?: number | null
   imageHeight?: number | null
+  visualWidth?: number | null
+  visualHeight?: number | null
   snapshotViews?: SnapshotView[]
   filename?: string      // оригинальное имя файла (для документов)
   mimeType?: string | null

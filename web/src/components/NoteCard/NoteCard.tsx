@@ -11,7 +11,6 @@ import TaskItem from '@tiptap/extension-task-item'
 import Image from '@tiptap/extension-image'
 import LinkExtension from '@tiptap/extension-link'
 import Typography from '@tiptap/extension-typography'
-import UnderlineExtension from '@tiptap/extension-underline'
 import {
   AlignLeft,
   Bold,
@@ -120,8 +119,23 @@ function CardMeta({ note, onTagClick, maxTags = 4 }: { note: Note; onTagClick?: 
   )
 }
 
+function getInitialSavedDateLabel(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: 'numeric',
+    month: 'short',
+    timeZone: 'UTC',
+  }).format(date).replace('.', '')
+}
+
 function SavedDate({ note, tone = 'muted' }: { note: Note; tone?: 'muted' | 'overlay' }) {
-  const label = getSavedDateLabel(note.createdAt)
+  const [label, setLabel] = useState(() => getInitialSavedDateLabel(note.createdAt))
+
+  useEffect(() => {
+    setLabel(getSavedDateLabel(note.createdAt))
+  }, [note.createdAt])
+
   if (!label) return null
   return <span className={`${styles.savedDate} ${tone === 'overlay' ? styles.savedDateOverlay : ''}`}>{label}</span>
 }
@@ -131,8 +145,18 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 function getObjectAspectRatio(obj: NoteObject | undefined): number | null {
-  if (!obj?.imageWidth || !obj.imageHeight) return null
-  return clamp(obj.imageWidth / obj.imageHeight, 0.68, 1.55)
+  const width = obj?.visualWidth ?? obj?.imageWidth
+  const height = obj?.visualHeight ?? obj?.imageHeight
+  if (!width || !height) return null
+  return clamp(width / height, 0.68, 1.55)
+}
+
+function hasObjectAspectRatio(obj: NoteObject | undefined): boolean {
+  return getObjectAspectRatio(obj) !== null
+}
+
+function chooseRatioObject(objects: NoteObject[]): NoteObject | undefined {
+  return objects.find(hasObjectAspectRatio) ?? objects[0]
 }
 
 function visualRatioStyle(obj: NoteObject | undefined, fallbackRatio: number): CSSProperties {
@@ -509,7 +533,7 @@ function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClic
     )
   }
 
-  const primaryVisual = visualObjs[0]
+  const primaryVisual = chooseRatioObject(visualObjs)
 
   return (
     <Link
@@ -589,9 +613,12 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
   const docThumb  = firstDoc ? (firstDoc.thumbnailUrl ?? firstDoc.cover) : undefined
   const firstLink = links[0]
   const firstLinkThumb = firstLink?.thumbnailUrl ?? null
-  const videoThumb = videoObj?.thumbnailUrl ?? null
-  const visualObject = imageObj ?? videoObj ?? audioObj ?? firstDoc ?? (firstLinkThumb ? firstLink : undefined)
-  const text = textObj ? getObjectDisplayMarkdown(textObj) : null
+  const visualObject = chooseRatioObject([
+    imageObj,
+    docThumb ? firstDoc : undefined,
+    firstLinkThumb ? firstLink : undefined,
+  ].filter((obj): obj is NoteObject => Boolean(obj)))
+  const text = textObj ? getObjectDisplayText(textObj) : null
   const hasAttachmentFooter = links.length > 0 || docs.length > 0
   const shouldOverlayText = Boolean(visualObject && text && !/^https?:\/\//.test(textObj?.content ?? ''))
 
@@ -696,17 +723,18 @@ export function NoteCard({ note, isNew, isDragging, onTagClick }: { note: Note; 
     setRenamePending(false)
   }
 
-  // Подсветка: если заметка создана меньше HIGHLIGHT_MS назад — подсвечиваем
-  const age = Date.now() - new Date(note.createdAt).getTime()
-  const [highlighted, setHighlighted] = useState(() => age < HIGHLIGHT_MS)
+  const [highlighted, setHighlighted] = useState(false)
 
   useEffect(() => {
-    if (!highlighted) return
     const remaining = HIGHLIGHT_MS - (Date.now() - new Date(note.createdAt).getTime())
-    if (remaining <= 0) { setHighlighted(false); return }
+    if (remaining <= 0) {
+      setHighlighted(false)
+      return
+    }
+    setHighlighted(true)
     const t = setTimeout(() => setHighlighted(false), remaining)
     return () => clearTimeout(t)
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [note.createdAt])
 
   const { isBulk, selectedSlugs, toggleSelect } = useBulkSelect()
   const isSelected = selectedSlugs.has(note.slug)
@@ -930,7 +958,6 @@ export function AddNoteCard({ onClick }: { onClick?: () => void }) {
         heading: { levels: [1, 2, 3] },
         link: false,
       }),
-      UnderlineExtension,
       Typography,
       LinkExtension.configure({
         autolink: true,

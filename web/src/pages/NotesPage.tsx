@@ -50,7 +50,7 @@ export default function NotesPage() {
     return () => window.clearTimeout(timer)
   }, [search])
 
-  const { data: serverNotes = [], isPending } = useNotes({
+  const { data: serverNotes = [] } = useNotes({
     search:  search  || undefined,
     searchMode,
     tags:    activeTags.length ? activeTags : undefined,
@@ -140,9 +140,7 @@ export default function NotesPage() {
         onClear={handleClear}
       />
       <BulkToolbar />
-      {!isPending && (
-        <NoteGrid notes={notes} onTagClick={handleTagClick} />
-      )}
+      <NoteGrid notes={notes} onTagClick={handleTagClick} />
     </BulkSelectProvider>
   )
 }

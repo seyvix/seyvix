@@ -7,6 +7,8 @@ export default defineConfig({
     noExternal: ['@atlaskit/pragmatic-drag-and-drop'],
   },
   build: {
+    minify: process.env.VITE_BUILD_MINIFY === 'false' ? false : 'esbuild',
+    reportCompressedSize: false,
     rollupOptions: {
       output: {
         manualChunks(id) {

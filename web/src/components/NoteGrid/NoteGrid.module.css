@@ -5,20 +5,37 @@
 }
 
 .grid {
-  position: relative;
-  width: var(--note-grid-content-width);
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 156px), 1fr));
   min-height: 100%;
   margin: 18px auto;
   padding: var(--space-4) 0;
+  position: relative;
+  width: min(calc(100% - 32px), 1180px);
+  box-sizing: border-box;
+}
+
+.grid[data-masonry-ready='true'] {
+  display: block;
+  gap: 0;
+  width: var(--note-grid-content-width);
   box-sizing: content-box;
 }
 
 .item {
-  position: absolute;
+  position: relative;
   z-index: 1;
-  width: var(--note-grid-item-width);
+  width: auto;
   margin: 0;
   min-width: 0;
+  cursor: default;
+  touch-action: pan-y;
+}
+
+.grid[data-masonry-ready='true'] .item {
+  position: absolute;
+  width: var(--note-grid-item-width);
   cursor: grab;
   touch-action: none;
   will-change: transform;

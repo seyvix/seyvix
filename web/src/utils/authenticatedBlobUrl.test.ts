@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { configureApiClient } from '../lib/apiClient.ts'
+import { configureApiClient, refreshApiToken } from '../lib/apiClient.ts'
 import {
   authenticatedBlobUrl,
   cachedAuthenticatedBlobUrl,
@@ -55,4 +55,41 @@ test('concurrent protected media requests share one fetch and one object URL', a
   assert.equal(third, first)
   assert.equal(cachedAuthenticatedBlobUrl(src), first)
   assert.deepEqual(calls, [src])
+})
+
+test('protected media waits for an in-flight refresh before first fetch', async () => {
+  let token: string | null = null
+  const calls: Array<{ url: string; authorization: string | null }> = []
+
+  configureApiClient({
+    getToken: () => token,
+    setToken: (nextToken) => { token = nextToken },
+    onUnauthenticated: () => {},
+  })
+
+  globalThis.fetch = async (input, init) => {
+    const url = String(input)
+    calls.push({ url, authorization: new Headers(init?.headers).get('Authorization') })
+
+    if (url === '/api/v1/auth/refresh') {
+      await new Promise(resolve => setTimeout(resolve, 1))
+      return Response.json({
+        access_token: 'fresh-access-token',
+        token_type: 'bearer',
+        user: { id: 'u1', display_name: 'User', is_active: true },
+      })
+    }
+
+    return new Response(new Blob(['image'], { type: 'image/png' }), { status: 200 })
+  }
+
+  const refresh = refreshApiToken()
+  const objectUrl = await authenticatedBlobUrl('/api/v1/notes/note/asset/after-refresh')
+  await refresh
+
+  assert.match(objectUrl, /^blob:/)
+  assert.deepEqual(calls, [
+    { url: '/api/v1/auth/refresh', authorization: null },
+    { url: '/api/v1/notes/note/asset/after-refresh', authorization: 'Bearer fresh-access-token' },
+  ])
 })

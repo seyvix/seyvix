@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import hashlib
 import hmac
 import os
@@ -8,6 +9,10 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
+
 from app.core.config import get_settings
 from app.core.database import Base, build_session_factory
 from app.main import app
@@ -22,11 +27,12 @@ from app.modules.taxonomy.models import (
     TaxonomyContentAssignment,
 )
 from app.platform.events.models import EventOutbox
-from fastapi.testclient import TestClient
-from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 TELEGRAM_BOT_TOKEN = "123456:test-bot-token"
+PNG_3X2 = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAYAAACddGYaAAAADUlEQVR42mP8z8BQDwAFgwJ/lz6c"
+    "WQAAAABJRU5ErkJggg=="
+)
 
 
 async def _prepare_database(database_url: str) -> async_sessionmaker:
@@ -514,6 +520,34 @@ def test_repeated_upload_with_object_id_extends_same_object_as_collection(
     assert payload["id"] == object_id
     assert payload["type"] == "collection"
     assert [obj["filename"] for obj in payload["objects"]] == ["one.txt", "two.txt"]
+
+
+def test_image_upload_returns_dimensions_for_card_layout(content_client: TestClient) -> None:
+    headers = _auth_headers(content_client)
+
+    response = content_client.post(
+        "/api/v1/notes/file/upload",
+        headers=headers,
+        data={"create_object": "true", "title": "Tiny image"},
+        files={"file": ("tiny.png", PNG_3X2, "image/png")},
+    )
+
+    assert response.status_code == 201
+    image_object = response.json()["objects"][0]
+    assert image_object["type"] == "image"
+    assert image_object["imageWidth"] == 3
+    assert image_object["imageHeight"] == 2
+    assert image_object["visualWidth"] == 3
+    assert image_object["visualHeight"] == 2
+
+    list_response = content_client.get("/api/v1/notes", headers=headers)
+
+    assert list_response.status_code == 200
+    listed_object = list_response.json()["items"][0]["objects"][0]
+    assert listed_object["imageWidth"] == 3
+    assert listed_object["imageHeight"] == 2
+    assert listed_object["visualWidth"] == 3
+    assert listed_object["visualHeight"] == 2
 
 
 def test_collection_omits_soft_deleted_children_from_objects(

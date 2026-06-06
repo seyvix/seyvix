@@ -6,12 +6,17 @@
   max-width: 100%;
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
 }
 
 .imageImg {
   display: block;
   width: 100%;
-  height: auto;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  object-fit: inherit;
+  border-radius: inherit;
   vertical-align: middle;
 }
 
@@ -22,5 +27,8 @@
 }
 
 .placeholder {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
   background: var(--color-surface);
 }

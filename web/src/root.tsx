@@ -1,3 +1,4 @@
+import { dehydrate } from '@tanstack/react-query'
 import type { LoaderFunctionArgs } from 'react-router'
 import {
   Links,
@@ -11,12 +12,16 @@ import {
 import './styles/reset.css'
 import './styles/variables.css'
 import './styles/loaders.css'
-import { AppProviders } from './AppProviders'
+import { AppProviders, createQueryClient } from './AppProviders'
 import { loadServerAuth } from './framework/auth.server'
+import { prefetchNotesRoute } from './framework/notes.server'
 import { shouldRenderBeforeAuthRefresh } from './utils/authBootstrap'
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const auth = await loadServerAuth(request)
+  const queryClient = createQueryClient()
+  await prefetchNotesRoute(queryClient, request, auth.accessToken)
+
   const pathname = new URL(request.url).pathname
   const headers = new Headers(auth.headers)
   headers.set('Cache-Control', 'private, no-store, max-age=0')
@@ -26,6 +31,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     {
       user: auth.user,
       authInitialReady: Boolean(auth.user) || shouldRenderBeforeAuthRefresh(pathname),
+      dehydratedState: dehydrate(queryClient),
     },
     {
       headers,
@@ -46,7 +52,6 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <link rel="shortcut icon" href="/favicon.ico" />
         <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
         <meta name="apple-mobile-web-app-title" content="Seyvix" />
-        <link rel="manifest" href="/site.webmanifest" />
 
         <script src="https://telegram.org/js/telegram-web-app.js" />
         <Meta />
@@ -62,10 +67,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
 }
 
 export default function Root() {
-  const { user, authInitialReady } = useLoaderData<typeof loader>()
+  const { user, authInitialReady, dehydratedState } = useLoaderData<typeof loader>()
 
   return (
-    <AppProviders authInitialReady={authInitialReady} authInitialUser={user}>
+    <AppProviders
+      authInitialReady={authInitialReady}
+      authInitialUser={user}
+      dehydratedState={dehydratedState}
+    >
       <Outlet />
     </AppProviders>
   )

@@ -26,8 +26,25 @@ export function configureApiClient(cfg: {
   onUnauthenticated = cfg.onUnauthenticated
 }
 
+export async function refreshApiToken() {
+  refreshPromise ??= apiRefresh().finally(() => {
+    refreshPromise = null
+  })
+  const refreshed = await refreshPromise
+  setToken(refreshed.access_token)
+  return refreshed
+}
+
 export async function apiFetch(input: RequestInfo, init: RequestInit = {}): Promise<Response> {
-  const token = getToken()
+  let token = getToken()
+  if (!token && refreshPromise) {
+    try {
+      const refreshed = await refreshPromise
+      token = refreshed.access_token
+    } catch {
+      token = null
+    }
+  }
 
   const headers = new Headers(init.headers)
   if (token) headers.set('Authorization', `Bearer ${token}`)
@@ -38,11 +55,7 @@ export async function apiFetch(input: RequestInfo, init: RequestInit = {}): Prom
 
   // Concurrent 401 responses must share refresh because the backend rotates refresh tokens.
   try {
-    refreshPromise ??= apiRefresh().finally(() => {
-      refreshPromise = null
-    })
-    const refreshed = await refreshPromise
-    setToken(refreshed.access_token)
+    const refreshed = await refreshApiToken()
 
     const retryHeaders = new Headers(init.headers)
     retryHeaders.set('Authorization', `Bearer ${refreshed.access_token}`)

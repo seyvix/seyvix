@@ -10,6 +10,7 @@ interface AuthImageProps extends React.ImgHTMLAttributes<HTMLImageElement> {
 export default function AuthImage({ src, className, style, ...rest }: AuthImageProps) {
   const [blobUrl, setBlobUrl] = useState<string | null>(() => cachedAuthenticatedBlobUrl(src))
   const [imgReady, setImgReady] = useState(false)
+  const wrapperClassName = [styles.imageWrap, className].filter(Boolean).join(' ')
 
   useEffect(() => {
     if (!src) return
@@ -34,30 +35,25 @@ export default function AuthImage({ src, className, style, ...rest }: AuthImageP
     return () => { cancelled = true }
   }, [src])
 
-  if (!blobUrl) {
-    return (
-      <div className={`${styles.placeholder} appLoaderHost ${className ?? ''}`} style={style}>
-        <LoaderSpinner size="md" />
-      </div>
-    )
-  }
-
-  // eslint-disable-next-line jsx-a11y/alt-text
   return (
-    <span className={styles.imageWrap}>
-      {!imgReady && (
+    <span className={wrapperClassName} style={style}>
+      {(!blobUrl || !imgReady) && (
         <span className={`${styles.imageLoader} appLoaderOverlay`} aria-hidden>
-          <LoaderSpinner />
+          <LoaderSpinner size="md" />
         </span>
       )}
-      <img
-        {...rest}
-        src={blobUrl}
-        className={`${styles.imageImg} ${className ?? ''}`}
-        style={style}
-        onLoad={() => setImgReady(true)}
-        onError={() => setImgReady(true)}
-      />
+      {blobUrl
+        ? (
+          // eslint-disable-next-line jsx-a11y/alt-text
+          <img
+            {...rest}
+            src={blobUrl}
+            className={styles.imageImg}
+            onLoad={() => setImgReady(true)}
+            onError={() => setImgReady(true)}
+          />
+        )
+        : <span className={styles.placeholder} />}
     </span>
   )
 }

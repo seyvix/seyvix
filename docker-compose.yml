@@ -64,7 +64,7 @@ services:
     build:
       context: .
       dockerfile: web/Dockerfile
-      target: production
+      target: production-prebuilt
     restart: unless-stopped
     environment:
       SSR_API_BASE_URL: http://backend:8000

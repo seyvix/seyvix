@@ -23,7 +23,11 @@ from app.modules.auth.schemas import (
     TelegramWebAppLoginRequest,
     UserResponse,
 )
-from app.modules.auth.security import build_pkce_code_challenge, generate_refresh_token
+from app.modules.auth.security import (
+    build_access_token,
+    build_pkce_code_challenge,
+    generate_refresh_token,
+)
 from app.modules.auth.service import (
     AuthContext,
     AuthService,
@@ -79,22 +83,28 @@ async def get_auth_context(
 
 def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
     settings = get_settings()
+    legacy_path = f"{settings.api_prefix}/auth"
+    response.delete_cookie(
+        key=settings.refresh_cookie_name,
+        path=legacy_path,
+    )
     response.set_cookie(
         key=settings.refresh_cookie_name,
         value=refresh_token,
         httponly=True,
         secure=settings.refresh_cookie_secure,
         samesite=settings.refresh_cookie_samesite,
-        path=f"{settings.api_prefix}/auth",
+        path="/",
     )
 
 
 def _clear_refresh_cookie(response: Response) -> None:
     settings = get_settings()
-    response.delete_cookie(
-        key=settings.refresh_cookie_name,
-        path=f"{settings.api_prefix}/auth",
-    )
+    for path in ("/", f"{settings.api_prefix}/auth"):
+        response.delete_cookie(
+            key=settings.refresh_cookie_name,
+            path=path,
+        )
 
 
 def _set_telegram_oidc_cookies(
@@ -600,6 +610,47 @@ async def refresh(
 
     _set_refresh_cookie(response, new_refresh_token)
     return auth_response
+
+
+@router.get(
+    "/bootstrap",
+    response_model=AuthTokensResponse,
+    summary="Bootstrap session from refresh cookie",
+    description=(
+        "Returns the current user and a short-lived access token from the httpOnly refresh "
+        "cookie without rotating that cookie. Intended for server-side page rendering."
+    ),
+    responses={
+        200: {"description": "Session bootstrap returned."},
+        401: {"model": ErrorResponse, "description": "Missing or invalid refresh token."},
+    },
+)
+async def bootstrap(
+    request: Request,
+    service: Annotated[AuthService, Depends(get_auth_service)],
+) -> AuthTokensResponse:
+    settings = get_settings()
+    raw_refresh_token = request.cookies.get(settings.refresh_cookie_name)
+    if raw_refresh_token is None:
+        raise AppError(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            code="missing_refresh_token",
+            message="Missing refresh token.",
+        )
+
+    try:
+        context = await service.get_auth_context_by_refresh_token(raw_refresh_token)
+    except InvalidRefreshTokenError as exc:
+        raise AppError(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            code="invalid_refresh_token",
+            message="Invalid refresh token.",
+        ) from exc
+
+    return AuthTokensResponse(
+        user=UserResponse.model_validate(context.user, from_attributes=True),
+        access_token=build_access_token(user_id=context.user.id, session_id=context.session.id),
+    )
 
 
 @router.post(

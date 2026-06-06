@@ -41,11 +41,8 @@ export function NoteGrid({ notes, onAddNote, onTagClick }: NoteGridProps) {
   const gridMetricsRef = useRef<MasonryGridMetrics | null>(null)
   const [orderedNotes, setOrderedNotes] = useState<Note[]>(notes)
   const [gridMetrics, setGridMetrics] = useState<MasonryGridMetrics | null>(null)
-  const [isMobileGrid, setIsMobileGrid] = useState(() => (
-    typeof window !== 'undefined' &&
-    typeof window.matchMedia !== 'undefined' &&
-    window.matchMedia(MOBILE_GRID_QUERY).matches
-  ))
+  const [isMobileGrid, setIsMobileGrid] = useState(false)
+  const [isMasonryReady, setIsMasonryReady] = useState(false)
   const queryClient = useQueryClient()
   const { cols } = useSettings()
   const hasGridMetrics = gridMetrics !== null
@@ -129,6 +126,8 @@ export function NoteGrid({ notes, onAddNote, onTagClick }: NoteGridProps) {
 
     void import('muuri').then(({ default: Muuri }) => {
       if (disposed) return
+
+      flushSync(() => setIsMasonryReady(true))
 
       const grid = new Muuri(gridElement, {
         items: `.${styles.item}`,
@@ -296,7 +295,9 @@ export function NoteGrid({ notes, onAddNote, onTagClick }: NoteGridProps) {
     '--note-grid-content-width': `${visibleMetrics.contentWidth}px`,
     '--note-grid-item-width': `${visibleMetrics.itemWidth}px`,
   } as CSSProperties
-  const itemStyle = { width: `${visibleMetrics.itemWidth}px` } as CSSProperties
+  const itemStyle = isMasonryReady
+    ? ({ width: `${visibleMetrics.itemWidth}px` } as CSSProperties)
+    : undefined
 
   return (
     <DragProvider>
@@ -305,6 +306,7 @@ export function NoteGrid({ notes, onAddNote, onTagClick }: NoteGridProps) {
           ref={gridRef}
           className={`${styles.grid} ${isMobileGrid ? styles.mobileGrid : ''}`}
           style={gridStyle}
+          data-masonry-ready={isMasonryReady ? 'true' : undefined}
           data-mobile-grid={isMobileGrid ? 'true' : undefined}
         >
           <div className={`${styles.item} ${styles.addItem}`} style={itemStyle} data-static-item="true" data-muuri-item>
