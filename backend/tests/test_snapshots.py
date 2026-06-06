@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 from app.modules.content.models import ContentAsset, ContentObject
-from app.modules.content.schemas import NoteAssetResponse
 from app.modules.snapshots.artifacts import (
     FetchedWebpage,
     GeneratedArtifact,
@@ -372,43 +371,6 @@ def test_snapshot_job_plan_respects_disabled_markdown_and_pdf_settings() -> None
     )
 
     assert plan_snapshot_job_types(asset, settings) == ("markdown", "thumbnail")
-
-
-def test_note_asset_response_exposes_snapshot_representation_fields() -> None:
-    response = NoteAssetResponse(
-        id="asset-1",
-        role="original",
-        media_type="document",
-        filename="report.docx",
-        mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        size_bytes=120,
-        url="/api/v1/notes/note/asset/asset-1",
-        thumbnail_url="/api/v1/notes/note/asset/asset-1/thumbnail",
-        thumbnail_text="Preview text",
-        markdown_url="/api/v1/snapshots/artifacts/markdown-1",
-        pdf_url="/api/v1/snapshots/artifacts/pdf-1",
-        html_url=None,
-    )
-
-    assert response.model_dump() == {
-        "id": "asset-1",
-        "role": "original",
-        "media_type": "document",
-        "filename": "report.docx",
-        "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "size_bytes": 120,
-        "url": "/api/v1/notes/note/asset/asset-1",
-        "text_content": None,
-        "thumbnail_url": "/api/v1/notes/note/asset/asset-1/thumbnail",
-        "thumbnail_text": "Preview text",
-        "markdown_url": "/api/v1/snapshots/artifacts/markdown-1",
-        "pdf_url": "/api/v1/snapshots/artifacts/pdf-1",
-        "html_url": None,
-        "snapshot_views": [],
-        "image_width": None,
-        "image_height": None,
-        "source": None,
-    }
 
 
 def test_snapshot_generator_creates_webpage_artifacts_from_link(

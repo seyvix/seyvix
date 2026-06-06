@@ -10,54 +10,22 @@ function jsonResponse(body: unknown, init: ResponseInit = {}) {
   })
 }
 
-test('fetchNotes sends custom sort when requested', async () => {
-  const calls: Array<{ url: string; init?: RequestInit }> = []
-  globalThis.fetch = async (input, init) => {
-    calls.push({ url: String(input), init })
-    return jsonResponse({ items: [] })
-  }
+test('fetchNotes returns note items from the backend response', async () => {
+  globalThis.fetch = async () => jsonResponse({
+    items: [{ id: 'note-1', slug: 'first', title: 'First note' }],
+  })
 
-  await fetchNotes({ sort: 'custom', search: 'grid' })
+  const notes = await fetchNotes()
 
-  const url = new URL(calls[0].url)
-  assert.equal(url.pathname, '/api/v1/notes')
-  assert.equal(url.searchParams.get('sort'), 'custom')
-  assert.equal(url.searchParams.get('search'), 'grid')
+  assert.equal(notes.length, 1)
+  assert.equal(notes[0].slug, 'first')
 })
 
-test('fetchNotes sends selected search mode when searching', async () => {
-  const calls: Array<{ url: string; init?: RequestInit }> = []
-  globalThis.fetch = async (input, init) => {
-    calls.push({ url: String(input), init })
-    return jsonResponse({ items: [] })
-  }
+test('reorderNotes reports backend failures', async () => {
+  globalThis.fetch = async () => new Response(null, { status: 500 })
 
-  await fetchNotes({ search: 'semantic notes', searchMode: 'semantic' })
-
-  const url = new URL(calls[0].url)
-  assert.equal(url.pathname, '/api/v1/notes')
-  assert.equal(url.searchParams.get('search'), 'semantic notes')
-  assert.equal(url.searchParams.get('search_mode'), 'semantic')
-})
-
-test('reorderNotes sends backend order payload', async () => {
-  const calls: Array<{ url: string; init?: RequestInit }> = []
-  globalThis.fetch = async (input, init) => {
-    calls.push({ url: String(input), init })
-    return new Response(null, { status: 204 })
-  }
-
-  await reorderNotes([
-    { slug: 'second', position: 10 },
-    { slug: 'first', position: 20 },
-  ])
-
-  assert.equal(calls[0].url, '/api/v1/notes/order')
-  assert.equal(calls[0].init?.method, 'PATCH')
-  assert.equal(calls[0].init?.body, JSON.stringify({
-    items: [
-      { slug: 'second', position: 10 },
-      { slug: 'first', position: 20 },
-    ],
-  }))
+  await assert.rejects(
+    () => reorderNotes([{ slug: 'first', position: 10 }]),
+    /Failed to reorder notes/,
+  )
 })

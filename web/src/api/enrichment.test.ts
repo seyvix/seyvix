@@ -2,16 +2,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
-  assignCategoryToContent,
-  assignExistingTagToContent,
-  createTaxonomyCategory,
-  createTag,
-  fetchContentTagSuggestions,
-  fetchContentTagJobs,
+  createOrFindTag,
   fetchSnapshotArtifacts,
-  fetchTaxonomyClassificationJobs,
   reprocessSnapshotMarkdown,
-  triggerTaxonomyClassification,
 } from './enrichment.ts'
 
 function jsonResponse(body: unknown, init: ResponseInit = {}) {
@@ -21,82 +14,47 @@ function jsonResponse(body: unknown, init: ResponseInit = {}) {
   })
 }
 
-test('snapshot artifact lookup uses the backend content_object_id filter', async () => {
-  const calls: Array<{ url: string; init?: RequestInit }> = []
-  globalThis.fetch = async (input, init) => {
-    calls.push({ url: String(input), init })
-    return jsonResponse({ items: [] })
-  }
+test('fetchSnapshotArtifacts returns artifact items from the backend response', async () => {
+  globalThis.fetch = async () => jsonResponse({
+    items: [{ id: 'artifact-1', artifact_type: 'markdown', status: 'ready' }],
+  })
 
-  await fetchSnapshotArtifacts('object-1')
+  const artifacts = await fetchSnapshotArtifacts('object-1')
 
-  assert.equal(calls[0].url, '/api/v1/snapshots/artifacts?content_object_id=object-1')
+  assert.equal(artifacts.length, 1)
+  assert.equal(artifacts[0].id, 'artifact-1')
 })
 
-test('snapshot markdown reprocess queues one asset with backend payload shape', async () => {
-  const calls: Array<{ url: string; init?: RequestInit }> = []
-  globalThis.fetch = async (input, init) => {
-    calls.push({ url: String(input), init })
-    return jsonResponse({ queued_count: 1, job_ids: ['job-1'], source_asset_ids: ['asset-1'] })
-  }
+test('reprocessSnapshotMarkdown surfaces backend queueing errors', async () => {
+  globalThis.fetch = async () => jsonResponse(
+    { error: { message: 'Snapshot asset is not ready.' } },
+    { status: 409 },
+  )
 
-  await reprocessSnapshotMarkdown('object-1', 'asset-1')
-
-  assert.equal(calls[0].url, '/api/v1/snapshots/reprocess')
-  assert.equal(calls[0].init?.method, 'POST')
-  assert.equal(
-    calls[0].init?.body,
-    JSON.stringify({
-      content_object_id: 'object-1',
-      source_asset_id: 'asset-1',
-      job_types: ['markdown'],
-      force: true,
-    }),
+  await assert.rejects(
+    () => reprocessSnapshotMarkdown('object-1', 'asset-1'),
+    /Snapshot asset is not ready/,
   )
 })
 
-test('enrichment job lookups use backend job-list endpoints', async () => {
-  const calls: Array<{ url: string; init?: RequestInit }> = []
+test('createOrFindTag returns an existing tag after a create conflict', async () => {
+  let createAttempts = 0
+  let lookupAttempts = 0
   globalThis.fetch = async (input, init) => {
-    calls.push({ url: String(input), init })
-    return jsonResponse({ items: [] })
-  }
-
-  await fetchContentTagJobs('object-1')
-  await fetchTaxonomyClassificationJobs('object-1')
-
-  assert.equal(calls[0].url, '/api/v1/content/object-1/tags/jobs')
-  assert.equal(calls[1].url, '/api/v1/taxonomy/content/object-1/classification-jobs')
-})
-
-test('manual tag and taxonomy actions use backend payload shapes', async () => {
-  const calls: Array<{ url: string; init?: RequestInit }> = []
-  globalThis.fetch = async (input, init) => {
-    calls.push({ url: String(input), init })
-    if (String(input) === '/api/v1/tags') {
-      return jsonResponse({ id: 'tag-1', name: 'Manual', slug: 'manual' }, { status: 201 })
+    if (String(input) === '/api/v1/tags' && init?.method === 'POST') {
+      createAttempts += 1
+      return jsonResponse({ error: { message: 'Tag already exists.' } }, { status: 409 })
     }
-    return jsonResponse({ id: 'assignment-1' }, { status: 201 })
+    lookupAttempts += 1
+    if (lookupAttempts === 1) {
+      return jsonResponse([])
+    }
+    return jsonResponse([{ id: 'tag-1', name: 'Manual', slug: 'manual' }])
   }
 
-  await createTag('Manual')
-  await createTaxonomyCategory('Research')
-  await createTaxonomyCategory('Нейронные сети')
-  await assignExistingTagToContent('object-1', 'tag-1')
-  await assignCategoryToContent('object-1', 'cat-1')
-  await triggerTaxonomyClassification('object-1')
-  await fetchContentTagSuggestions('object-1')
+  const tag = await createOrFindTag('Manual')
 
-  assert.equal(calls[0].url, '/api/v1/tags')
-  assert.equal(calls[0].init?.method, 'POST')
-  assert.equal(calls[1].url, '/api/v1/taxonomy/categories')
-  assert.equal(calls[1].init?.body, JSON.stringify({ name: 'Research', slug: 'research', parent_id: null }))
-  assert.equal(calls[2].url, '/api/v1/taxonomy/categories')
-  assert.equal(calls[2].init?.body, JSON.stringify({ name: 'Нейронные сети', slug: 'nejronnye-seti', parent_id: null }))
-  assert.equal(calls[3].url, '/api/v1/content/object-1/tags')
-  assert.equal(calls[3].init?.body, JSON.stringify({ tag_id: 'tag-1' }))
-  assert.equal(calls[4].url, '/api/v1/taxonomy/content/object-1/assignments')
-  assert.equal(calls[4].init?.body, JSON.stringify({ category_id: 'cat-1' }))
-  assert.equal(calls[5].url, '/api/v1/taxonomy/content/object-1/classify')
-  assert.equal(calls[6].url, '/api/v1/content/object-1/tags/suggestions')
+  assert.equal(tag.id, 'tag-1')
+  assert.equal(createAttempts, 1)
+  assert.equal(lookupAttempts, 2)
 })

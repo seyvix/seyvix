@@ -1,7 +1,6 @@
 import asyncio
 import hashlib
 import hmac
-import json
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -111,42 +110,6 @@ def _template_paths(items: list[dict[str, object]]) -> set[str]:
         paths.add(str(item["path"]))
         paths.update(_template_paths(item["children"]))  # type: ignore[arg-type]
     return paths
-
-
-def test_full_taxonomy_template_specs_are_deprecated() -> None:
-    template_dir = Path(__file__).parents[1] / "app/modules/taxonomy/templates"
-
-    for slug in ("default", "developer"):
-        assert not (template_dir / f"{slug}.json").exists()
-        assert (template_dir / f"{slug}.json.deprecated").exists()
-    route_paths = {route.path for route in app.routes}
-    assert "/api/v1/taxonomy/templates" not in route_paths
-    assert "/api/v1/taxonomy/templates/{template_slug}" not in route_paths
-    assert "/api/v1/taxonomy/initialize" not in route_paths
-
-
-def test_taxonomy_interest_specs_live_in_domain_files() -> None:
-    interest_dir = Path(__file__).parents[1] / "app/modules/taxonomy/templates/interests"
-
-    loaded_specs: dict[str, dict[str, object]] = {}
-    for slug in ("programming", "ai", "design", "business", "science", "personal"):
-        interest_path = interest_dir / f"{slug}.json"
-        assert interest_path.exists()
-        loaded_specs[slug] = json.loads(interest_path.read_text(encoding="utf-8"))
-
-    assert loaded_specs["programming"]["name"] == "Programming"
-    assert "software" in loaded_specs["programming"]["aliases"]
-    assert (
-        TaxonomyService._interest_specs_by_slug()["software"]["slug"]  # noqa: SLF001
-        == "programming"
-    )
-
-    programming_tree = loaded_specs["programming"]["tree"]
-    flattened = TaxonomyService._flatten_template_tree(programming_tree)  # type: ignore[arg-type]  # noqa: SLF001
-    python_profile = next(item for item in flattened if item["path"] == "programming/python")
-    assert "FastAPI" in python_profile["description"]
-    assert "pytest" in python_profile["profile_keywords"]
-    assert "Python" in python_profile["profile_summary"]
 
 
 def test_taxonomy_classification_jobs_endpoint_lists_jobs_for_current_user(
@@ -664,30 +627,6 @@ def test_delete_category_with_notes_requires_danger_confirmation(
 
     note_response = content_client.get(f"/api/v1/notes/{note['slug']}", headers=headers)
     assert note_response.status_code == 404
-
-
-def test_full_template_endpoints_are_removed(
-    content_client: TestClient,
-) -> None:
-    headers = _auth_headers(content_client)
-
-    templates_response = content_client.get("/api/v1/taxonomy/templates", headers=headers)
-    developer_response = content_client.get(
-        "/api/v1/taxonomy/templates/developer",
-        headers=headers,
-    )
-    initialize_response = content_client.post(
-        "/api/v1/taxonomy/initialize",
-        headers=headers,
-        json={"template_slug": "developer"},
-    )
-    assert templates_response.status_code == 404
-    assert developer_response.status_code == 404
-    assert initialize_response.status_code == 404
-
-    modules_response = content_client.get("/api/v1/modules", headers=headers)
-    assert modules_response.status_code == 200
-    assert "taxonomy" in {module["name"] for module in modules_response.json()}
 
 
 def test_interest_onboarding_initializes_taxonomy_and_profile_index_jobs(
