@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 
 import type { Note } from '../types'
 import {
+  chooseCardRatioObject,
+  chooseCompositeCardVisualObject,
   cleanDisplayTitle,
   collectSourceChips,
   getNoteDisplayTitle,
@@ -12,6 +14,16 @@ import {
   isCardVisualObjectType,
   truncateMarkdownInline,
 } from './noteCardPresentation.ts'
+
+function noteObject(overrides: Partial<Note['objects'][number]>): Note['objects'][number] {
+  return {
+    id: overrides.id ?? 'object-1',
+    type: overrides.type ?? 'text',
+    content: overrides.content ?? '',
+    createdAt: overrides.createdAt ?? '2026-05-01T10:00:00Z',
+    ...overrides,
+  }
+}
 
 const telegramNote: Note = {
   id: 'note-1',
@@ -125,4 +137,28 @@ test('card visual object types include media and files but not text', () => {
   assert.equal(isCardVisualObjectType('document'), true)
   assert.equal(isCardVisualObjectType('link'), true)
   assert.equal(isCardVisualObjectType('text'), false)
+})
+
+test('ratio object prefers the first visual object with known dimensions', () => {
+  const video = noteObject({ id: 'video-1', type: 'video', content: '/video.mp4' })
+  const image = noteObject({
+    id: 'image-1',
+    type: 'image',
+    content: '/image.jpg',
+    visualWidth: 1280,
+    visualHeight: 720,
+  })
+
+  assert.equal(chooseCardRatioObject([video, image]), image)
+})
+
+test('composite card visual object keeps media placeholders eligible', () => {
+  const text = noteObject({ id: 'text-1', type: 'text', content: 'caption' })
+  const video = noteObject({ id: 'video-1', type: 'video', content: '/video.mp4' })
+  const audio = noteObject({ id: 'audio-1', type: 'audio', content: '/audio.mp3' })
+  const document = noteObject({ id: 'doc-1', type: 'document', content: '/doc.pdf' })
+
+  assert.equal(chooseCompositeCardVisualObject([text, video]), video)
+  assert.equal(chooseCompositeCardVisualObject([text, audio]), audio)
+  assert.equal(chooseCompositeCardVisualObject([text, document]), document)
 })

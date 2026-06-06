@@ -45,6 +45,7 @@ import { apiFetch } from '../lib/apiClient'
 import { deleteNotes } from '../api/notes'
 import { SEARCH_CAPABILITIES_QUERY_KEY } from '../hooks/useSearchCapabilities'
 import { useAuthenticatedObjectUrl } from '../hooks/useAuthenticatedObjectUrl'
+import { openAuthenticatedAsset } from '../utils/authenticatedBlobUrl'
 import {
   acceptTagSuggestion,
   acceptTaxonomyAssignment,
@@ -223,6 +224,24 @@ async function authDownload(url: string, filename?: string) {
     document.body.removeChild(a)
     URL.revokeObjectURL(objectUrl)
   } catch { /* ignore */ }
+}
+
+function isProtectedAssetUrl(url: string): boolean {
+  if (url.startsWith('/api/v1/notes/') && url.includes('/asset/')) return true
+  if (typeof window === 'undefined') return false
+
+  try {
+    const parsed = new URL(url, window.location.origin)
+    return parsed.origin === window.location.origin &&
+      parsed.pathname.startsWith('/api/v1/notes/') &&
+      parsed.pathname.includes('/asset/')
+  } catch {
+    return false
+  }
+}
+
+function openProtectedAsset(url: string) {
+  void openAuthenticatedAsset(url).catch(() => {})
 }
 
 // ─── Doc blob cache (preload before DocViewer mounts) ──────────────────────────
@@ -425,6 +444,11 @@ function renderInlineMarkdown(text: string, source: NoteObject['source'] | null 
           href={imageHref}
           target="_blank"
           rel="noopener noreferrer"
+          onClick={event => {
+            if (!isProtectedAssetUrl(imageHref)) return
+            event.preventDefault()
+            openProtectedAsset(imageHref)
+          }}
         >
           {imageAlt || imageHref}
         </a>
@@ -851,7 +875,7 @@ function ImageObj({
         src={obj.content}
         alt=""
         style={{ cursor: 'zoom-in' }}
-        onClick={() => window.open(obj.content, '_blank')}
+        onClick={() => openProtectedAsset(obj.content)}
       />
       <ObjectSource source={obj.source} />
       {obj.caption && <MarkdownText className={styles.objImageCaption} text={obj.caption} source={obj.source} />}
@@ -1365,7 +1389,7 @@ function ProtectedAudio({ obj }: { obj: NoteObject }) {
 function TelegramDetailMediaTile({ obj }: { obj: NoteObject }) {
   if (obj.type === 'image') {
     return (
-      <button className={styles.telegramDetailMediaTile} onClick={() => window.open(obj.content, '_blank')} title="Открыть изображение">
+      <button type="button" className={styles.telegramDetailMediaTile} onClick={() => openProtectedAsset(obj.content)} title="Открыть изображение">
         <AuthImage src={getObjectPreviewSource(obj)} alt="" />
       </button>
     )
@@ -1529,7 +1553,7 @@ function CollectionStream({
               src={obj.content}
               alt=""
               style={{ cursor: canOpen ? 'pointer' : 'zoom-in' }}
-              onClick={canOpen ? undefined : () => window.open(obj.content, '_blank')}
+              onClick={canOpen ? undefined : () => openProtectedAsset(obj.content)}
             />
             <ObjectSource source={obj.source} />
             {obj.caption && <MarkdownText className={styles.objImageCaption} text={obj.caption} source={obj.source} />}

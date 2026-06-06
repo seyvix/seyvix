@@ -27,6 +27,42 @@ export function isCardVisualObjectType(type: NoteObject['type']): boolean {
   return CARD_VISUAL_OBJECT_TYPES.has(type)
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value))
+}
+
+export function getCardObjectAspectRatio(obj: NoteObject | undefined): number | null {
+  const width = obj?.visualWidth ?? obj?.imageWidth
+  const height = obj?.visualHeight ?? obj?.imageHeight
+  if (!width || !height) return null
+  return clamp(width / height, 0.68, 1.55)
+}
+
+function hasCardObjectAspectRatio(obj: NoteObject | undefined): boolean {
+  return getCardObjectAspectRatio(obj) !== null
+}
+
+export function chooseCardRatioObject(objects: NoteObject[]): NoteObject | undefined {
+  return objects.find(hasCardObjectAspectRatio) ?? objects[0]
+}
+
+export function chooseCompositeCardVisualObject(objects: NoteObject[]): NoteObject | undefined {
+  const imageObj = objects.find(o => o.type === 'image')
+  const videoObj = objects.find(o => o.type === 'video')
+  const audioObj = objects.find(o => o.type === 'audio')
+  const firstDoc = objects.find(o => o.type === 'document')
+  const firstLink = objects.find(o => o.type === 'link')
+  const firstLinkThumb = firstLink?.thumbnailUrl ?? null
+
+  return chooseCardRatioObject([
+    imageObj,
+    videoObj,
+    audioObj,
+    firstDoc,
+    firstLinkThumb ? firstLink : undefined,
+  ].filter((obj): obj is NoteObject => Boolean(obj)))
+}
+
 export function stripTelegramEmojiMarkers(text: string): string {
   return text.replace(/\{\{tg_emoji:[0-9]+\|([^}]+)\}\}/g, '$1')
 }

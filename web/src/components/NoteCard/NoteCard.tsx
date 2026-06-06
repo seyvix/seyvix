@@ -11,6 +11,7 @@ import TaskItem from '@tiptap/extension-task-item'
 import Image from '@tiptap/extension-image'
 import LinkExtension from '@tiptap/extension-link'
 import Typography from '@tiptap/extension-typography'
+import UnderlineExtension from '@tiptap/extension-underline'
 import {
   AlignLeft,
   Bold,
@@ -52,7 +53,15 @@ import { useDragContext } from '../../contexts/DragContext'
 import { useUploadContext } from '../../contexts/UploadContext'
 import { partitionUploadFiles } from '../../utils/uploadGuard'
 import { getObjectDisplayMarkdown, getObjectDisplayText, getObjectPreviewSource } from '../../utils/notePreview'
-import { collectSourceChips, getNoteDisplayTitle, getSavedDateLabel, isCardVisualObjectType } from '../../utils/noteCardPresentation'
+import {
+  chooseCardRatioObject,
+  chooseCompositeCardVisualObject,
+  collectSourceChips,
+  getCardObjectAspectRatio,
+  getNoteDisplayTitle,
+  getSavedDateLabel,
+  isCardVisualObjectType,
+} from '../../utils/noteCardPresentation'
 import { normalizedHighlightRanges } from '../../utils/searchHighlight'
 import { htmlToMarkdown, makeMarkdownTitle, replaceBlobImageSources } from '../../utils/markdownPaste'
 import { useFavicon } from '../../hooks/useFavicon'
@@ -140,27 +149,8 @@ function SavedDate({ note, tone = 'muted' }: { note: Note; tone?: 'muted' | 'ove
   return <span className={`${styles.savedDate} ${tone === 'overlay' ? styles.savedDateOverlay : ''}`}>{label}</span>
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value))
-}
-
-function getObjectAspectRatio(obj: NoteObject | undefined): number | null {
-  const width = obj?.visualWidth ?? obj?.imageWidth
-  const height = obj?.visualHeight ?? obj?.imageHeight
-  if (!width || !height) return null
-  return clamp(width / height, 0.68, 1.55)
-}
-
-function hasObjectAspectRatio(obj: NoteObject | undefined): boolean {
-  return getObjectAspectRatio(obj) !== null
-}
-
-function chooseRatioObject(objects: NoteObject[]): NoteObject | undefined {
-  return objects.find(hasObjectAspectRatio) ?? objects[0]
-}
-
 function visualRatioStyle(obj: NoteObject | undefined, fallbackRatio: number): CSSProperties {
-  return { '--note-card-visual-ratio': String(getObjectAspectRatio(obj) ?? fallbackRatio) } as CSSProperties
+  return { '--note-card-visual-ratio': String(getCardObjectAspectRatio(obj) ?? fallbackRatio) } as CSSProperties
 }
 
 function textDensityClass(text: string | null | undefined): string {
@@ -533,7 +523,7 @@ function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClic
     )
   }
 
-  const primaryVisual = chooseRatioObject(visualObjs)
+  const primaryVisual = chooseCardRatioObject(visualObjs)
 
   return (
     <Link
@@ -613,12 +603,9 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
   const docThumb  = firstDoc ? (firstDoc.thumbnailUrl ?? firstDoc.cover) : undefined
   const firstLink = links[0]
   const firstLinkThumb = firstLink?.thumbnailUrl ?? null
-  const visualObject = chooseRatioObject([
-    imageObj,
-    docThumb ? firstDoc : undefined,
-    firstLinkThumb ? firstLink : undefined,
-  ].filter((obj): obj is NoteObject => Boolean(obj)))
-  const text = textObj ? getObjectDisplayText(textObj) : null
+  const videoThumb = videoObj?.thumbnailUrl ?? null
+  const visualObject = chooseCompositeCardVisualObject(note.objects)
+  const text = textObj ? getObjectDisplayMarkdown(textObj) : null
   const hasAttachmentFooter = links.length > 0 || docs.length > 0
   const shouldOverlayText = Boolean(visualObject && text && !/^https?:\/\//.test(textObj?.content ?? ''))
 
@@ -958,6 +945,7 @@ export function AddNoteCard({ onClick }: { onClick?: () => void }) {
         heading: { levels: [1, 2, 3] },
         link: false,
       }),
+      UnderlineExtension,
       Typography,
       LinkExtension.configure({
         autolink: true,

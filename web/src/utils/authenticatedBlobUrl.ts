@@ -35,3 +35,21 @@ async function fetchAuthenticatedBlobUrl(src: string): Promise<string> {
   blobUrlCache.set(src, objectUrl)
   return objectUrl
 }
+
+export async function openAuthenticatedAsset(src: string): Promise<string> {
+  const popup = typeof window !== 'undefined' ? window.open('', '_blank') : null
+  if (popup) popup.opener = null
+
+  try {
+    const objectUrl = await authenticatedBlobUrl(src)
+    if (popup) {
+      popup.location.href = objectUrl
+    } else if (typeof window !== 'undefined') {
+      window.open(objectUrl, '_blank', 'noopener,noreferrer')
+    }
+    return objectUrl
+  } catch (error) {
+    popup?.close()
+    throw error
+  }
+}
