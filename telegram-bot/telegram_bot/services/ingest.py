@@ -43,6 +43,7 @@ class TelegramIngestService:
         self.auto_group_window_seconds = auto_group_window_seconds
         self.media_group_flush_seconds = media_group_flush_seconds
         self._buckets: dict[str, _Bucket] = {}
+        self._bucket_locks: dict[str, asyncio.Lock] = {}
 
     async def ingest(
         self,
@@ -86,30 +87,33 @@ class TelegramIngestService:
             )
             return
 
-        bucket = self._buckets.get(key)
-        if bucket is None:
-            prepare_status: StatusMessage | None = await send_loading(material)
-            placeholder = asyncio.create_task(asyncio.sleep(0))
-            bucket = _Bucket(
-                state=state,
-                materials=[],
-                status=prepare_status,
-                task=placeholder,
-            )
-            self._buckets[key] = bucket
-            logger.info("Telegram ingest bucket opened key=%s", key)
-        else:
-            bucket.task.cancel()
-            prepare_status = None
+        lock = self._bucket_lock(key)
+        async with lock:
+            bucket = self._buckets.get(key)
+            if bucket is None:
+                prepare_status: StatusMessage | None = await send_loading(material)
+                placeholder = asyncio.create_task(asyncio.sleep(0))
+                bucket = _Bucket(
+                    state=state,
+                    materials=[],
+                    status=prepare_status,
+                    task=placeholder,
+                )
+                self._buckets[key] = bucket
+                logger.info("Telegram ingest bucket opened key=%s", key)
+            else:
+                bucket.task.cancel()
+                prepare_status = None
+            bucket.pending += 1
 
-        bucket.pending += 1
         try:
             prepared = await prepare_material(material, prepare_status)
         except Exception as exc:
-            bucket.pending -= 1
-            current_bucket = self._buckets.pop(key, None)
-            if current_bucket is not None:
-                current_bucket.task.cancel()
+            async with lock:
+                bucket.pending -= 1
+                current_bucket = self._buckets.pop(key, None)
+                if current_bucket is not None:
+                    current_bucket.task.cancel()
             logger.exception(
                 "Telegram bucket material prepare failed key=%s user=%s chat=%s message=%s",
                 key,
@@ -120,23 +124,32 @@ class TelegramIngestService:
             await update_error(cast(StatusMessage, bucket.status), exc)
             return
 
-        bucket.materials.append(prepared)
-        bucket.pending -= 1
-        bucket.task.cancel()
-        logger.info(
-            "Telegram ingest bucket appended key=%s count=%s pending=%s",
-            key,
-            len(bucket.materials),
-            bucket.pending,
-        )
-        bucket.task = asyncio.create_task(
-            self._flush_later(
-                key=key,
-                delay=self._buffer_delay(material=material, state=state),
-                update_saved=update_saved,
-                update_error=update_error,
+        async with lock:
+            current_bucket = self._buckets.get(key)
+            if current_bucket is None:
+                logger.warning(
+                    "Telegram ingest bucket disappeared before append key=%s message=%s",
+                    key,
+                    material.telegram_message_id,
+                )
+                return
+            current_bucket.materials.append(prepared)
+            current_bucket.pending -= 1
+            current_bucket.task.cancel()
+            logger.info(
+                "Telegram ingest bucket appended key=%s count=%s pending=%s",
+                key,
+                len(current_bucket.materials),
+                current_bucket.pending,
             )
-        )
+            current_bucket.task = asyncio.create_task(
+                self._flush_later(
+                    key=key,
+                    delay=self._buffer_delay(material=material, state=state),
+                    update_saved=update_saved,
+                    update_error=update_error,
+                )
+            )
 
     async def _flush_later(
         self,
@@ -151,25 +164,27 @@ class TelegramIngestService:
         except asyncio.CancelledError:
             return
 
-        bucket = self._buckets.pop(key, None)
-        if bucket is None:
-            return
-        if bucket.pending > 0:
-            self._buckets[key] = bucket
-            bucket.task = asyncio.create_task(
-                self._flush_later(
-                    key=key,
-                    delay=delay,
-                    update_saved=update_saved,
-                    update_error=update_error,
+        lock = self._bucket_lock(key)
+        async with lock:
+            bucket = self._buckets.get(key)
+            if bucket is None:
+                return
+            if bucket.pending > 0:
+                bucket.task = asyncio.create_task(
+                    self._flush_later(
+                        key=key,
+                        delay=delay,
+                        update_saved=update_saved,
+                        update_error=update_error,
+                    )
                 )
-            )
-            logger.info(
-                "Telegram ingest bucket flush postponed key=%s pending=%s",
-                key,
-                bucket.pending,
-            )
-            return
+                logger.info(
+                    "Telegram ingest bucket flush postponed key=%s pending=%s",
+                    key,
+                    bucket.pending,
+                )
+                return
+            bucket = self._buckets.pop(key)
         logger.info(
             "Telegram ingest bucket flushing key=%s count=%s",
             key,
@@ -256,6 +271,13 @@ class TelegramIngestService:
         if self._media_group_key(material) is not None:
             return self.media_group_flush_seconds
         return 0
+
+    def _bucket_lock(self, key: str) -> asyncio.Lock:
+        lock = self._bucket_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._bucket_locks[key] = lock
+        return lock
 
     @staticmethod
     def _media_group_key(material: InboundMaterial) -> str | None:
