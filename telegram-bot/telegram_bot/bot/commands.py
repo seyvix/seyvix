@@ -8,8 +8,8 @@ async def configure_bot_commands(bot: Bot) -> None:
     await bot.set_my_commands(
         [
             BotCommand(command="start", description="начать работу"),
-            BotCommand(command="app", description="открыть Seyvix"),
-            BotCommand(command="settings", description="настройки"),
+            BotCommand(command="mode", description="режим сохранения"),
             BotCommand(command="help", description="помощь"),
+            BotCommand(command="finish", description="завершение коллекции в ручном режиме"),
         ]
     )

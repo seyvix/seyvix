@@ -19,14 +19,6 @@ def mode_menu_text(mode: BotMode) -> str:
     )
 
 
-def settings_text(mode: BotMode) -> str:
-    return (
-        "Настройки Seyvix Bot\n\n"
-        f"Текущий режим: {MODE_LABELS[mode]}\n\n"
-        "Режим можно изменить через /mode. Остальное управление — в Web App."
-    )
-
-
 def mode_enabled_text(mode: BotMode) -> str:
     if mode == BotMode.AUTO:
         return (

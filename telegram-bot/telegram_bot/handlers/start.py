@@ -17,5 +17,7 @@ async def start_handler(
     user_context: UserContext | None = None,
     web_app_url: str | None = None,
 ) -> None:
-    text = START_LINKED if user_context is not None and user_context.linked else START_UNLINKED
-    await message.answer(text, reply_markup=web_app_keyboard(web_app_url))
+    if user_context is not None and user_context.linked:
+        await message.answer(START_LINKED, reply_markup=web_app_keyboard(web_app_url))
+        return
+    await message.answer(START_UNLINKED, reply_markup=web_app_keyboard(web_app_url))

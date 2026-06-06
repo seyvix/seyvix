@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -14,6 +15,7 @@ from telegram_bot.services.state import BotStateRepository
 StatusMessage = TypeVar("StatusMessage")
 UpdateSaved = Callable[[StatusMessage, SavedMaterial], Awaitable[None]]
 UpdateError = Callable[[StatusMessage, Exception], Awaitable[None]]
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -49,6 +51,15 @@ class TelegramIngestService:
         update_error: UpdateError[StatusMessage],
     ) -> None:
         key = self._buffer_key(material=material, state=state)
+        logger.info(
+            "Telegram ingest queued user=%s chat=%s message=%s mode=%s type=%s key=%s",
+            material.telegram_user_id,
+            material.telegram_chat_id,
+            material.telegram_message_id,
+            state.mode.value,
+            material.material_type.value,
+            key or "immediate",
+        )
         if key is None:
             await self._save_and_update(
                 statuses=[status],
@@ -64,11 +75,17 @@ class TelegramIngestService:
             placeholder = asyncio.create_task(asyncio.sleep(0))
             bucket = _Bucket(state=state, materials=[], statuses=[], task=placeholder)
             self._buckets[key] = bucket
+            logger.info("Telegram ingest bucket opened key=%s", key)
         else:
             bucket.task.cancel()
 
         bucket.materials.append(material)
         bucket.statuses.append(status)
+        logger.info(
+            "Telegram ingest bucket appended key=%s count=%s",
+            key,
+            len(bucket.materials),
+        )
         bucket.task = asyncio.create_task(
             self._flush_later(
                 key=key,
@@ -94,6 +111,12 @@ class TelegramIngestService:
         bucket = self._buckets.pop(key, None)
         if bucket is None:
             return
+        logger.info(
+            "Telegram ingest bucket flushing key=%s count=%s statuses=%s",
+            key,
+            len(bucket.materials),
+            len(bucket.statuses),
+        )
         await self._save_and_update(
             statuses=[cast(StatusMessage, status) for status in bucket.statuses],
             state=bucket.state,
@@ -114,8 +137,26 @@ class TelegramIngestService:
         try:
             saved = await self._save_materials(state=state, materials=materials)
         except Exception as exc:
+            first = materials[0] if materials else None
+            logger.exception(
+                "Telegram ingest save failed user=%s chat=%s mode=%s count=%s",
+                first.telegram_user_id if first else None,
+                first.telegram_chat_id if first else None,
+                state.mode.value,
+                len(materials),
+            )
             await asyncio.gather(*(update_error(status, exc) for status in statuses))
             return
+        first = materials[0]
+        logger.info(
+            "Telegram ingest saved user=%s chat=%s mode=%s count=%s saved_id=%s status=%s",
+            first.telegram_user_id,
+            first.telegram_chat_id,
+            state.mode.value,
+            len(materials),
+            saved.id,
+            saved.status,
+        )
         await asyncio.gather(*(update_saved(status, saved) for status in statuses))
 
     async def _save_materials(
@@ -144,18 +185,18 @@ class TelegramIngestService:
         return saved
 
     def _buffer_key(self, *, material: InboundMaterial, state: BotState) -> str | None:
+        if state.mode == BotMode.AUTO:
+            return f"auto:{material.telegram_user_id}:{material.telegram_chat_id}"
         media_group_key = self._media_group_key(material)
         if media_group_key is not None:
             return media_group_key
-        if state.mode == BotMode.AUTO:
-            return f"auto:{material.telegram_user_id}:{material.telegram_chat_id}"
         return None
 
     def _buffer_delay(self, *, material: InboundMaterial, state: BotState) -> float:
-        if self._media_group_key(material) is not None:
-            return self.media_group_flush_seconds
         if state.mode == BotMode.AUTO:
             return self.auto_group_window_seconds
+        if self._media_group_key(material) is not None:
+            return self.media_group_flush_seconds
         return 0
 
     @staticmethod

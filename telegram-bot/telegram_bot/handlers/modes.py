@@ -60,7 +60,6 @@ async def mode_callback_handler(
             reply_markup=mode_keyboard(
                 current_mode=state.mode,
                 has_active_collection=state.active_collection_id is not None,
-                web_app_url=web_app_url,
             ),
         )
 

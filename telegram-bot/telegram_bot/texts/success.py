@@ -17,7 +17,11 @@ def loading_text(material: InboundMaterial) -> str:
 
 def saved_text(saved: SavedMaterial) -> str:
     if saved.status == "collection_updated":
-        return f"Добавлено в коллекцию к: {saved.title}" if saved.title else "Добавлено в коллекцию."
+        return (
+            f"Добавлено в коллекцию: {saved.title}"
+            if saved.title
+            else "Добавлено в коллекцию."
+        )
     if saved.status == "collection_started":
         return f"Коллекция начата: {saved.title}" if saved.title else "Коллекция начата."
     return f"Сохранено: {saved.title}" if saved.title else "Сохранено."
