@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import Settings
+from app.core.config import Settings, get_settings
 from app.core.database import build_session_factory
 from app.modules.content.service import ContentService
 from app.modules.search.infrastructure.meilisearch import (
@@ -55,6 +55,30 @@ def _auth_session(client: TestClient, telegram_id: int = 100500) -> tuple[dict[s
     assert response.status_code == 200, response.text
     body = response.json()
     return {"Authorization": f"Bearer {body['access_token']}"}, str(body["user"]["id"])
+
+
+def _create_text_note(
+    client: TestClient,
+    headers: dict[str, str],
+    *,
+    title: str,
+    text: str,
+    folder_path: str | None = None,
+    tag_names: list[str] | None = None,
+) -> dict[str, object]:
+    response = client.post(
+        "/api/v1/notes",
+        headers=headers,
+        json={
+            "media_type": "text",
+            "title": title,
+            "text": text,
+            "folder_path": folder_path,
+            "tag_names": tag_names or [],
+        },
+    )
+    assert response.status_code == 201
+    return response.json()
 
 
 def _worker_session_factory():
@@ -902,3 +926,61 @@ async def test_count_owned_notes_excludes_collections_and_trash() -> None:
         session.add_all([*kept, collection, trashed, foreign])
         await session.commit()
         assert await repo.count_owned_notes(owner_user_id=owner) == 3
+
+
+def test_search_capabilities_below_threshold_only_full_text(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client)
+    # Override threshold via the settings cache so this test doesn't depend on env
+    settings = get_settings()
+    settings.search_vector_modes_min_notes = 3
+    settings.search_engine = "meilisearch"
+    settings.search_meilisearch_url = "http://meilisearch:7700"
+
+    _create_text_note(content_client, headers, title="A", text="alpha")
+    _create_text_note(content_client, headers, title="B", text="beta")
+
+    response = content_client.get("/api/v1/search/capabilities", headers=headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["noteCount"] == 2
+    assert body["threshold"] == 3
+    assert body["unlockedModes"] == ["full_text"]
+    assert body["defaultMode"] == "full_text"
+
+
+def test_search_capabilities_above_threshold_unlocks_vector_modes(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client)
+    settings = get_settings()
+    settings.search_vector_modes_min_notes = 2
+    settings.search_engine = "meilisearch"
+    settings.search_meilisearch_url = "http://meilisearch:7700"
+
+    _create_text_note(content_client, headers, title="A", text="alpha")
+    _create_text_note(content_client, headers, title="B", text="beta")
+
+    response = content_client.get("/api/v1/search/capabilities", headers=headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["noteCount"] == 2
+    assert body["unlockedModes"] == ["full_text", "semantic", "hybrid"]
+    assert body["defaultMode"] == "hybrid"
+
+
+def test_search_capabilities_without_meilisearch_offers_only_full_text(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client)
+    settings = get_settings()
+    settings.search_vector_modes_min_notes = 0  # would otherwise unlock
+    settings.search_engine = "postgres"
+    settings.search_meilisearch_url = None
+
+    response = content_client.get("/api/v1/search/capabilities", headers=headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["unlockedModes"] == ["full_text"]
+    assert body["defaultMode"] == "full_text"

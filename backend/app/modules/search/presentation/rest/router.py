@@ -8,12 +8,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import get_db_session
 from app.api.errors import AppError
 from app.api.schemas import ErrorResponse
+from app.core.config import get_settings
 from app.modules.auth.presentation.rest.router import get_auth_context
 from app.modules.auth.service import AuthContext
+from app.modules.content.infrastructure.repositories import ContentRepository
 from app.modules.search.infrastructure.meilisearch import MeilisearchUnavailableError
 from app.modules.search.schemas import (
     HybridSearchRequest,
     HybridSearchResponse,
+    SearchCapabilitiesResponse,
+    SearchMode,
     SemanticSearchRequest,
     SemanticSearchResponse,
 )
@@ -107,3 +111,44 @@ async def hybrid_search(
             code="hybrid_search_unavailable",
             message="Hybrid search provider is not available.",
         ) from exc
+
+
+@router.get(
+    "/capabilities",
+    response_model=SearchCapabilitiesResponse,
+    summary="Search capabilities for the current user",
+    description=(
+        "Returns the user's note count, the minimum threshold for vector "
+        "search modes, the list of currently unlocked modes, and the "
+        "recommended default mode."
+    ),
+)
+async def get_search_capabilities(
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> SearchCapabilitiesResponse:
+    settings = get_settings()
+    repo = ContentRepository(session)
+    note_count = await repo.count_owned_notes(owner_user_id=context.user.id)
+
+    meilisearch_available = (
+        settings.search_engine == "meilisearch"
+        and bool(settings.search_meilisearch_url)
+    )
+    vector_modes_unlocked = (
+        meilisearch_available
+        and note_count >= settings.search_vector_modes_min_notes
+    )
+
+    unlocked: list[SearchMode] = ["full_text"]
+    if vector_modes_unlocked:
+        unlocked.extend(["semantic", "hybrid"])
+
+    default_mode: SearchMode = "hybrid" if vector_modes_unlocked else "full_text"
+
+    return SearchCapabilitiesResponse(
+        note_count=note_count,
+        threshold=settings.search_vector_modes_min_notes,
+        unlocked_modes=unlocked,
+        default_mode=default_mode,
+    )
