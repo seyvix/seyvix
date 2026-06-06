@@ -7,6 +7,7 @@ from typing import Any
 from app.core.config import get_settings
 from app.modules.content.models import ContentAsset
 from app.modules.snapshots.extraction.core import ExtractionResult, ExtractorContext
+from app.modules.snapshots.extraction.office import office_failure_message
 from app.modules.snapshots.extraction.files import (
     extract_csv,
     extract_docx,
@@ -80,13 +81,25 @@ def extract_asset_text(
             max_description_seconds=get_settings().snapshot_vision_max_video_seconds,
         )
 
-    converted = context.convert_office_to_pdf(source_path)
-    if converted is not None:
+    office_result = context.convert_office_to_pdf(source_path)
+    if office_result.ok and office_result.pdf_path is not None:
         return extract_pdf(
-            converted,
+            office_result.pdf_path,
             ocr_provider=build_ocr_provider(),
             render_page_image=render_page_image,
             max_pages=get_settings().snapshot_extraction_max_pdf_pages,
+        )
+    if office_result.failure_kind is not None:
+        # Imported lazily to avoid a circular import between artifacts and
+        # extraction modules.
+        from app.modules.snapshots.artifacts import UnsupportedSnapshotError
+
+        raise UnsupportedSnapshotError(
+            office_failure_message(
+                asset_filename=asset.filename,
+                result=office_result,
+                timeout_seconds=get_settings().snapshot_office_converter_timeout_seconds,
+            )
         )
     return None
 

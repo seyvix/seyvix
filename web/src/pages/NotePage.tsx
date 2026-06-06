@@ -2,9 +2,10 @@ import { useState, useEffect } from 'react'
 import type { ReactNode } from 'react'
 import PDFViewer from '../components/PDFViewer/PDFViewer'
 import { useFavicon } from '../hooks/useFavicon'
-import { useParams, useNavigate } from 'react-router-dom'
+import { Link, useParams, useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  AlertTriangle,
   ArrowLeft,
   CalendarDays,
   ExternalLink,
@@ -15,7 +16,6 @@ import {
   Download,
   RefreshCw,
   X,
-  ChevronRight,
   Check,
   Clock3,
   FolderTree,
@@ -1202,6 +1202,16 @@ function AssetViewer({
             </a>
           )}
         </div>
+        {(() => {
+          const failedJob = snapshotJobs.find(j => j.status === 'failed' && j.error_message)
+          if (!failedJob) return null
+          return (
+            <div className={styles.assetErrorNotice} role="status">
+              <AlertTriangle size={12} />
+              <span>{failedJob.error_message}</span>
+            </div>
+          )
+        })()}
         {isOpen && (
           <div className={styles.assetBody}>
             <div
@@ -1479,55 +1489,55 @@ function CollectionStream({
   onOpenViewer: (id: string) => void
   onRemove: (id: string, slug?: string) => void
 }) {
-  const navigate = useNavigate()
-
   return (
     <div className={styles.stream}>
       {objects.map(obj => {
-        const canNavigate = Boolean(obj.id)
-        const hint = canNavigate && !isEditing
-          ? (
-            <button
-              className={styles.collOpenBtn}
-              onClick={() => navigate(`/notes/${obj.id}`)}
-              title="Открыть заметку"
+        const canOpen = Boolean(obj.id) && !isEditing
+        const ariaLabel = `Открыть заметку: ${obj.filename ?? 'без названия'}`
+        const wrap = (node: React.ReactNode) =>
+          canOpen ? (
+            <Link
+              key={obj.id}
+              to={`/notes/${obj.id}`}
+              className={styles.objWrapperLink}
+              aria-label={ariaLabel}
             >
-              <ChevronRight size={13} />
-            </button>
+              {node}
+            </Link>
+          ) : (
+            node
           )
-          : null
         const removeBtn = isEditing
           ? (
             <button
               className={styles.objDeleteBtn}
-              onClick={e => { e.stopPropagation(); onRemove(obj.id, obj.slug) }}
+              onClick={e => { e.preventDefault(); e.stopPropagation(); onRemove(obj.id, obj.slug) }}
             >
               <X size={12} />
             </button>
           )
           : null
 
-        if (obj.type === 'image') return (
+        if (obj.type === 'image') return wrap(
           <section
-            key={obj.id}
+            key={canOpen ? undefined : obj.id}
             id={objectDomId(obj.id)}
             className={`${styles.objectSection} ${styles.objWrapper} ${styles.objImage} ${obj.caption ? styles.objImageWithCaption : ''}`}
           >
             <AuthImage
               src={obj.content}
               alt=""
-              style={{ cursor: canNavigate && !isEditing ? 'pointer' : 'zoom-in' }}
-              onClick={() => !isEditing && canNavigate ? navigate(`/notes/${obj.id}`) : window.open(obj.content, '_blank')}
+              style={{ cursor: canOpen ? 'pointer' : 'zoom-in' }}
+              onClick={canOpen ? undefined : () => window.open(obj.content, '_blank')}
             />
             <ObjectSource source={obj.source} />
             {obj.caption && <MarkdownText className={styles.objImageCaption} text={obj.caption} source={obj.source} />}
-            {hint}
             {removeBtn}
           </section>
         )
 
-        if (obj.type === 'document') return (
-          <section key={obj.id} id={objectDomId(obj.id)} className={`${styles.objectSection} ${styles.objWrapper}`}>
+        if (obj.type === 'document') return wrap(
+          <section key={canOpen ? undefined : obj.id} id={objectDomId(obj.id)} className={`${styles.objectSection} ${styles.objWrapper}`}>
             <DocViewer
               obj={obj}
               noteId={obj.id}
@@ -1536,12 +1546,11 @@ function CollectionStream({
               onOpen={() => onOpenViewer(obj.id)}
               onDelete={() => onRemove(obj.id, obj.slug)}
             />
-            {hint}
           </section>
         )
 
-        if (obj.type === 'link') return (
-          <section key={obj.id} id={objectDomId(obj.id)} className={`${styles.objectSection} ${styles.objWrapper}`}>
+        if (obj.type === 'link') return wrap(
+          <section key={canOpen ? undefined : obj.id} id={objectDomId(obj.id)} className={`${styles.objectSection} ${styles.objWrapper}`}>
             <LinkObj
               obj={obj}
               noteId={obj.id}
@@ -1550,21 +1559,19 @@ function CollectionStream({
               onOpen={() => onOpenViewer(obj.id)}
               onDelete={() => onRemove(obj.id, obj.slug)}
             />
-            {hint}
           </section>
         )
 
-        if (obj.type === 'text') return (
-          <section key={obj.id} id={objectDomId(obj.id)} className={`${styles.objectSection} ${styles.objWrapper}`}>
+        if (obj.type === 'text') return wrap(
+          <section key={canOpen ? undefined : obj.id} id={objectDomId(obj.id)} className={`${styles.objectSection} ${styles.objWrapper}`}>
             <ObjectSource source={obj.source} />
             <MarkdownText className={styles.objText} text={obj.content} source={obj.source} />
-            {hint}
             {removeBtn}
           </section>
         )
 
-        if (obj.type === 'audio' || obj.type === 'video') return (
-          <section key={obj.id} id={objectDomId(obj.id)} className={`${styles.objectSection} ${styles.objWrapper}`}>
+        if (obj.type === 'audio' || obj.type === 'video') return wrap(
+          <section key={canOpen ? undefined : obj.id} id={objectDomId(obj.id)} className={`${styles.objectSection} ${styles.objWrapper}`}>
             <MediaObj
               obj={obj}
               noteId={obj.id}
@@ -1574,7 +1581,6 @@ function CollectionStream({
               onDelete={() => onRemove(obj.id, obj.slug)}
               showExtraction={false}
             />
-            {hint}
           </section>
         )
 

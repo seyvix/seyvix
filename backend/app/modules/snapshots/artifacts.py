@@ -21,6 +21,10 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.modules.content.models import ContentAsset, ContentObject
 from app.modules.snapshots.extraction import ExtractorContext, extract_asset_text
+from app.modules.snapshots.extraction.office import (
+    OfficeConversionResult,
+    office_failure_message,
+)
 
 THUMBNAIL_MAX_WIDTH = 512
 THUMBNAIL_MAX_HEIGHT = 512
@@ -133,15 +137,21 @@ class SnapshotArtifactGenerator:
                 body=preview_text,
             )
 
-        office_pdf = self._convert_office_to_pdf(source_path)
-        if office_pdf is not None:
+        office_result = self._convert_office_to_pdf(source_path)
+        if office_result.ok and office_result.pdf_path is not None:
             return self._render_pdf_first_page(
-                source_path=office_pdf,
+                source_path=office_result.pdf_path,
                 output_dir=output_dir,
                 filename="thumbnail.jpg",
             )
 
-        raise UnsupportedSnapshotError("No thumbnail renderer is available for this file.")
+        raise UnsupportedSnapshotError(
+            office_failure_message(
+                asset_filename=asset.filename,
+                result=office_result,
+                timeout_seconds=get_settings().snapshot_office_converter_timeout_seconds,
+            )
+        )
 
     def _generate_thumbnail_text(
         self,
@@ -287,16 +297,22 @@ class SnapshotArtifactGenerator:
                 filename="snapshot.pdf", mime_type="application/pdf", path=path
             )
 
-        office_pdf = self._convert_office_to_pdf(source_path)
-        if office_pdf is not None:
-            shutil.copyfile(office_pdf, path)
+        office_result = self._convert_office_to_pdf(source_path)
+        if office_result.ok and office_result.pdf_path is not None:
+            shutil.copyfile(office_result.pdf_path, path)
             return GeneratedArtifact(
                 filename="snapshot.pdf", mime_type="application/pdf", path=path
             )
 
         text = self._text_for_preview(asset=asset, source_path=source_path)
         if text is None:
-            raise UnsupportedSnapshotError("No PDF snapshot renderer is available for this file.")
+            raise UnsupportedSnapshotError(
+                office_failure_message(
+                    asset_filename=asset.filename,
+                    result=office_result,
+                    timeout_seconds=get_settings().snapshot_office_converter_timeout_seconds,
+                )
+            )
 
         try:
             fitz = _load_fitz()
@@ -815,11 +831,13 @@ class SnapshotArtifactGenerator:
         )
 
     @staticmethod
-    def _convert_office_to_pdf(source_path: Path) -> Path | None:
-        command = get_settings().snapshot_office_converter_command
+    def _convert_office_to_pdf(source_path: Path) -> OfficeConversionResult:
+        settings = get_settings()
+        command = settings.snapshot_office_converter_command
         if not command:
-            return None
+            return OfficeConversionResult(pdf_path=None, failure_kind="no_command")
 
+        timeout = settings.snapshot_office_converter_timeout_seconds
         with TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir)
             try:
@@ -836,17 +854,55 @@ class SnapshotArtifactGenerator:
                     check=False,
                     capture_output=True,
                     text=True,
+                    timeout=timeout,
                 )
             except FileNotFoundError:
-                return None
+                logger.warning(
+                    "snapshot.office_convert.no_command",
+                    filename=source_path.name,
+                    command=command,
+                )
+                return OfficeConversionResult(pdf_path=None, failure_kind="no_command")
+            except subprocess.TimeoutExpired as exc:
+                logger.warning(
+                    "snapshot.office_convert.timeout",
+                    filename=source_path.name,
+                    timeout_seconds=timeout,
+                )
+                return OfficeConversionResult(
+                    pdf_path=None,
+                    failure_kind="timeout",
+                    stderr_tail=str(exc)[-800:],
+                )
+
+            stderr_tail = (result.stderr or "")[-800:]
             if result.returncode != 0:
-                return None
+                logger.warning(
+                    "snapshot.office_convert.exit_error",
+                    filename=source_path.name,
+                    returncode=result.returncode,
+                    stderr_tail=stderr_tail,
+                )
+                return OfficeConversionResult(
+                    pdf_path=None,
+                    failure_kind="exit_error",
+                    stderr_tail=stderr_tail,
+                )
             pdf_path = output_dir / f"{source_path.stem}.pdf"
             if not pdf_path.exists():
-                return None
+                logger.warning(
+                    "snapshot.office_convert.no_output",
+                    filename=source_path.name,
+                    stderr_tail=stderr_tail,
+                )
+                return OfficeConversionResult(
+                    pdf_path=None,
+                    failure_kind="no_output",
+                    stderr_tail=stderr_tail,
+                )
             stable_path = source_path.parent / f".converted-{source_path.stem}.pdf"
             shutil.copyfile(pdf_path, stable_path)
-            return stable_path
+            return OfficeConversionResult(pdf_path=stable_path)
 
 
 def _load_fitz() -> Any:

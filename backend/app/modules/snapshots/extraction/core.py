@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from app.modules.content.models import ContentAsset
+from app.modules.snapshots.extraction.office import OfficeConversionResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +69,7 @@ class ExtractionResult:
 class ExtractorContext:
     fetch_webpage_html: Callable[[str], str]
     link_url: Callable[[ContentAsset, Path], str]
-    convert_office_to_pdf: Callable[[Path], Path | None]
+    convert_office_to_pdf: Callable[[Path], OfficeConversionResult]
 
 
 def normalize_blank_lines(value: str) -> str:

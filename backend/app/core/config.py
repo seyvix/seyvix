@@ -172,6 +172,7 @@ class Settings(BaseSettings):
     llm_structured_api_key: str | None = None
     llm_structured_timeout_seconds: int = 120
     snapshot_office_converter_command: str | None = "libreoffice"
+    snapshot_office_converter_timeout_seconds: int = 90
     cors_allowed_origins: list[str] = Field(default_factory=list)
     cors_allow_origin_regex: str | None = None
 

@@ -1386,7 +1386,7 @@ def test_snapshot_generator_extracts_docx_markdown_and_skips_thumbnail_without_r
     assert markdown.mime_type == "text/markdown"
     assert "First paragraph" in markdown.path.read_text(encoding="utf-8")
     assert "Second paragraph" in markdown.path.read_text(encoding="utf-8")
-    with pytest.raises(UnsupportedSnapshotError, match="No thumbnail renderer"):
+    with pytest.raises(UnsupportedSnapshotError, match="Конвертер офисных файлов недоступен"):
         generator.generate(content_object=content_object, asset=asset, job_type="thumbnail")
 
 
@@ -1483,3 +1483,106 @@ def test_snapshot_reprocess_endpoint_queues_markdown_for_existing_asset(
     job = content_client.portal.call(load_job)
     assert job is not None
     assert job.status == "pending"
+
+
+def test_office_failure_message_iwork_export_hint() -> None:
+    from app.modules.snapshots.extraction.office import (
+        OfficeConversionResult,
+        office_failure_message,
+    )
+
+    msg = office_failure_message(
+        asset_filename="deck.key",
+        result=OfficeConversionResult(pdf_path=None, failure_kind="exit_error", stderr_tail="boom"),
+        timeout_seconds=90,
+    )
+    assert "Keynote" in msg
+    assert "PDF" in msg
+
+
+def test_office_failure_message_timeout_mentions_seconds() -> None:
+    from app.modules.snapshots.extraction.office import (
+        OfficeConversionResult,
+        office_failure_message,
+    )
+
+    msg = office_failure_message(
+        asset_filename="huge.pptx",
+        result=OfficeConversionResult(pdf_path=None, failure_kind="timeout"),
+        timeout_seconds=42,
+    )
+    assert "42" in msg
+
+
+def test_office_failure_message_no_command_is_server_side() -> None:
+    from app.modules.snapshots.extraction.office import (
+        OfficeConversionResult,
+        office_failure_message,
+    )
+
+    msg = office_failure_message(
+        asset_filename="report.docx",
+        result=OfficeConversionResult(pdf_path=None, failure_kind="no_command"),
+        timeout_seconds=90,
+    )
+    assert "сервере" in msg.lower()
+
+
+def test_office_failure_message_generic_for_non_iwork_exit_error() -> None:
+    from app.modules.snapshots.extraction.office import (
+        OfficeConversionResult,
+        office_failure_message,
+    )
+
+    msg = office_failure_message(
+        asset_filename="report.docx",
+        result=OfficeConversionResult(pdf_path=None, failure_kind="exit_error"),
+        timeout_seconds=90,
+    )
+    assert ".pdf" in msg.lower()
+    assert "keynote" not in msg.lower()
+
+
+def test_convert_office_to_pdf_returns_no_command_when_setting_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from app.core.config import get_settings
+    from app.modules.snapshots.artifacts import SnapshotArtifactGenerator
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "snapshot_office_converter_command", None)
+
+    source = tmp_path / "doc.docx"
+    source.write_bytes(b"not really a docx")
+
+    result = SnapshotArtifactGenerator._convert_office_to_pdf(source)
+    assert result.pdf_path is None
+    assert result.failure_kind == "no_command"
+
+
+def test_convert_office_to_pdf_returns_no_output_when_subprocess_succeeds_silently(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """LibreOffice can exit 0 but never write a PDF (libetonyek on a modern
+    .key is the real-world trigger)."""
+    import subprocess as subprocess_mod
+    from app.modules.snapshots import artifacts as artifacts_mod
+    from app.modules.snapshots.artifacts import SnapshotArtifactGenerator
+
+    def _fake_run(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        return subprocess_mod.CompletedProcess(
+            args=_args[0] if _args else [],
+            returncode=0,
+            stdout="",
+            stderr="libetonyek: unsupported version\n",
+        )
+
+    monkeypatch.setattr(artifacts_mod.subprocess, "run", _fake_run)
+
+    source = tmp_path / "modern.key"
+    source.write_bytes(b"fake-key-payload")
+
+    result = SnapshotArtifactGenerator._convert_office_to_pdf(source)
+    assert result.pdf_path is None
+    assert result.failure_kind == "no_output"
+    assert "libetonyek" in result.stderr_tail

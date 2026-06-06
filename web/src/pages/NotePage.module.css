@@ -797,31 +797,22 @@
   letter-spacing: 0.02em;
 }
 
-/* ── Collection open-note button ── */
-.collOpenBtn {
-  all: unset;
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.55);
-  color: var(--color-text-secondary);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+/* ── Collection sub-note link wrapper ── */
+.objWrapperLink {
+  display: block;
+  text-decoration: none;
+  color: inherit;
   cursor: pointer;
-  z-index: 5;
-  opacity: 0;
-  transition: opacity var(--duration-fast), background var(--duration-fast), color var(--duration-fast);
+  border-radius: var(--radius-md);
+  transition: border-color var(--duration-fast), box-shadow var(--duration-fast), transform var(--duration-fast);
 }
-.objWrapper:hover .collOpenBtn {
-  opacity: 1;
+.objWrapperLink:hover {
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
+  transform: translateY(-1px);
 }
-.collOpenBtn:hover {
-  background: var(--color-accent);
-  color: #fff;
+.objWrapperLink:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
 }
 
 /* ── Object stream ── */
@@ -1505,6 +1496,24 @@
 .assetAction:disabled {
   opacity: 0.45;
   cursor: wait;
+}
+
+.assetErrorNotice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 12px 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 213, 116, 0.22);
+  background: rgba(255, 213, 116, 0.08);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
+}
+.assetErrorNotice svg {
+  color: rgba(255, 213, 116, 0.85);
+  flex-shrink: 0;
 }
 
 .assetBody {
