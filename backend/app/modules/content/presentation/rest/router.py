@@ -250,6 +250,15 @@ async def list_notes(
                 ),
             )
             search_result_ids = list(search_matches_by_object_id)
+            if search_mode == "hybrid" and not search_result_ids:
+                logger.info(
+                    "search.mode.empty_external_result_fallback",
+                    requested=search_mode,
+                    applied="full_text",
+                    owner_user_id=context.user.id,
+                )
+                search_result_ids = None
+                search_matches_by_object_id = None
         except SearchValidationError as exc:
             raise AppError(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

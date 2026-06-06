@@ -399,6 +399,7 @@ class ContentService:
             content_object_ids=[content_object.id for content_object in objects],
         )
         items: list[ContentObject] = []
+        seen_item_ids: set[str] = set()
 
         for content_object in objects:
             if search_rank is not None and content_object.id not in search_rank:
@@ -418,10 +419,20 @@ class ContentService:
                 continue
             if normalized_search and search_rank is None:
                 if content_object.kind == "collection":
+                    for item in await self.content.list_collection_items(content_object.id):
+                        child = item.content_object
+                        if child.id in seen_item_ids:
+                            continue
+                        if self._matches_search(child, normalized_search):
+                            items.append(child)
+                            seen_item_ids.add(child.id)
                     continue
                 if not self._matches_search(content_object, normalized_search):
                     continue
+                if content_object.id in seen_item_ids:
+                    continue
                 items.append(content_object)
+                seen_item_ids.add(content_object.id)
                 continue
             if (
                 search_rank is None
