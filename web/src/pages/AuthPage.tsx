@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { motion, useMotionValue, useTransform, useSpring } from 'framer-motion'
 import { Bot, ExternalLink, LoaderCircle, ShieldCheck, Sparkles } from 'lucide-react'
@@ -11,6 +11,36 @@ import {
   prepareTelegramAuthSurface,
 } from '../utils/telegramWebApp'
 import styles from './AuthPage.module.css'
+
+const AUTH_RING_DEFAULT_SIZE = 236
+
+function useElementWidth<T extends HTMLElement>(fallbackWidth: number) {
+  const ref = useRef<T | null>(null)
+  const [width, setWidth] = useState(fallbackWidth)
+
+  useLayoutEffect(() => {
+    const node = ref.current
+    if (!node) return
+
+    const updateWidth = () => {
+      const nextWidth = node.offsetWidth || node.getBoundingClientRect().width
+      setWidth(nextWidth > 0 ? nextWidth : fallbackWidth)
+    }
+
+    updateWidth()
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateWidth)
+      return () => window.removeEventListener('resize', updateWidth)
+    }
+
+    const observer = new ResizeObserver(updateWidth)
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [fallbackWidth])
+
+  return [ref, width] as const
+}
 
 function TelegramLogo() {
   return (
@@ -84,6 +114,9 @@ export default function AuthPage() {
   const [mode, setMode] = useState<'idle' | 'mini-app' | 'oauth' | 'dev'>(
     miniApp && !errorCode ? 'mini-app' : 'idle',
   )
+  const [ringRef, ringWidth] = useElementWidth<HTMLButtonElement>(AUTH_RING_DEFAULT_SIZE)
+  const circularTextRadius = Math.round(ringWidth / 2)
+  const circularTextFontSize = ringWidth < AUTH_RING_DEFAULT_SIZE ? 12 : 13
   const miniAppLoginInFlightRef = useRef(false)
   const miniAppAutoAttemptedRef = useRef(false)
 
@@ -176,6 +209,7 @@ export default function AuthPage() {
         </motion.div>
 
         <motion.button
+          ref={ringRef}
           type="button"
           className={styles.ring}
           onClick={miniApp ? completeMiniAppLogin : handleOAuthClick}
@@ -187,8 +221,8 @@ export default function AuthPage() {
         >
           <CircularText
             text={miniApp ? 'TELEGRAM MINI APP • ' : 'АВТОРИЗОВАТЬСЯ В TELEGRAM • '}
-            radius={118}
-            fontSize={13}
+            radius={circularTextRadius}
+            fontSize={circularTextFontSize}
             spinDuration={14}
             onHover="speedUp"
             className={styles.circularText}

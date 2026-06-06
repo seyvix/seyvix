@@ -55,8 +55,8 @@
 
 .ring {
   position: relative;
-  width: 236px;
-  height: 236px;
+  width: clamp(214px, 58vw, 236px);
+  aspect-ratio: 1;
   flex: 0 0 auto;
   cursor: pointer;
   padding: 0;
@@ -233,11 +233,6 @@
   .copy p {
     max-width: 330px;
     font-size: var(--font-size-sm);
-  }
-
-  .ring {
-    width: 214px;
-    height: 214px;
   }
 
   .actions {
