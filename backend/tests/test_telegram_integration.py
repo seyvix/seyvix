@@ -5,6 +5,9 @@ from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 
+from app.modules.content.service import UploadedContent
+from app.modules.telegram_integration.schemas import TelegramIngestPayload
+from app.modules.telegram_integration.service import TelegramIngestService
 from tests.test_content import TELEGRAM_BOT_TOKEN, _auth_headers
 
 
@@ -33,6 +36,27 @@ def _ingest_text(
     )
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def test_telegram_media_only_title_ignores_transport_filename() -> None:
+    title = TelegramIngestService._title(
+        payload=TelegramIngestPayload(
+            telegram_user_id="100500",
+            telegram_chat_id="801627037",
+            telegram_message_id="41",
+            material_type="photo",
+            filename="telegram-photo-41.jpg",
+            mime_type="image/jpeg",
+        ),
+        uploaded=UploadedContent(
+            filename="telegram-photo-41.jpg",
+            content_type="image/jpeg",
+            data=b"\xff\xd8\xff\xe0telegram-image\xff\xd9",
+        ),
+        text=None,
+    )
+
+    assert title == ""
 
 
 def test_telegram_ingest_requires_internal_token(content_client: TestClient) -> None:
@@ -230,6 +254,40 @@ def test_telegram_media_group_appends_to_explicit_collection_with_item_sources(
         if (source := obj.get("source")) is not None
     ]
     assert source_urls == ["https://t.me/whackdoor/28306"]
+
+
+def test_telegram_photo_without_caption_does_not_use_filename_as_title(
+    content_client: TestClient,
+) -> None:
+    _auth_headers(content_client)
+
+    response = content_client.post(
+        "/api/v1/integrations/telegram/ingest",
+        headers=_internal_headers(),
+        data={
+            "telegram_user_id": "100500",
+            "telegram_chat_id": "801627037",
+            "telegram_message_id": "41",
+            "message_date": datetime.now(UTC).isoformat(),
+            "material_type": "photo",
+            "filename": "telegram-photo-41.jpg",
+            "mime_type": "image/jpeg",
+        },
+        files={
+            "file": (
+                "telegram-photo-41.jpg",
+                b"\xff\xd8\xff\xe0telegram-image\xff\xd9",
+                "image/jpeg",
+            )
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    assert payload["note"]["title"] != "telegram-photo-41.jpg"
+    assert payload["note"]["title"] != "telegram-photo-41"
+    assert payload["note"]["objects"][0]["type"] == "image"
+    assert payload["note"]["objects"][0]["filename"] == "telegram-photo-41.jpg"
 
 
 def test_telegram_ingest_video_file_creates_video_note_object(

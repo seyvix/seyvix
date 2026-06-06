@@ -19,6 +19,73 @@ export function stripTelegramEmojiMarkers(text: string): string {
   return text.replace(/\{\{tg_emoji:[0-9]+\|([^}]+)\}\}/g, '$1')
 }
 
+const TITLE_LINK_RE = /\[([^\]]+)\]\([^)]+\)/g
+const TITLE_INLINE_TAG_RE = /<\/?(?:u|b|i|s|em|strong|code|tg-spoiler)\b[^>]*>/gi
+const TITLE_CUSTOM_EMOJI_RE = /\{\{tg_emoji:[0-9]+\|[^}]+\}\}\s*/g
+const TITLE_MARKERS: Array<[RegExp, string]> = [
+  [/^\s{0,3}#{1,6}\s+/g, ''],
+  [/^\s{0,3}>\s+/g, ''],
+  [/\*\*(.+?)\*\*/gs, '$1'],
+  [/__(.+?)__/gs, '$1'],
+  [/~~(.+?)~~/gs, '$1'],
+  [/`+([^`]+?)`+/g, '$1'],
+  [/(?<!\*)\*(?!\*)(\S(?:[^*\n]*?\S)?)\*(?!\*)/g, '$1'],
+  [/(?<![A-Za-z0-9_])_(?!_)(\S(?:[^_\n]*?\S)?)_(?!_)(?![A-Za-z0-9_])/g, '$1'],
+]
+
+export function cleanDisplayTitle(value: string): string {
+  let text = value.replace(/\r|\n/g, ' ')
+  text = text.replace(TITLE_CUSTOM_EMOJI_RE, '')
+  text = text.replace(TITLE_LINK_RE, '$1')
+  text = text.replace(TITLE_INLINE_TAG_RE, '')
+  for (const [pattern, replacement] of TITLE_MARKERS) {
+    text = text.replace(pattern, replacement)
+  }
+  return text.replace(/\s+/g, ' ').trim()
+}
+
+function plainComparable(value: string): string {
+  return stripTelegramEmojiMarkers(cleanDisplayTitle(value)).toLocaleLowerCase()
+}
+
+export function isRedundantTextTitle(title: string, text: string): boolean {
+  const cleanTitle = plainComparable(title)
+  const cleanText = plainComparable(text)
+  if (!cleanTitle || !cleanText) return false
+  return cleanText.length <= 240 && (cleanText === cleanTitle || cleanText.startsWith(`${cleanTitle} `))
+}
+
+function hasOddMarkerCount(text: string, marker: string): boolean {
+  const matches = text.match(new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))
+  return Boolean(matches && matches.length % 2 === 1)
+}
+
+export function truncateMarkdownInline(text: string, maxLength = 180): string {
+  const normalized = text.replace(/\s+/g, ' ').trim()
+  if (normalized.length <= maxLength) return normalized
+
+  let truncated = normalized.slice(0, maxLength).trim()
+  truncated = truncated.replace(/\{\{tg_emoji:[^}]*$/, '')
+  if (hasOddMarkerCount(truncated, '**')) truncated += '**'
+  if (hasOddMarkerCount(truncated, '__')) truncated += '__'
+  if (hasOddMarkerCount(truncated, '`')) truncated += '`'
+  return `${truncated}...`
+}
+
+function isTelegramTransportTitle(title: string): boolean {
+  return /^telegram-(?:photo|image|video|voice|audio|document|file)(?:[-_][a-z0-9]+)*$/i.test(title)
+}
+
+export function getNoteDisplayTitle(note: Note, text?: string | null): string | null {
+  const title = cleanDisplayTitle(note.title)
+  if (!title) return null
+  const isTelegram = note.source?.provider === 'telegram'
+    || note.objects.some(obj => obj.source?.provider === 'telegram')
+  if (isTelegram && isTelegramTransportTitle(title)) return null
+  if (text && isRedundantTextTitle(title, text)) return null
+  return title
+}
+
 function sourceText(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null
 }

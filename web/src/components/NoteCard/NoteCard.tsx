@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useCallback, type CSSProperties } from 'react'
+import { useRef, useState, useEffect, useCallback, type CSSProperties, type ReactNode } from 'react'
 import { Link } from 'react-router'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -34,6 +34,7 @@ import {
   TextQuote,
   Underline,
   UploadCloud,
+  Video,
 } from 'lucide-react'
 import { useSyncLocalNote } from '../../hooks/useSyncLocalNote'
 import { useBulkSelect } from '../../contexts/BulkSelectContext'
@@ -50,8 +51,8 @@ import { useUpdateNote } from '../../hooks/useUpdateNote'
 import { useDragContext } from '../../contexts/DragContext'
 import { useUploadContext } from '../../contexts/UploadContext'
 import { partitionUploadFiles } from '../../utils/uploadGuard'
-import { getObjectDisplayText, getObjectPreviewSource } from '../../utils/notePreview'
-import { collectSourceChips, getSavedDateLabel } from '../../utils/noteCardPresentation'
+import { getObjectDisplayMarkdown, getObjectDisplayText, getObjectPreviewSource } from '../../utils/notePreview'
+import { collectSourceChips, getNoteDisplayTitle, getSavedDateLabel } from '../../utils/noteCardPresentation'
 import { normalizedHighlightRanges } from '../../utils/searchHighlight'
 import { htmlToMarkdown, makeMarkdownTitle, replaceBlobImageSources } from '../../utils/markdownPaste'
 import { useFavicon } from '../../hooks/useFavicon'
@@ -163,6 +164,62 @@ function SearchMatchSnippet({ note }: { note: Note }) {
   return <div className={styles.searchSnippet}>{parts.length ? parts : match.text}</div>
 }
 
+function customEmojiAssets(source?: NoteObject['source'] | null): Record<string, { data_url?: string; fallback?: string }> {
+  const assets = source?.metadata?.custom_emoji_assets
+  return assets && typeof assets === 'object' && !Array.isArray(assets)
+    ? assets as Record<string, { data_url?: string; fallback?: string }>
+    : {}
+}
+
+function renderInlineMarkdown(text: string, source: NoteObject['source'] | null | undefined, keyPrefix: string): ReactNode[] {
+  const pattern = /\{\{tg_emoji:([0-9]+)\|([^}]+)\}\}|\[([^\]]+)\]\(([^)]+)\)|\*\*([^*]+)\*\*|__([^_]+)__|`([^`]+)`|<u>(.*?)<\/u>|_([^_\n]+)_/g
+  const emojiAssets = customEmojiAssets(source)
+  const parts: ReactNode[] = []
+  let lastIndex = 0
+
+  for (const match of text.matchAll(pattern)) {
+    const index = match.index ?? 0
+    if (index > lastIndex) parts.push(text.slice(lastIndex, index))
+
+    const [, customEmojiId, fallback, linkLabel, , boldText, boldAltText, codeText, underlineText, italicText] = match
+    if (customEmojiId) {
+      const asset = emojiAssets[customEmojiId]
+      parts.push(
+        asset?.data_url ? (
+          <img
+            key={`${keyPrefix}-emoji-${customEmojiId}-${index}`}
+            className={styles.inlineTelegramEmoji}
+            src={asset.data_url}
+            alt={asset.fallback || fallback}
+            title={customEmojiId}
+          />
+        ) : (
+          <span key={`${keyPrefix}-emoji-fallback-${customEmojiId}-${index}`} title={customEmojiId}>{fallback}</span>
+        ),
+      )
+    } else if (linkLabel) {
+      parts.push(<span key={`${keyPrefix}-link-${index}`}>{linkLabel}</span>)
+    } else if (boldText || boldAltText) {
+      const value = boldText ?? boldAltText
+      parts.push(<strong key={`${keyPrefix}-bold-${index}`}>{renderInlineMarkdown(value, source, `${keyPrefix}-bold-${index}`)}</strong>)
+    } else if (codeText) {
+      parts.push(<code key={`${keyPrefix}-code-${index}`}>{codeText}</code>)
+    } else if (underlineText) {
+      parts.push(<u key={`${keyPrefix}-underline-${index}`}>{renderInlineMarkdown(underlineText, source, `${keyPrefix}-underline-${index}`)}</u>)
+    } else if (italicText) {
+      parts.push(<em key={`${keyPrefix}-italic-${index}`}>{renderInlineMarkdown(italicText, source, `${keyPrefix}-italic-${index}`)}</em>)
+    }
+    lastIndex = index + match[0].length
+  }
+
+  if (lastIndex < text.length) parts.push(text.slice(lastIndex))
+  return parts
+}
+
+function MarkdownSnippet({ text, source }: { text: string; source?: NoteObject['source'] | null }) {
+  return <>{renderInlineMarkdown(text, source, 'card-md')}</>
+}
+
 function SoftOverlay({
   note,
   titleNode,
@@ -171,18 +228,22 @@ function SoftOverlay({
   onTagClick,
 }: {
   note: Note
-  titleNode?: React.ReactNode
-  description?: React.ReactNode
-  children?: React.ReactNode
+  titleNode?: ReactNode | null
+  description?: ReactNode
+  children?: ReactNode
   onTagClick?: (name: string) => void
 }) {
+  const fallbackTitle = getNoteDisplayTitle(note)
   return (
     <div className={styles.softOverlay}>
       <div className={styles.softOverlayTop}>
         <SavedDate note={note} tone="overlay" />
         {children}
       </div>
-      {titleNode ?? <div className={styles.title}>{note.title}</div>}
+      {titleNode !== undefined
+        ? titleNode
+        : fallbackTitle && <div className={styles.title}>{fallbackTitle}</div>
+      }
       {description && <div className={styles.overlayExcerpt}>{description}</div>}
       <CardMeta note={note} onTagClick={onTagClick} maxTags={2} />
     </div>
@@ -194,7 +255,9 @@ function SoftOverlay({
 function SimpleCard({ note, onTagClick }: { note: Note; onTagClick?: (name: string) => void }) {
   const imageObj = note.objects.find(o => o.type === 'image')
   const textObj  = note.objects.find(o => o.type === 'text')
-  const text = textObj ? getObjectDisplayText(textObj) : null
+  const text = textObj ? getObjectDisplayMarkdown(textObj) : null
+  const title = getNoteDisplayTitle(note, textObj?.content)
+  const titleNode = title ? <div className={styles.title}>{title}</div> : null
 
   // Только картинка — без заголовка, изображение в край
   if (imageObj && !textObj) {
@@ -208,7 +271,7 @@ function SimpleCard({ note, onTagClick }: { note: Note; onTagClick?: (name: stri
         <AuthImage
           className={styles.simpleImageMedia}
           src={getObjectPreviewSource(imageObj)}
-          alt={note.title}
+          alt={title ?? ''}
         />
         <SoftOverlay note={note} onTagClick={onTagClick} />
       </Link>
@@ -226,9 +289,14 @@ function SimpleCard({ note, onTagClick }: { note: Note; onTagClick?: (name: stri
         <AuthImage
           className={styles.simpleImageMedia}
           src={getObjectPreviewSource(imageObj)}
-          alt={note.title}
+          alt={title ?? ''}
         />
-        <SoftOverlay note={note} description={text} onTagClick={onTagClick} />
+        <SoftOverlay
+          note={note}
+          titleNode={titleNode}
+          description={text ? <MarkdownSnippet text={text} source={textObj.source} /> : undefined}
+          onTagClick={onTagClick}
+        />
       </Link>
     )
   }
@@ -241,10 +309,10 @@ function SimpleCard({ note, onTagClick }: { note: Note; onTagClick?: (name: stri
     >
       <div className={styles.cardTextHead}>
         <SavedDate note={note} />
-        <div className={styles.title}>{note.title}</div>
+        {titleNode}
       </div>
       <SearchMatchSnippet note={note} />
-      {textObj && <div className={styles.excerpt}>{text}</div>}
+      {textObj && text && <div className={styles.excerpt}><MarkdownSnippet text={text} source={textObj.source} /></div>}
       <CardMeta note={note} onTagClick={onTagClick} />
     </Link>
   )
@@ -268,6 +336,15 @@ function LayerContent({ obj, fallback }: { obj: NoteObject | undefined; fallback
   }
   if (obj.type === 'image') {
     return <AuthImage src={getObjectPreviewSource(obj)} alt="" className={styles.collectionLayerImg} />
+  }
+  if (obj.type === 'video') {
+    const thumb = obj.thumbnailUrl ?? null
+    if (thumb) return <AuthImage src={thumb} alt="" className={styles.collectionLayerImg} />
+    return (
+      <div className={`${styles.collectionLayerBg} ${styles.collectionLayerVideo}`} style={{ background: fallback }}>
+        <Video size={26} />
+      </div>
+    )
   }
   if (obj.type === 'document') {
     const thumb = obj.thumbnailUrl ?? obj.cover
@@ -329,10 +406,11 @@ function CollectionStats({ objects }: { objects: Note['objects'] }) {
   )
 }
 
-function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClick?: (name: string) => void; titleNode?: React.ReactNode }) {
-  const visualObjs = note.objects.filter(o => o.type === 'image' || o.type === 'document' || o.type === 'link').slice(0, 5)
+function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClick?: (name: string) => void; titleNode?: ReactNode | null }) {
+  const visualObjs = note.objects.filter(o => o.type === 'image' || o.type === 'video' || o.type === 'document' || o.type === 'link').slice(0, 5)
   const textObj = note.objects.find(o => o.type === 'text')
-  const description = textObj ? getObjectDisplayText(textObj) : null
+  const text = textObj ? getObjectDisplayMarkdown(textObj) : null
+  const description = textObj && text ? <MarkdownSnippet text={text} source={textObj.source} /> : null
   const fallback   = FALLBACK_COLORS[note.id.charCodeAt(0) % FALLBACK_COLORS.length]
 
   let visual: React.ReactNode
@@ -341,6 +419,8 @@ function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClic
     const obj = visualObjs[0]
     if (obj.type === 'image') {
       visual = <AuthImage src={getObjectPreviewSource(obj)} alt="" className={styles.collectionSingle} />
+    } else if (obj.type === 'video' && obj.thumbnailUrl) {
+      visual = <AuthImage src={obj.thumbnailUrl} alt="" className={styles.collectionSingle} />
     } else if (obj.type === 'link' && obj.thumbnailUrl) {
       visual = <AuthImage src={obj.thumbnailUrl} alt="" className={styles.collectionSingle} />
     } else {
@@ -356,6 +436,8 @@ function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClic
         {visualObjs.map(obj => (
           obj.type === 'image'
             ? <AuthImage key={obj.id} src={getObjectPreviewSource(obj)} alt="" className={styles.collectionPairImg} />
+            : obj.type === 'video' && obj.thumbnailUrl
+              ? <AuthImage key={obj.id} src={obj.thumbnailUrl} alt="" className={styles.collectionPairImg} />
             : obj.type === 'link' && obj.thumbnailUrl
               ? <AuthImage key={obj.id} src={obj.thumbnailUrl} alt="" className={styles.collectionPairImg} />
               : <div key={obj.id} className={styles.collectionPairSlot}>
@@ -455,8 +537,9 @@ function DocChip({ obj }: { obj: NoteObject }) {
   )
 }
 
-function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick?: (name: string) => void; titleNode?: React.ReactNode }) {
+function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick?: (name: string) => void; titleNode?: ReactNode | null }) {
   const imageObj  = note.objects.find(o => o.type === 'image')
+  const videoObj  = note.objects.find(o => o.type === 'video')
   const textObj   = note.objects.find(o => o.type === 'text')
   const links     = note.objects.filter(o => o.type === 'link')
   const docs      = note.objects.filter(o => o.type === 'document')
@@ -464,8 +547,9 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
   const docThumb  = firstDoc ? (firstDoc.thumbnailUrl ?? firstDoc.cover) : undefined
   const firstLink = links[0]
   const firstLinkThumb = firstLink?.thumbnailUrl ?? null
-  const visualObject = imageObj ?? (docThumb ? firstDoc : undefined) ?? (firstLinkThumb ? firstLink : undefined)
-  const text = textObj ? getObjectDisplayText(textObj) : null
+  const videoThumb = videoObj?.thumbnailUrl ?? null
+  const visualObject = imageObj ?? (videoObj ? videoObj : undefined) ?? (docThumb ? firstDoc : undefined) ?? (firstLinkThumb ? firstLink : undefined)
+  const text = textObj ? getObjectDisplayMarkdown(textObj) : null
   const hasAttachmentFooter = links.length > 0 || docs.length > 0
   const shouldOverlayText = Boolean(visualObject && text && !/^https?:\/\//.test(textObj?.content ?? ''))
 
@@ -481,6 +565,14 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
       <div className={styles.compositeCover}>
         {imageObj
           ? <AuthImage src={getObjectPreviewSource(imageObj)} alt="" className={styles.compositeCoverImg} />
+          : videoObj
+            ? videoThumb
+              ? <AuthImage src={videoThumb} alt="" className={styles.compositeCoverImg} />
+              : (
+                <div className={styles.compositeCoverEmpty}>
+                  <Video size={30} />
+                </div>
+              )
           : docThumb
             ? <AuthImage src={docThumb} alt="" className={styles.compositeCoverImg} style={firstDoc?.imageWidth && firstDoc?.imageHeight ? { aspectRatio: `${firstDoc.imageWidth}/${firstDoc.imageHeight}` } : undefined} />
             : firstDoc?.thumbnailUrl === null
@@ -509,7 +601,7 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
         <SoftOverlay
           note={note}
           titleNode={titleNode}
-          description={shouldOverlayText ? text : undefined}
+          description={shouldOverlayText && text ? <MarkdownSnippet text={text} source={textObj?.source} /> : undefined}
           onTagClick={onTagClick}
         >
         </SoftOverlay>
@@ -542,7 +634,7 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
       {!shouldOverlayText && textObj && text && !/^https?:\/\//.test(textObj.content) && (
         <div className={`${styles.cardFooter} ${textDensityClass(text)}`}>
           <SearchMatchSnippet note={note} />
-          <div className={styles.excerpt}>{text}</div>
+          <div className={styles.excerpt}><MarkdownSnippet text={text} source={textObj.source} /></div>
         </div>
       )}
     </Link>
@@ -647,7 +739,8 @@ export function NoteCard({ note, isNew, isDragging, onTagClick }: { note: Note; 
     note.isLoading             ? styles.isLoading       : '',
   ].filter(Boolean).join(' ')
 
-  const titleNode = (
+  const displayTitle = getNoteDisplayTitle(note)
+  const titleNode = displayTitle === null ? null : (
     <AnimatePresence mode="wait" initial={false}>
       {renamePending ? (
         <motion.div
@@ -683,7 +776,7 @@ export function NoteCard({ note, isNew, isDragging, onTagClick }: { note: Note; 
           exit={{ opacity: 0 }}
           transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
         >
-          {note.title}
+          {displayTitle}
         </motion.div>
       )}
     </AnimatePresence>

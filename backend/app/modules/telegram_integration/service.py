@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.content.app_note import note_card_to_app_note
@@ -201,7 +199,7 @@ class TelegramIngestService:
         if text:
             return None
         if uploaded is not None:
-            return Path(uploaded.filename).stem or uploaded.filename
+            return ""
         if payload.material_type == "link" and payload.text:
             return None
         return "Telegram message"

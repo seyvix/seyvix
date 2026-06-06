@@ -451,6 +451,24 @@
   height: 100%;
 }
 
+.collectionLayerVideo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.76);
+  background:
+    radial-gradient(circle at 50% 35%, rgba(255, 255, 255, 0.12), transparent 42%),
+    linear-gradient(145deg, rgba(34, 41, 58, 0.95), rgba(11, 13, 20, 0.95)) !important;
+}
+
+.inlineTelegramEmoji {
+  width: 1.15em;
+  height: 1.15em;
+  margin: -0.12em 0.04em 0;
+  vertical-align: -0.18em;
+  object-fit: contain;
+}
+
 /* Слой с документом */
 .collectionLayerDoc {
   display: flex;

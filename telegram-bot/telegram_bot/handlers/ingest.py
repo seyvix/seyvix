@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from base64 import b64encode
 from dataclasses import replace
 from html import escape
@@ -24,6 +25,7 @@ from telegram_bot.texts.common import (
 from telegram_bot.texts.success import loading_text, saved_text
 
 router = Router(name="ingest")
+logger = logging.getLogger(__name__)
 
 
 @router.message()
@@ -45,14 +47,30 @@ async def ingest_handler(
         await message.answer(UNSUPPORTED_MESSAGE, reply_markup=web_app_keyboard(web_app_url))
         return
 
+    status_message = await message.reply(
+        loading_text(material),
+        reply_markup=web_app_keyboard(web_app_url),
+    )
+
     material = await _with_custom_emoji_assets(bot, material)
-    if material.attachment is not None:
+    attachment = material.attachment
+    if attachment is not None:
         try:
             material = material.with_attachment_data(
-                await _download_attachment(bot, material.attachment.file_id)
+                await _download_attachment(bot, attachment.file_id)
             )
-        except Exception:
-            await message.answer(DOWNLOAD_FAILED, reply_markup=web_app_keyboard(web_app_url))
+        except Exception as exc:
+            logger.exception(
+                "Failed to download Telegram attachment for user=%s chat=%s message=%s file_id=%s",
+                material.telegram_user_id,
+                material.telegram_chat_id,
+                material.telegram_message_id,
+                attachment.file_id,
+            )
+            await status_message.edit_text(
+                _download_error_text(exc),
+                reply_markup=web_app_keyboard(web_app_url),
+            )
             return
 
     state = await mode_service.get_state(telegram_user_id)
@@ -66,10 +84,7 @@ async def ingest_handler(
     await ingest_service.ingest(
         material=material,
         state=state,
-        send_loading=lambda item: message.reply(
-            loading_text(item),
-            reply_markup=web_app_keyboard(web_app_url),
-        ),
+        status=status_message,
         update_saved=update_saved_status,
         update_error=lambda status_message, exc: _edit_ingest_error(
             status_message,
@@ -83,6 +98,13 @@ async def _download_attachment(bot: Bot, file_id: str) -> bytes:
     destination = BytesIO()
     await bot.download(file_id, destination=destination)
     return destination.getvalue()
+
+
+def _download_error_text(exc: Exception) -> str:
+    message = str(exc).lower()
+    if "too big" in message or "too large" in message or "file size" in message:
+        return FILE_TOO_LARGE
+    return DOWNLOAD_FAILED
 
 
 async def _with_custom_emoji_assets(bot: Bot, material: InboundMaterial) -> InboundMaterial:
