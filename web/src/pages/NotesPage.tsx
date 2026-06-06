@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router'
 import { useNotes } from '../hooks/useNotes'
 import { useLocalNotes } from '../contexts/LocalNotesContext'
 import { NoteGrid } from '../components/NoteGrid/NoteGrid'

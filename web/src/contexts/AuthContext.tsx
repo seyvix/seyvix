@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { apiLogin, apiLogout, apiRefresh, apiRegister } from '../api/auth'
 import type { UserResponse } from '../api/auth'
 import { configureApiClient } from '../lib/apiClient'
-import { shouldSkipInitialRefresh } from '../utils/authBootstrap'
+import { shouldRenderBeforeAuthRefresh, shouldSkipInitialRefresh } from '../utils/authBootstrap'
 
 interface AuthContextValue {
   user: UserResponse | null
@@ -21,12 +21,30 @@ export function useAuth() {
   return ctx
 }
 
-export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<UserResponse | null>(null)
-  const [isReady, setIsReady] = useState(false)
+interface AuthProviderProps {
+  children: React.ReactNode
+  initialIsReady?: boolean
+  initialUser?: UserResponse | null
+  initialAccessToken?: string | null
+}
+
+export function AuthProvider({
+  children,
+  initialIsReady,
+  initialUser = null,
+  initialAccessToken = null,
+}: AuthProviderProps) {
+  const [user, setUser] = useState<UserResponse | null>(initialUser)
+  const [isReady, setIsReady] = useState(() => (
+    initialIsReady ?? (
+      Boolean(initialUser && initialAccessToken) ||
+      typeof window !== 'undefined' &&
+      shouldRenderBeforeAuthRefresh(window.location.pathname)
+    )
+  ))
 
   // access_token живёт только в памяти
-  const tokenRef = useRef<string | null>(null)
+  const tokenRef = useRef<string | null>(initialAccessToken)
 
   // Настраиваем apiClient сразу — он будет использоваться в api/notes.ts
   useEffect(() => {
@@ -42,6 +60,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Bootstrap: пробуем refresh при старте приложения
   useEffect(() => {
+    if (initialUser && initialAccessToken) {
+      setIsReady(true)
+      return
+    }
+
     if (shouldSkipInitialRefresh(window.location.pathname)) {
       setIsReady(true)
       return

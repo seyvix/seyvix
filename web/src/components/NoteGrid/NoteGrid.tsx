@@ -1,6 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { flushSync } from 'react-dom'
-import Muuri, { type Item as MuuriItem } from 'muuri'
 import { useQueryClient } from '@tanstack/react-query'
 import type { Note } from '../../types'
 import { reorderNotes } from '../../api/notes'
@@ -19,6 +18,9 @@ import styles from './NoteGrid.module.css'
 const GRID_GAP = 8
 const MOBILE_GRID_QUERY = '(max-width: 760px), (pointer: coarse)'
 
+type MuuriGrid = InstanceType<(typeof import('muuri'))['default']>
+type MuuriItem = import('muuri').Item
+
 interface NoteGridProps {
   notes: Note[]
   onAddNote?: () => void
@@ -30,7 +32,7 @@ export function NoteGrid({ notes, onAddNote, onTagClick }: NoteGridProps) {
   const isFirstRender = useRef(true)
   const scrollRef = useRef<HTMLDivElement>(null)
   const gridRef = useRef<HTMLDivElement>(null)
-  const muuriRef = useRef<Muuri | null>(null)
+  const muuriRef = useRef<MuuriGrid | null>(null)
   const itemResizeObserverRef = useRef<ResizeObserver | null>(null)
   const dragStartOrderRef = useRef<Note[] | null>(null)
   const isDraggingRef = useRef(false)
@@ -122,137 +124,154 @@ export function NoteGrid({ notes, onAddNote, onTagClick }: NoteGridProps) {
     const initialMetrics = gridMetricsRef.current
     if (!gridElement || !initialMetrics) return
 
-    const grid = new Muuri(gridElement, {
-      items: `.${styles.item}`,
-      layout: (_grid, id, items, _width, _height, callback) => {
-        const metrics = gridMetricsRef.current ?? initialMetrics
-        const layout = buildMasonryLayoutSlots({
-          heights: items.map(item => item.getHeight()),
-          cols: metrics.cols,
-          itemWidth: metrics.itemWidth,
-          gap: GRID_GAP,
-        })
+    let disposed = false
+    let cleanup: (() => void) | null = null
 
-        callback({
-          id,
-          items,
-          slots: layout.slots,
-          styles: {
-            height: `${layout.height}px`,
+    void import('muuri').then(({ default: Muuri }) => {
+      if (disposed) return
+
+      const grid = new Muuri(gridElement, {
+        items: `.${styles.item}`,
+        layout: (_grid, id, items, _width, _height, callback) => {
+          const metrics = gridMetricsRef.current ?? initialMetrics
+          const layout = buildMasonryLayoutSlots({
+            heights: items.map(item => item.getHeight()),
+            cols: metrics.cols,
+            itemWidth: metrics.itemWidth,
+            gap: GRID_GAP,
+          })
+
+          callback({
+            id,
+            items,
+            slots: layout.slots,
+            styles: {
+              height: `${layout.height}px`,
+            },
+          })
+        },
+        layoutOnResize: 80,
+        layoutDuration: 180,
+        layoutEasing: 'ease',
+        dragEnabled: !isMobileGrid,
+        dragContainer: document.body,
+        dragStartPredicate: (item, event) => {
+          if (isMobileGrid) return false
+          const element = item.getElement()
+          if (!element || element.dataset.staticItem === 'true' || element.dataset.dragDisabled === 'true') {
+            return false
+          }
+
+          return Muuri.ItemDrag.defaultStartPredicate(item, event, { distance: 6 })
+        },
+        dragSort: true,
+        dragSortHeuristics: {
+          sortInterval: 60,
+          minDragDistance: 8,
+          minBounceBackAngle: 1,
+        },
+        dragSortPredicate: {
+          threshold: 65,
+          action: 'swap',
+          migrateAction: 'swap',
+        },
+        dragRelease: {
+          duration: 180,
+          easing: 'ease',
+          useDragContainer: true,
+        },
+        dragAutoScroll: {
+          targets: () => {
+            const scrollArea = scrollRef.current
+            return scrollArea ? [scrollArea] : []
           },
+        },
+        itemClass: styles.item,
+        itemDraggingClass: styles.itemDragging,
+        itemReleasingClass: styles.itemReleasing,
+        itemHiddenClass: styles.itemHidden,
+        itemPositioningClass: styles.itemPositioning,
+      })
+
+      if (disposed) {
+        grid.destroy(false)
+        return
+      }
+
+      muuriRef.current = grid
+
+      if (typeof ResizeObserver !== 'undefined') {
+        itemResizeObserverRef.current = new ResizeObserver(() => {
+          if (isDraggingRef.current) return
+          window.requestAnimationFrame(() => {
+            if (!isDraggingRef.current && muuriRef.current === grid) grid.refreshItems().layout()
+          })
         })
-      },
-      layoutOnResize: 80,
-      layoutDuration: 180,
-      layoutEasing: 'ease',
-      dragEnabled: !isMobileGrid,
-      dragContainer: document.body,
-      dragStartPredicate: (item, event) => {
-        if (isMobileGrid) return false
-        const element = item.getElement()
-        if (!element || element.dataset.staticItem === 'true' || element.dataset.dragDisabled === 'true') {
-          return false
+      }
+
+      const handleDragStart = () => {
+        isDraggingRef.current = true
+        dragStartOrderRef.current = orderedNotesRef.current
+      }
+
+      const handleDragReleaseEnd = () => {
+        const previous = dragStartOrderRef.current
+        dragStartOrderRef.current = null
+        const nextIds = getNoteIdsFromGrid(grid)
+        const next = orderNotesByIds(orderedNotesRef.current, nextIds)
+        const finishDrag = () => {
+          window.requestAnimationFrame(() => {
+            isDraggingRef.current = false
+            const pendingNotes = pendingNotesRef.current
+            pendingNotesRef.current = null
+            if (pendingNotes) mergeIncomingNotes(pendingNotes)
+            if (muuriRef.current === grid) grid.refreshItems().layout()
+          })
         }
 
-        return Muuri.ItemDrag.defaultStartPredicate(item, event, { distance: 6 })
-      },
-      dragSort: true,
-      dragSortHeuristics: {
-        sortInterval: 60,
-        minDragDistance: 8,
-        minBounceBackAngle: 1,
-      },
-      dragSortPredicate: {
-        threshold: 65,
-        action: 'swap',
-        migrateAction: 'swap',
-      },
-      dragRelease: {
-        duration: 180,
-        easing: 'ease',
-        useDragContainer: true,
-      },
-      dragAutoScroll: {
-        targets: () => {
-          const scrollArea = scrollRef.current
-          return scrollArea ? [scrollArea] : []
-        },
-      },
-      itemClass: styles.item,
-      itemDraggingClass: styles.itemDragging,
-      itemReleasingClass: styles.itemReleasing,
-      itemHiddenClass: styles.itemHidden,
-      itemPositioningClass: styles.itemPositioning,
+        if (sameNoteOrder(orderedNotesRef.current, next)) {
+          finishDrag()
+          return
+        }
+
+        orderedNotesRef.current = next
+        flushSync(() => setOrderedNotes(next))
+
+        const persisted = next.filter(note => !note.isLocal && !note.isLoading)
+        if (persisted.length === 0) {
+          finishDrag()
+          return
+        }
+
+        void reorderNotes(toReorderPayload(persisted))
+          .then(() => queryClient.invalidateQueries({ queryKey: ['notes'] }))
+          .catch(() => {
+            if (previous) {
+              orderedNotesRef.current = previous
+              setOrderedNotes(previous)
+            }
+            void queryClient.invalidateQueries({ queryKey: ['notes'] })
+          })
+
+        finishDrag()
+      }
+
+      grid.on('dragStart', handleDragStart)
+      grid.on('dragReleaseEnd', handleDragReleaseEnd)
+
+      cleanup = () => {
+        grid.off('dragStart', handleDragStart)
+        grid.off('dragReleaseEnd', handleDragReleaseEnd)
+        itemResizeObserverRef.current?.disconnect()
+        itemResizeObserverRef.current = null
+        grid.destroy(false)
+        if (muuriRef.current === grid) muuriRef.current = null
+      }
     })
 
-    muuriRef.current = grid
-
-    if (typeof ResizeObserver !== 'undefined') {
-      itemResizeObserverRef.current = new ResizeObserver(() => {
-        if (isDraggingRef.current) return
-        window.requestAnimationFrame(() => {
-          if (!isDraggingRef.current && muuriRef.current === grid) grid.refreshItems().layout()
-        })
-      })
-    }
-
-    const handleDragStart = () => {
-      isDraggingRef.current = true
-      dragStartOrderRef.current = orderedNotesRef.current
-    }
-
-    const handleDragReleaseEnd = () => {
-      const previous = dragStartOrderRef.current
-      dragStartOrderRef.current = null
-      const nextIds = getNoteIdsFromGrid(grid)
-      const next = orderNotesByIds(orderedNotesRef.current, nextIds)
-      const finishDrag = () => {
-        window.requestAnimationFrame(() => {
-          isDraggingRef.current = false
-          const pendingNotes = pendingNotesRef.current
-          pendingNotesRef.current = null
-          if (pendingNotes) mergeIncomingNotes(pendingNotes)
-          if (muuriRef.current === grid) grid.refreshItems().layout()
-        })
-      }
-
-      if (sameNoteOrder(orderedNotesRef.current, next)) {
-        finishDrag()
-        return
-      }
-
-      orderedNotesRef.current = next
-      flushSync(() => setOrderedNotes(next))
-
-      const persisted = next.filter(note => !note.isLocal && !note.isLoading)
-      if (persisted.length === 0) {
-        finishDrag()
-        return
-      }
-
-      void reorderNotes(toReorderPayload(persisted))
-        .then(() => queryClient.invalidateQueries({ queryKey: ['notes'] }))
-        .catch(() => {
-          if (previous) {
-            orderedNotesRef.current = previous
-            setOrderedNotes(previous)
-          }
-          void queryClient.invalidateQueries({ queryKey: ['notes'] })
-        })
-
-      finishDrag()
-    }
-
-    grid.on('dragStart', handleDragStart)
-    grid.on('dragReleaseEnd', handleDragReleaseEnd)
-
     return () => {
-      grid.off('dragStart', handleDragStart)
-      grid.off('dragReleaseEnd', handleDragReleaseEnd)
-      itemResizeObserverRef.current?.disconnect()
-      itemResizeObserverRef.current = null
-      grid.destroy(false)
-      if (muuriRef.current === grid) muuriRef.current = null
+      disposed = true
+      cleanup?.()
     }
   }, [hasGridMetrics, isMobileGrid, queryClient])
 
@@ -321,7 +340,7 @@ export function NoteGrid({ notes, onAddNote, onTagClick }: NoteGridProps) {
   )
 }
 
-function getNoteIdsFromGrid(grid: Muuri): string[] {
+function getNoteIdsFromGrid(grid: MuuriGrid): string[] {
   return grid
     .getItems()
     .map(item => item.getElement()?.dataset.noteId)
@@ -332,7 +351,7 @@ function sameNoteOrder(a: readonly Note[], b: readonly Note[]): boolean {
   return a.length === b.length && a.every((note, index) => note.id === b[index]?.id)
 }
 
-function syncMuuriItems(grid: Muuri, gridElement: HTMLElement) {
+function syncMuuriItems(grid: MuuriGrid, gridElement: HTMLElement) {
   const muuriItems = grid.getItems()
   const knownElements = new Set(muuriItems.map(item => item.getElement()).filter((element): element is HTMLElement => Boolean(element)))
   const domItems = Array.from(gridElement.children).filter((element): element is HTMLElement => (

@@ -1,4 +1,4 @@
-import { Navigate, useParams } from 'react-router-dom'
+import { Navigate, useParams } from 'react-router'
 
 export default function FolderPage() {
   const { '*': categoryPath } = useParams()

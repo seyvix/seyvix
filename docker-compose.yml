@@ -66,8 +66,10 @@ services:
       dockerfile: web/Dockerfile
       target: production
     restart: unless-stopped
+    environment:
+      SSR_API_BASE_URL: http://backend:8000
     healthcheck:
-      test: wget -qO- http://127.0.0.1 >/dev/null || exit 1
+      test: wget -qO- http://127.0.0.1/health >/dev/null || exit 1
       interval: 10s
       timeout: 5s
       retries: 10

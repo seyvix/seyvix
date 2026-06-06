@@ -1,5 +1,5 @@
 import { useRef, useState, useEffect, useCallback, type CSSProperties } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { EditorContent, useEditor, type Editor } from '@tiptap/react'
@@ -1015,7 +1015,7 @@ export function AddNoteCard({ onClick }: { onClick?: () => void }) {
     { id: 'ordered', label: 'Нумерованный список', icon: <ListOrdered size={18} />, keywords: 'ordered number список' },
   ].filter(item => !slashMenu.query || item.keywords.includes(slashMenu.query) || item.label.toLowerCase().includes(slashMenu.query))
 
-  const editorDialog = isEditing ? createPortal(
+  const editorDialog = isEditing && typeof document !== 'undefined' ? createPortal(
     <>
       <div className={styles.addCardBackdrop} onClick={handleCancel} />
       <div ref={modalDropRef} className={`${styles.addCard} ${styles.addCardEditing}`}>

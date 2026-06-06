@@ -1,4 +1,4 @@
-import { createContext, useContext, useState } from 'react'
+import { createContext, useContext, useEffect, useState } from 'react'
 
 interface SettingsContextValue {
   cols: number
@@ -10,15 +10,17 @@ const SettingsContext = createContext<SettingsContextValue | null>(null)
 const KEY = 'seyvix:masonry-cols'
 
 export function SettingsProvider({ children }: { children: React.ReactNode }) {
-  const [cols, setCols] = useState<number>(() => {
+  const [cols, setCols] = useState<number>(5)
+
+  useEffect(() => {
     try {
       const stored = localStorage.getItem(KEY)
       const n = stored ? Number(stored) : 5
-      return n >= 1 && n <= 7 ? n : 5
+      if (n >= 1 && n <= 7) setCols(n)
     } catch {
-      return 5
+      // ignore unavailable storage
     }
-  })
+  }, [])
 
   function handleSetCols(n: number) {
     setCols(n)

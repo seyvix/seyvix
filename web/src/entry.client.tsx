@@ -1,10 +1,7 @@
 import { StrictMode } from 'react'
-import { createRoot } from 'react-dom/client'
+import { hydrateRoot } from 'react-dom/client'
+import { HydratedRouter } from 'react-router/dom'
 import 'web-animations-js'
-import './styles/reset.css'
-import './styles/variables.css'
-import './styles/loaders.css'
-import App from './App'
 
 async function prepare(): Promise<void> {
   if (import.meta.env.VITE_ENABLE_MSW === 'true') {
@@ -15,9 +12,10 @@ async function prepare(): Promise<void> {
 
 prepare()
   .then(() => {
-    createRoot(document.getElementById('root')!).render(
+    hydrateRoot(
+      document,
       <StrictMode>
-        <App />
+        <HydratedRouter />
       </StrictMode>
     )
   })

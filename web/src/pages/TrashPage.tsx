@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { RotateCcw, Trash2 } from 'lucide-react'
 import { cleanupTrash, fetchTrashNotes, restoreNote } from '../api/notes'
 import styles from './TrashPage.module.css'

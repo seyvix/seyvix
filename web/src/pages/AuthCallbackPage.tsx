@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router'
 import { apiTelegramCode, apiTelegramOidcCode, apiTelegramResult } from '../api/auth'
 import { useAuth } from '../contexts/AuthContext'
 

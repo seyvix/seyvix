@@ -1,4 +1,4 @@
-import { Outlet } from 'react-router-dom'
+import { Outlet } from 'react-router'
 import AsideHeader from '../AsideHeader/AsideHeader'
 import { TaxonomyOnboarding } from '../TaxonomyOnboarding/TaxonomyOnboarding'
 import styles from './AppLayout.module.css'

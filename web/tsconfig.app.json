@@ -12,8 +12,9 @@
     "moduleDetection": "force",
     "noEmit": true,
     "jsx": "react-jsx",
-    "strict": true
+    "strict": true,
+    "rootDirs": [".", "./.react-router/types"]
   },
-  "include": ["src"],
+  "include": ["src", ".react-router/types/**/*"],
   "exclude": ["src/**/*.test.ts"]
 }

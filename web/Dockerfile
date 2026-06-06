@@ -20,9 +20,20 @@ FROM dependencies AS build
 COPY web/ ./
 RUN npm run build
 
-FROM nginx:1.27-alpine AS production
+FROM node:22-alpine AS production
 
-COPY web/nginx.conf /etc/nginx/conf.d/default.conf
-COPY --from=build /app/dist /usr/share/nginx/html
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV HOST=0.0.0.0
+ENV PORT=80
+
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --omit=dev
+
+COPY --from=build /app/build ./build
+COPY web/server.js ./server.js
 
 EXPOSE 80
+
+CMD ["npm", "run", "start"]

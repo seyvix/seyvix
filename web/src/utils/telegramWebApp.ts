@@ -39,6 +39,7 @@ declare global {
 }
 
 export function getTelegramWebApp(): TelegramWebApp | null {
+  if (typeof window === 'undefined') return null
   return window.Telegram?.WebApp ?? null
 }
 

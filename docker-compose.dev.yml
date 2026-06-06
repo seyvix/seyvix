@@ -16,11 +16,12 @@ services:
       CHOKIDAR_USEPOLLING: "true"
       CHOKIDAR_INTERVAL: "100"
       VITE_API_PROXY_TARGET: http://backend:8000
+      SSR_API_BASE_URL: http://backend:8000
     command: >
       sh -c "npm install &&
              npm run dev -- --host 0.0.0.0"
     healthcheck:
-      test: wget -qO- http://127.0.0.1:5173 >/dev/null || exit 1
+      test: wget -qO- http://127.0.0.1:5173/health >/dev/null || exit 1
       interval: 10s
       timeout: 5s
       retries: 10

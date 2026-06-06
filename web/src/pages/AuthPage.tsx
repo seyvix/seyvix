@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router'
 import { motion, useMotionValue, useTransform, useSpring } from 'framer-motion'
 import { Bot, ExternalLink, LoaderCircle, ShieldCheck, Sparkles } from 'lucide-react'
 import { apiTelegramWebApp } from '../api/auth'

@@ -44,6 +44,7 @@ htmlcov/
 .tox/
 .coverage
 .cache
+.react-router/
 nosetests.xml
 coverage.xml
 *.cover
