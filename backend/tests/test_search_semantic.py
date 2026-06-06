@@ -849,27 +849,25 @@ async def test_count_owned_notes_excludes_collections_and_trash() -> None:
     Collections are containers, not notes; trashed items are not on the
     dashboard. Other users' notes must not leak into the count.
     """
-    from sqlalchemy.ext.asyncio import AsyncSession
+    from datetime import UTC, datetime
+
+    from sqlalchemy.ext.asyncio import create_async_engine
+
     from app.core.database import Base
     from app.modules.content.infrastructure.repositories import ContentRepository
     from app.modules.content.models import ContentObject
-    from datetime import datetime, UTC
 
-    settings = Settings(
-        _env_file=None,  # type: ignore[call-arg]
-        auth_jwt_secret="test-secret",
-        postgres_host=os.environ.get("TEST_DATABASE_HOST", "localhost"),
-        postgres_db=os.environ.get("TEST_DATABASE_NAME", "postgres_test"),
-        postgres_user=os.environ.get("TEST_DATABASE_USER", "postgres"),
-        postgres_password=os.environ.get("TEST_DATABASE_PASSWORD", "postgres"),
-    )
-    if not os.environ.get("TEST_DATABASE_URL"):
+    database_url = os.environ.get("TEST_DATABASE_URL")
+    if not database_url:
         pytest.skip("Set TEST_DATABASE_URL to run database-backed tests.")
 
-    factory = await build_session_factory(settings)
-    async with factory() as session:
-        await session.execute(Base.metadata.drop_all)  # safety
-    # New schema
+    engine = create_async_engine(database_url)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.drop_all)
+        await connection.run_sync(Base.metadata.create_all)
+    await engine.dispose()
+    factory = build_session_factory(database_url)
+
     async with factory() as session:
         repo = ContentRepository(session)
         now = datetime.now(UTC)

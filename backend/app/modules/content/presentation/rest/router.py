@@ -250,7 +250,7 @@ async def list_notes(
                 ),
             )
             search_result_ids = list(search_matches_by_object_id)
-            if search_mode == "hybrid" and not search_result_ids:
+            if search_mode in ("full_text", "hybrid") and not search_result_ids:
                 logger.info(
                     "search.mode.empty_external_result_fallback",
                     requested=search_mode,
