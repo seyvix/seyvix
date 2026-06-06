@@ -816,3 +816,89 @@ async def test_meilisearch_backend_sets_ranking_score_threshold() -> None:
 
     assert len(client.payloads) == 1
     assert client.payloads[0]["rankingScoreThreshold"] == 0.62
+
+
+@pytest.mark.asyncio
+async def test_count_owned_notes_excludes_collections_and_trash() -> None:
+    """
+    The threshold uses a count visible to the user: live notes only.
+    Collections are containers, not notes; trashed items are not on the
+    dashboard. Other users' notes must not leak into the count.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from app.core.database import Base
+    from app.modules.content.infrastructure.repositories import ContentRepository
+    from app.modules.content.models import ContentObject
+    from datetime import datetime, UTC
+
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        auth_jwt_secret="test-secret",
+        postgres_host=os.environ.get("TEST_DATABASE_HOST", "localhost"),
+        postgres_db=os.environ.get("TEST_DATABASE_NAME", "postgres_test"),
+        postgres_user=os.environ.get("TEST_DATABASE_USER", "postgres"),
+        postgres_password=os.environ.get("TEST_DATABASE_PASSWORD", "postgres"),
+    )
+    if not os.environ.get("TEST_DATABASE_URL"):
+        pytest.skip("Set TEST_DATABASE_URL to run database-backed tests.")
+
+    factory = await build_session_factory(settings)
+    async with factory() as session:
+        await session.execute(Base.metadata.drop_all)  # safety
+    # New schema
+    async with factory() as session:
+        repo = ContentRepository(session)
+        now = datetime.now(UTC)
+        owner = "u-owner"
+        other = "u-other"
+        kept = [
+            ContentObject(
+                id=f"obj-kept-{i}",
+                owner_user_id=owner,
+                slug=f"kept-{i}",
+                title=f"Kept {i}",
+                kind="simple",
+                media_type="text",
+                sort_order=i,
+                created_at=now,
+                updated_at=now,
+            )
+            for i in range(3)
+        ]
+        collection = ContentObject(
+            id="obj-collection",
+            owner_user_id=owner,
+            slug="collection",
+            title="Album",
+            kind="collection",
+            media_type=None,
+            sort_order=10,
+            created_at=now,
+            updated_at=now,
+        )
+        trashed = ContentObject(
+            id="obj-trashed",
+            owner_user_id=owner,
+            slug="trashed",
+            title="Trashed",
+            kind="simple",
+            media_type="text",
+            sort_order=11,
+            created_at=now,
+            updated_at=now,
+            deleted_at=now,
+        )
+        foreign = ContentObject(
+            id="obj-foreign",
+            owner_user_id=other,
+            slug="foreign",
+            title="Foreign",
+            kind="simple",
+            media_type="text",
+            sort_order=12,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add_all([*kept, collection, trashed, foreign])
+        await session.commit()
+        assert await repo.count_owned_notes(owner_user_id=owner) == 3

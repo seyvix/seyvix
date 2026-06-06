@@ -10,7 +10,7 @@ from app.modules.content.models import (
     ContentObject,
     ContentTag,
 )
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -181,6 +181,18 @@ class ContentRepository:
     async def get_min_sort_order(self, *, owner_user_id: str) -> int:
         objects = await self.list_all(owner_user_id=owner_user_id)
         return min((content_object.sort_order for content_object in objects), default=0)
+
+    async def count_owned_notes(self, *, owner_user_id: str) -> int:
+        result = await self.session.execute(
+            select(func.count())
+            .select_from(ContentObject)
+            .where(
+                ContentObject.owner_user_id == owner_user_id,
+                ContentObject.deleted_at.is_(None),
+                ContentObject.kind != "collection",
+            )
+        )
+        return int(result.scalar_one())
 
 
 class TagRepository:
