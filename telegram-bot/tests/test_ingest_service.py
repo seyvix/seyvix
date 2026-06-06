@@ -70,12 +70,24 @@ def test_auto_mode_keeps_media_group_and_nearby_text_in_one_bucket() -> None:
     async def scenario() -> None:
         backend = FakeBackend()
         saved_statuses: list[tuple[str, str]] = []
+        loading_statuses: list[tuple[str, str]] = []
         service = TelegramIngestService(
             backend=backend,  # type: ignore[arg-type]
             state_repository=FakeStateRepository(),  # type: ignore[arg-type]
             auto_group_window_seconds=0.01,
             media_group_flush_seconds=0.01,
         )
+
+        async def send_loading(material: InboundMaterial) -> str:
+            status = f"status-{len(loading_statuses) + 1}"
+            loading_statuses.append((status, material.telegram_message_id))
+            return status
+
+        async def prepare_material(
+            material: InboundMaterial,
+            status: str | None,
+        ) -> InboundMaterial:
+            return material
 
         async def update_saved(status: str, saved: SavedMaterial) -> None:
             saved_statuses.append((status, saved.id or ""))
@@ -86,20 +98,122 @@ def test_auto_mode_keeps_media_group_and_nearby_text_in_one_bucket() -> None:
         await service.ingest(
             material=_material("10", group_id="album-1"),
             state=_state(BotMode.AUTO),
-            status="status-1",
+            send_loading=send_loading,
+            prepare_material=prepare_material,
             update_saved=update_saved,
             update_error=update_error,
         )
         await service.ingest(
             material=_material("11"),
             state=_state(BotMode.AUTO),
-            status="status-2",
+            send_loading=send_loading,
+            prepare_material=prepare_material,
             update_saved=update_saved,
             update_error=update_error,
         )
         await asyncio.sleep(0.03)
 
+        assert loading_statuses == [("status-1", "10")]
         assert backend.calls == [("10", None), ("11", "saved-1")]
-        assert saved_statuses == [("status-1", "saved-2"), ("status-2", "saved-2")]
+        assert saved_statuses == [("status-1", "saved-2")]
+
+    asyncio.run(scenario())
+
+
+def test_auto_mode_reports_prepare_error_on_single_bucket_status() -> None:
+    async def scenario() -> None:
+        backend = FakeBackend()
+        errors: list[tuple[str, str]] = []
+        service = TelegramIngestService(
+            backend=backend,  # type: ignore[arg-type]
+            state_repository=FakeStateRepository(),  # type: ignore[arg-type]
+            auto_group_window_seconds=0.01,
+            media_group_flush_seconds=0.01,
+        )
+
+        async def send_loading(material: InboundMaterial) -> str:
+            return "status-1"
+
+        async def prepare_material(
+            material: InboundMaterial,
+            status: str | None,
+        ) -> InboundMaterial:
+            raise RuntimeError("download failed")
+
+        async def update_saved(status: str, saved: SavedMaterial) -> None:
+            raise AssertionError("save callback should not run")
+
+        async def update_error(status: str, exc: Exception) -> None:
+            errors.append((status, str(exc)))
+
+        await service.ingest(
+            material=_material("10", group_id="album-1"),
+            state=_state(BotMode.AUTO),
+            send_loading=send_loading,
+            prepare_material=prepare_material,
+            update_saved=update_saved,
+            update_error=update_error,
+        )
+
+        assert errors == [("status-1", "download failed")]
+        assert backend.calls == []
+
+    asyncio.run(scenario())
+
+
+def test_auto_mode_waits_for_pending_bucket_items_before_flush() -> None:
+    async def scenario() -> None:
+        backend = FakeBackend()
+        saved_statuses: list[tuple[str, str]] = []
+        service = TelegramIngestService(
+            backend=backend,  # type: ignore[arg-type]
+            state_repository=FakeStateRepository(),  # type: ignore[arg-type]
+            auto_group_window_seconds=0.01,
+            media_group_flush_seconds=0.01,
+        )
+
+        async def send_loading(material: InboundMaterial) -> str:
+            return "status-1"
+
+        async def prepare_material(
+            material: InboundMaterial,
+            status: str | None,
+        ) -> InboundMaterial:
+            if material.telegram_message_id == "10":
+                await asyncio.sleep(0.03)
+            return material
+
+        async def update_saved(status: str, saved: SavedMaterial) -> None:
+            saved_statuses.append((status, saved.id or ""))
+
+        async def update_error(status: str, exc: Exception) -> None:
+            raise AssertionError(f"{status}: {exc}")
+
+        first = asyncio.create_task(
+            service.ingest(
+                material=_material("10", group_id="album-1"),
+                state=_state(BotMode.AUTO),
+                send_loading=send_loading,
+                prepare_material=prepare_material,
+                update_saved=update_saved,
+                update_error=update_error,
+            )
+        )
+        await asyncio.sleep(0)
+        second = asyncio.create_task(
+            service.ingest(
+                material=_material("11", group_id="album-1"),
+                state=_state(BotMode.AUTO),
+                send_loading=send_loading,
+                prepare_material=prepare_material,
+                update_saved=update_saved,
+                update_error=update_error,
+            )
+        )
+        await asyncio.gather(first, second)
+        await asyncio.sleep(0.04)
+
+        assert backend.calls == [("10", None), ("11", "saved-1")]
+        assert saved_statuses == [("status-1", "saved-2")]
 
     asyncio.run(scenario())

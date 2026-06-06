@@ -239,6 +239,63 @@
   max-height: 360px;
 }
 
+.mediaPlaceholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.78);
+  overflow: hidden;
+  position: relative;
+}
+
+.mediaPlaceholder::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 35% 25%, rgba(139, 200, 255, 0.18), transparent 34%),
+    radial-gradient(circle at 78% 74%, rgba(255, 114, 168, 0.12), transparent 38%);
+}
+
+.mediaPlaceholder svg {
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+  filter: drop-shadow(0 2px 14px rgba(0, 0, 0, 0.45));
+}
+
+.mediaPlaceholder span {
+  position: relative;
+  z-index: 1;
+  max-width: min(72%, 220px);
+  margin-left: 10px;
+  color: rgba(255, 255, 255, 0.76);
+  font-size: 12px;
+  font-weight: var(--font-weight-semibold);
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audioPlaceholder {
+  background:
+    linear-gradient(135deg, rgba(28, 34, 43, 0.98), rgba(15, 17, 24, 0.98)),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.08) 0 1px, transparent 1px 9px);
+}
+
+.videoPlaceholder {
+  background:
+    radial-gradient(circle at 50% 35%, rgba(255, 255, 255, 0.12), transparent 42%),
+    linear-gradient(145deg, rgba(34, 41, 58, 0.95), rgba(11, 13, 20, 0.95));
+}
+
+.filePlaceholder {
+  background:
+    linear-gradient(145deg, rgba(37, 41, 49, 0.98), rgba(15, 17, 22, 0.98)),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.045), transparent 34%, rgba(255, 255, 255, 0.035));
+}
+
 .title {
   font-size: 15px;
   font-weight: var(--font-weight-semibold);
@@ -449,16 +506,6 @@
 .collectionLayerBg {
   width: 100%;
   height: 100%;
-}
-
-.collectionLayerVideo {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: rgba(255, 255, 255, 0.76);
-  background:
-    radial-gradient(circle at 50% 35%, rgba(255, 255, 255, 0.12), transparent 42%),
-    linear-gradient(145deg, rgba(34, 41, 58, 0.95), rgba(11, 13, 20, 0.95)) !important;
 }
 
 .inlineTelegramEmoji {
@@ -705,6 +752,24 @@
   justify-content: center;
   padding: 20px;
   min-height: 168px;
+}
+
+.compositeCoverEmpty.audioPlaceholder {
+  background:
+    linear-gradient(135deg, rgba(28, 34, 43, 0.98), rgba(15, 17, 24, 0.98)),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.08) 0 1px, transparent 1px 9px);
+}
+
+.compositeCoverEmpty.videoPlaceholder {
+  background:
+    radial-gradient(circle at 50% 35%, rgba(255, 255, 255, 0.12), transparent 42%),
+    linear-gradient(145deg, rgba(34, 41, 58, 0.95), rgba(11, 13, 20, 0.95));
+}
+
+.compositeCoverEmpty.filePlaceholder {
+  background:
+    linear-gradient(145deg, rgba(37, 41, 49, 0.98), rgba(15, 17, 22, 0.98)),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.045), transparent 34%, rgba(255, 255, 255, 0.035));
 }
 
 .compositeCoverText {

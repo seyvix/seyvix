@@ -267,6 +267,6 @@ jobs:
           docker compose $compose_files pull
           docker compose $compose_files up -d --no-build --remove-orphans
           docker image prune -f
-          sleep 5
+          sleep 20
           docker compose restart proxy
           REMOTE

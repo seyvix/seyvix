@@ -28,6 +28,12 @@ router = Router(name="ingest")
 logger = logging.getLogger(__name__)
 
 
+class TelegramDownloadError(Exception):
+    def __init__(self, user_text: str) -> None:
+        super().__init__(user_text)
+        self.user_text = user_text
+
+
 @router.message()
 async def ingest_handler(
     message: Message,
@@ -57,49 +63,6 @@ async def ingest_handler(
         material.attachment is not None,
         material.source.group_id if material.source else None,
     )
-    status_message = await message.reply(
-        loading_text(material),
-        reply_markup=web_app_keyboard(web_app_url),
-    )
-
-    material = await _with_custom_emoji_assets(bot, material)
-    attachment = material.attachment
-    if attachment is not None:
-        try:
-            logger.info(
-                "Downloading Telegram attachment user=%s chat=%s message=%s file_id=%s filename=%s",
-                material.telegram_user_id,
-                material.telegram_chat_id,
-                material.telegram_message_id,
-                attachment.file_id,
-                attachment.filename,
-            )
-            data = await _download_attachment(bot, attachment.file_id)
-            logger.info(
-                "Downloaded Telegram attachment user=%s chat=%s message=%s file_id=%s bytes=%s",
-                material.telegram_user_id,
-                material.telegram_chat_id,
-                material.telegram_message_id,
-                attachment.file_id,
-                len(data),
-            )
-            material = material.with_attachment_data(
-                data
-            )
-        except Exception as exc:
-            logger.exception(
-                "Failed to download Telegram attachment for user=%s chat=%s message=%s file_id=%s",
-                material.telegram_user_id,
-                material.telegram_chat_id,
-                material.telegram_message_id,
-                attachment.file_id,
-            )
-            await status_message.edit_text(
-                _download_error_text(exc),
-                reply_markup=web_app_keyboard(web_app_url),
-            )
-            return
-
     state = await mode_service.get_state(telegram_user_id)
 
     async def update_saved_status(status_message: Message, saved: SavedMaterial) -> None:
@@ -111,7 +74,11 @@ async def ingest_handler(
     await ingest_service.ingest(
         material=material,
         state=state,
-        status=status_message,
+        send_loading=lambda item: message.reply(
+            loading_text(item),
+            reply_markup=web_app_keyboard(web_app_url),
+        ),
+        prepare_material=lambda item, status_message: _prepare_material(bot, item),
         update_saved=update_saved_status,
         update_error=lambda status_message, exc: _edit_ingest_error(
             status_message,
@@ -125,6 +92,43 @@ async def _download_attachment(bot: Bot, file_id: str) -> bytes:
     destination = BytesIO()
     await bot.download(file_id, destination=destination)
     return destination.getvalue()
+
+
+async def _prepare_material(bot: Bot, material: InboundMaterial) -> InboundMaterial:
+    material = await _with_custom_emoji_assets(bot, material)
+    attachment = material.attachment
+    if attachment is None:
+        return material
+
+    try:
+        logger.info(
+            "Downloading Telegram attachment user=%s chat=%s message=%s file_id=%s filename=%s",
+            material.telegram_user_id,
+            material.telegram_chat_id,
+            material.telegram_message_id,
+            attachment.file_id,
+            attachment.filename,
+        )
+        data = await _download_attachment(bot, attachment.file_id)
+    except Exception as exc:
+        logger.exception(
+            "Failed to download Telegram attachment for user=%s chat=%s message=%s file_id=%s",
+            material.telegram_user_id,
+            material.telegram_chat_id,
+            material.telegram_message_id,
+            attachment.file_id,
+        )
+        raise TelegramDownloadError(_download_error_text(exc)) from exc
+
+    logger.info(
+        "Downloaded Telegram attachment user=%s chat=%s message=%s file_id=%s bytes=%s",
+        material.telegram_user_id,
+        material.telegram_chat_id,
+        material.telegram_message_id,
+        attachment.file_id,
+        len(data),
+    )
+    return material.with_attachment_data(data)
 
 
 def _download_error_text(exc: Exception) -> str:
@@ -191,6 +195,12 @@ async def _edit_ingest_error(
     exc: Exception,
     web_app_url: str | None,
 ) -> None:
+    if isinstance(exc, TelegramDownloadError):
+        await status_message.edit_text(
+            exc.user_text,
+            reply_markup=web_app_keyboard(web_app_url),
+        )
+        return
     if isinstance(exc, httpx.HTTPStatusError):
         if exc.response.status_code == 404:
             await status_message.edit_text(

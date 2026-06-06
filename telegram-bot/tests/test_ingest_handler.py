@@ -51,12 +51,21 @@ class FakeBot:
 
 class UnusedModeService:
     async def get_state(self, telegram_user_id: str) -> object:
-        raise AssertionError("state is not needed when download fails")
+        return object()
 
 
-class UnusedIngestService:
-    async def ingest(self, **_: object) -> None:
-        raise AssertionError("ingest is not called when download fails")
+class FakeIngestService:
+    async def ingest(self, **kwargs: object) -> None:
+        material = kwargs["material"]
+        send_loading = kwargs["send_loading"]
+        prepare_material = kwargs["prepare_material"]
+        update_error = kwargs["update_error"]
+
+        status = await send_loading(material)  # type: ignore[operator]
+        try:
+            await prepare_material(material, status)  # type: ignore[operator]
+        except Exception as exc:
+            await update_error(status, exc)  # type: ignore[operator]
 
 
 def test_ingest_handler_replies_with_loading_before_downloading_attachment() -> None:
@@ -67,7 +76,7 @@ def test_ingest_handler_replies_with_loading_before_downloading_attachment() -> 
             FakeMessage(events),  # type: ignore[arg-type]
             FakeBot(events),  # type: ignore[arg-type]
             UnusedModeService(),  # type: ignore[arg-type]
-            UnusedIngestService(),  # type: ignore[arg-type]
+            FakeIngestService(),  # type: ignore[arg-type]
             user_context=UserContext(telegram_user_id="100500", linked=True, user_id="user-1"),
             telegram_user_id="100500",
         )

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import struct
+import subprocess
 import zipfile
 import zlib
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import select
+
 from app.modules.content.models import ContentAsset, ContentObject
 from app.modules.snapshots.artifacts import (
     FetchedWebpage,
@@ -25,8 +29,6 @@ from app.modules.snapshots.models import SnapshotJob
 from app.modules.snapshots.service import EffectiveSnapshotSettings, plan_snapshot_job_types
 from app.modules.snapshots.worker import extraction_metadata_from_generated_artifact
 from app.platform.events.models import EventOutbox
-from fastapi.testclient import TestClient
-from sqlalchemy import select
 from tests.test_content import _auth_headers
 
 
@@ -230,6 +232,59 @@ def test_snapshot_generator_creates_bounded_jpeg_thumbnail_for_image(tmp_path: P
     assert pixmap.width == 512
     assert pixmap.height == 384
     assert thumbnail.size_bytes < source_path.stat().st_size
+
+
+def test_snapshot_generator_creates_video_thumbnail_from_first_frame(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage_root = tmp_path / "storage"
+    object_dir = storage_root / "user-1" / "video.object"
+    source_dir = object_dir / "original"
+    source_dir.mkdir(parents=True)
+    source_path = source_dir / "clip.mp4"
+    source_path.write_bytes(b"fake video bytes")
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        Path(command[-1]).write_bytes(_png_bytes(640, 360, (60, 100, 180)))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("app.modules.snapshots.artifacts.subprocess.run", fake_run)
+
+    content_object = ContentObject(
+        id="object-1",
+        owner_user_id="user-1",
+        slug="video",
+        title="Video",
+        kind="simple",
+        media_type="video",
+        storage_path="user-1/video.object",
+    )
+    asset = ContentAsset(
+        id="asset-1",
+        content_object_id="object-1",
+        role="original",
+        media_type="video",
+        filename="clip.mp4",
+        mime_type="video/mp4",
+        size_bytes=source_path.stat().st_size,
+        storage_path="user-1/video.object/original/clip.mp4",
+    )
+
+    thumbnail = SnapshotArtifactGenerator(storage_root).generate(
+        content_object=content_object,
+        asset=asset,
+        job_type="thumbnail",
+    )
+
+    assert commands
+    assert commands[0][:4] == ["ffmpeg", "-y", "-ss", "0"]
+    assert "-frames:v" in commands[0]
+    assert thumbnail.filename == "thumbnail.jpg"
+    assert thumbnail.mime_type == "image/jpeg"
+    assert thumbnail.path.read_bytes().startswith(b"\xff\xd8\xff")
 
 
 def test_snapshot_generator_creates_jpeg_thumbnail_for_csv_preview(tmp_path: Path) -> None:
@@ -1528,6 +1583,7 @@ def test_convert_office_to_pdf_returns_no_output_when_subprocess_succeeds_silent
     """LibreOffice can exit 0 but never write a PDF (libetonyek on a modern
     .key is the real-world trigger)."""
     import subprocess as subprocess_mod
+
     from app.modules.snapshots import artifacts as artifacts_mod
     from app.modules.snapshots.artifacts import SnapshotArtifactGenerator
 
