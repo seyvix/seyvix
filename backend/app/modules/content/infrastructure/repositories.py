@@ -151,7 +151,12 @@ class ContentRepository:
         )
         return list(await self.session.scalars(query))
 
-    async def list_collection_items(self, collection_id: str) -> list[ContentCollectionItem]:
+    async def list_collection_items(
+        self,
+        collection_id: str,
+        *,
+        include_deleted_children: bool = False,
+    ) -> list[ContentCollectionItem]:
         query = (
             select(ContentCollectionItem)
             .options(
@@ -166,7 +171,17 @@ class ContentRepository:
             .where(ContentCollectionItem.collection_id == collection_id)
             .order_by(ContentCollectionItem.position.asc())
         )
-        return list(await self.session.scalars(query))
+        items = list(await self.session.scalars(query))
+        if include_deleted_children:
+            return items
+        # Soft-deleted children keep their content_collection_items row so the
+        # link can be restored from trash, but they must disappear from the
+        # collection's user-visible objects list.
+        return [
+            item
+            for item in items
+            if item.content_object is not None and item.content_object.deleted_at is None
+        ]
 
     async def get_membership(self, content_object_id: str) -> ContentCollectionItem | None:
         query = select(ContentCollectionItem).where(

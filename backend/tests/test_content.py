@@ -516,6 +516,55 @@ def test_repeated_upload_with_object_id_extends_same_object_as_collection(
     assert [obj["filename"] for obj in payload["objects"]] == ["one.txt", "two.txt"]
 
 
+def test_collection_omits_soft_deleted_children_from_objects(
+    content_client: TestClient,
+) -> None:
+    """A child sub-note that the user deleted should not appear in the
+    collection's `objects` list, even though the collection_items link
+    still exists for restore-from-trash purposes."""
+    headers = _auth_headers(content_client)
+    object_id = str(uuid4())
+
+    content_client.post(
+        "/api/v1/notes/file/upload",
+        headers=headers,
+        data={"object_id": object_id, "title": "Templates"},
+        files={"file": ("one.txt", b"One", "text/plain")},
+    )
+    second = content_client.post(
+        "/api/v1/notes/file/upload",
+        headers=headers,
+        data={"object_id": object_id, "title": "Templates"},
+        files={"file": ("two.txt", b"Two", "text/plain")},
+    )
+    assert second.status_code == 201
+    payload = second.json()
+    collection_slug = payload["slug"]
+    children = payload["objects"]
+    assert len(children) == 2
+    victim_slug = children[0]["slug"]
+    survivor_slug = children[1]["slug"]
+    assert victim_slug and survivor_slug
+
+    delete_response = content_client.request(
+        "DELETE",
+        "/api/v1/notes",
+        headers=headers,
+        json={"slugs": [victim_slug]},
+    )
+    assert delete_response.status_code == 204, delete_response.text
+
+    detail = content_client.get(
+        f"/api/v1/notes/{collection_slug}",
+        headers=headers,
+    )
+    assert detail.status_code == 200, detail.text
+    body = detail.json()
+    remaining_slugs = [obj.get("slug") for obj in body["objects"]]
+    assert victim_slug not in remaining_slugs, body
+    assert survivor_slug in remaining_slugs, body
+
+
 def test_merge_moves_objects_and_collections_into_target_collection(
     content_client: TestClient,
 ) -> None:
