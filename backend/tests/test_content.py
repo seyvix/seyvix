@@ -35,6 +35,10 @@ PNG_3X2 = base64.b64decode(
 )
 
 
+def test_image_dimensions_from_png_header() -> None:
+    assert ContentService._image_dimensions_from_header(PNG_3X2) == (3, 2)
+
+
 async def _prepare_database(database_url: str) -> async_sessionmaker:
     engine: AsyncEngine = create_async_engine(database_url)
     async with engine.begin() as connection:

@@ -1587,6 +1587,10 @@ class ContentService:
 
     @staticmethod
     def _image_dimensions(uploaded: UploadedContent) -> tuple[int | None, int | None]:
+        dimensions = ContentService._image_dimensions_from_header(uploaded.data)
+        if dimensions is not None:
+            return dimensions
+
         try:
             fitz: Any = importlib.import_module("fitz")
             doc: Any = fitz.open(
@@ -1621,6 +1625,73 @@ class ContentService:
             return width, height
         finally:
             doc.close()
+
+    @staticmethod
+    def _image_dimensions_from_header(data: bytes) -> tuple[int, int] | None:
+        if data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) >= 24:
+            width = int.from_bytes(data[16:20], "big")
+            height = int.from_bytes(data[20:24], "big")
+            return (width, height) if width > 0 and height > 0 else None
+
+        if data.startswith((b"GIF87a", b"GIF89a")) and len(data) >= 10:
+            width = int.from_bytes(data[6:8], "little")
+            height = int.from_bytes(data[8:10], "little")
+            return (width, height) if width > 0 and height > 0 else None
+
+        if data.startswith(b"RIFF") and len(data) >= 30 and data[8:12] == b"WEBP":
+            if data[12:16] == b"VP8 " and len(data) >= 30:
+                width = int.from_bytes(data[26:28], "little") & 0x3FFF
+                height = int.from_bytes(data[28:30], "little") & 0x3FFF
+                return (width, height) if width > 0 and height > 0 else None
+            if data[12:16] == b"VP8L" and len(data) >= 25:
+                bits = int.from_bytes(data[21:25], "little")
+                width = (bits & 0x3FFF) + 1
+                height = ((bits >> 14) & 0x3FFF) + 1
+                return (width, height) if width > 0 and height > 0 else None
+            if data[12:16] == b"VP8X" and len(data) >= 30:
+                width = int.from_bytes(data[24:27], "little") + 1
+                height = int.from_bytes(data[27:30], "little") + 1
+                return (width, height) if width > 0 and height > 0 else None
+
+        if data.startswith(b"\xff\xd8"):
+            index = 2
+            while index + 9 < len(data):
+                if data[index] != 0xFF:
+                    index += 1
+                    continue
+                marker = data[index + 1]
+                index += 2
+                while marker == 0xFF and index < len(data):
+                    marker = data[index]
+                    index += 1
+                if marker in {0xD8, 0xD9} or 0xD0 <= marker <= 0xD7:
+                    continue
+                if index + 2 > len(data):
+                    return None
+                segment_length = int.from_bytes(data[index:index + 2], "big")
+                if segment_length < 2 or index + segment_length > len(data):
+                    return None
+                if marker in {
+                    0xC0,
+                    0xC1,
+                    0xC2,
+                    0xC3,
+                    0xC5,
+                    0xC6,
+                    0xC7,
+                    0xC9,
+                    0xCA,
+                    0xCB,
+                    0xCD,
+                    0xCE,
+                    0xCF,
+                }:
+                    height = int.from_bytes(data[index + 3:index + 5], "big")
+                    width = int.from_bytes(data[index + 5:index + 7], "big")
+                    return (width, height) if width > 0 and height > 0 else None
+                index += segment_length
+
+        return None
 
     @staticmethod
     def _image_filetype(uploaded: UploadedContent) -> str:

@@ -292,15 +292,6 @@ class SnapshotWorker:
             status=artifact.status,
         )
 
-        if (
-            job.job_type == "thumbnail"
-            and asset is not None
-            and generated.width
-            and generated.height
-        ):
-            asset.image_width = generated.width
-            asset.image_height = generated.height
-
         job.status = "done"
         job.error_message = None
         job.last_error = None
