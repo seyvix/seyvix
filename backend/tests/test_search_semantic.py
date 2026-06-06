@@ -855,6 +855,7 @@ async def test_count_owned_notes_excludes_collections_and_trash() -> None:
     from sqlalchemy.ext.asyncio import create_async_engine
 
     from app.core.database import Base
+    from app.modules.auth.models import User
     from app.modules.content.infrastructure.repositories import ContentRepository
     from app.modules.content.models import ContentObject
 
@@ -875,6 +876,12 @@ async def test_count_owned_notes_excludes_collections_and_trash() -> None:
         now = datetime.now(UTC)
         owner = "u-owner"
         other = "u-other"
+        session.add_all(
+            [
+                User(id=owner, telegram_id="100501", display_name="Owner"),
+                User(id=other, telegram_id="100502", display_name="Other"),
+            ]
+        )
         kept = [
             ContentObject(
                 id=f"obj-kept-{i}",
