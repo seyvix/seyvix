@@ -12,7 +12,6 @@ from telegram_bot.infrastructure.backend_client import HttpSeyvixBackend
 from telegram_bot.services.state import BotStateRepository
 
 StatusMessage = TypeVar("StatusMessage")
-SendLoading = Callable[[InboundMaterial], Awaitable[StatusMessage]]
 UpdateSaved = Callable[[StatusMessage, SavedMaterial], Awaitable[None]]
 UpdateError = Callable[[StatusMessage, Exception], Awaitable[None]]
 
@@ -21,7 +20,7 @@ UpdateError = Callable[[StatusMessage, Exception], Awaitable[None]]
 class _Bucket:
     state: BotState
     materials: list[InboundMaterial]
-    status: object
+    statuses: list[object]
     task: asyncio.Task[None]
 
 
@@ -45,15 +44,14 @@ class TelegramIngestService:
         *,
         material: InboundMaterial,
         state: BotState,
-        send_loading: SendLoading[StatusMessage],
+        status: StatusMessage,
         update_saved: UpdateSaved[StatusMessage],
         update_error: UpdateError[StatusMessage],
     ) -> None:
         key = self._buffer_key(material=material, state=state)
         if key is None:
-            status = await send_loading(material)
             await self._save_and_update(
-                status=status,
+                statuses=[status],
                 state=state,
                 materials=[material],
                 update_saved=update_saved,
@@ -64,13 +62,13 @@ class TelegramIngestService:
         bucket = self._buckets.get(key)
         if bucket is None:
             placeholder = asyncio.create_task(asyncio.sleep(0))
-            status = await send_loading(material)
-            bucket = _Bucket(state=state, materials=[], status=status, task=placeholder)
+            bucket = _Bucket(state=state, materials=[], statuses=[], task=placeholder)
             self._buckets[key] = bucket
         else:
             bucket.task.cancel()
 
         bucket.materials.append(material)
+        bucket.statuses.append(status)
         bucket.task = asyncio.create_task(
             self._flush_later(
                 key=key,
@@ -96,9 +94,8 @@ class TelegramIngestService:
         bucket = self._buckets.pop(key, None)
         if bucket is None:
             return
-        status = cast(StatusMessage, bucket.status)
         await self._save_and_update(
-            status=status,
+            statuses=[cast(StatusMessage, status) for status in bucket.statuses],
             state=bucket.state,
             materials=_deduplicate_repeated_captions(_sort_materials(bucket.materials)),
             update_saved=update_saved,
@@ -108,7 +105,7 @@ class TelegramIngestService:
     async def _save_and_update(
         self,
         *,
-        status: StatusMessage,
+        statuses: list[StatusMessage],
         state: BotState,
         materials: list[InboundMaterial],
         update_saved: UpdateSaved[StatusMessage],
@@ -117,9 +114,9 @@ class TelegramIngestService:
         try:
             saved = await self._save_materials(state=state, materials=materials)
         except Exception as exc:
-            await update_error(status, exc)
+            await asyncio.gather(*(update_error(status, exc) for status in statuses))
             return
-        await update_saved(status, saved)
+        await asyncio.gather(*(update_saved(status, saved) for status in statuses))
 
     async def _save_materials(
         self,
