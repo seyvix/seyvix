@@ -753,3 +753,66 @@ async def test_http_client_replace_documents_pins_primary_key_to_id() -> None:
     assert captured["method"] == "POST"
     url = str(captured["url"])
     assert "primaryKey=id" in url, f"primary key not pinned in URL: {url}"
+
+
+@pytest.mark.asyncio
+async def test_meilisearch_backend_sets_ranking_score_threshold() -> None:
+    """
+    Without a ranking-score threshold, hybrid search returns every indexed
+    document for any query — semantic similarity is always nonzero, so an
+    unrelated query yields every chunk with a score around 0.5. We pin a
+    threshold so unrelated queries return nothing.
+    """
+
+    class _CapturingClient:
+        def __init__(self) -> None:
+            self.payloads: list[dict[str, Any]] = []
+
+        async def search(
+            self, *, index_uid: str, payload: dict[str, Any]
+        ) -> dict[str, Any]:
+            self.payloads.append(payload)
+            return {"hits": []}
+
+        async def configure_index(self, **kwargs: Any) -> None:
+            return None
+
+        async def replace_documents(self, **kwargs: Any) -> None:
+            return None
+
+        async def delete_documents_by_filter(self, **kwargs: Any) -> None:
+            return None
+
+    class _StubEmbeddingProvider:
+        async def embed_texts(
+            self, texts: list[str], *, model: str, dimensions: int
+        ) -> list[list[float]]:
+            return [[0.0] * dimensions for _ in texts]
+
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        auth_jwt_secret="test-secret",
+        search_engine="meilisearch",
+        search_meilisearch_url="http://meilisearch:7700",
+        search_meilisearch_ranking_score_threshold=0.62,
+        vector_embedding_dimensions=4,
+    )
+    client = _CapturingClient()
+    backend = MeilisearchSearchBackend(
+        client=cast(Any, client),
+        embedding_provider=cast(Any, _StubEmbeddingProvider()),
+        settings=settings,
+    )
+
+    await backend.search(
+        owner_user_id="user-1",
+        query="anything",
+        limit=10,
+        mode="hybrid",
+        filters=None,
+        source="content",
+        source_type="content_object",
+    )
+
+    assert len(client.payloads) == 1
+    assert client.payloads[0]["rankingScoreThreshold"] == 0.62

@@ -199,6 +199,7 @@ class MeilisearchSearchBackend:
                 source_id=source_id,
             ),
             "showRankingScore": True,
+            "rankingScoreThreshold": self.settings.search_meilisearch_ranking_score_threshold,
         }
         if mode != "full_text":
             vector = (

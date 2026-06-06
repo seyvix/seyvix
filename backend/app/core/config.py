@@ -138,6 +138,7 @@ class Settings(BaseSettings):
     search_meilisearch_embedder: str = "content"
     search_meilisearch_timeout_seconds: int = 5
     search_meilisearch_hybrid_semantic_ratio: float = 0.5
+    search_meilisearch_ranking_score_threshold: float = 0.6
     taxonomy_classification_high_threshold: float = 0.80
     taxonomy_classification_medium_threshold: float = 0.60
     taxonomy_llm_classification_accept_threshold: float = 0.80
