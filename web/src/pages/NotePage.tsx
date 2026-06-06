@@ -36,7 +36,7 @@ import { useUpdateNote } from '../hooks/useUpdateNote'
 import { useRemoveCollectionItems } from '../hooks/useRemoveCollectionItems'
 import { getTagColor } from '../utils/tagColor'
 import { getObjectPreviewSource } from '../utils/notePreview'
-import { getTelegramCardModel, type TelegramCardModel } from '../utils/noteCardPresentation'
+import { getNoteDisplayTitle, getTelegramCardModel, type TelegramCardModel } from '../utils/noteCardPresentation'
 import { parseMarkdownBlocks, type MarkdownBlock } from '../utils/markdownBlocks'
 import AuthImage from '../components/AuthImage/AuthImage'
 import HtmlSnapshotViewer from '../components/HtmlSnapshotViewer/HtmlSnapshotViewer'
@@ -1690,6 +1690,8 @@ export default function NotePage() {
     ? getTelegramCardModel({ ...note, objects: visibleObjects })
     : null
   const formattedDate = formatDetailDate(note.createdAt)
+  const firstTextObject = visibleObjects.find(obj => obj.type === 'text')
+  const displayTitle = getNoteDisplayTitle(note, firstTextObject?.content)
 
   return (
     <div className={styles.page}>
@@ -1753,7 +1755,7 @@ export default function NotePage() {
                     onChange={e => setEditTitle(e.target.value)}
                     onKeyDown={e => { if (e.key === 'Enter') saveEdit() }}
                   />
-                : <h1 className={styles.title}>{note.title}</h1>
+                : displayTitle && <h1 className={styles.title}>{displayTitle}</h1>
               }
               <div className={styles.metaRow}>
                 <TagList tags={note.tags} />

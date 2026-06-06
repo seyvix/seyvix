@@ -986,9 +986,7 @@ class ContentService:
         folder_path: str | None,
         tag_names: list[str],
     ) -> NoteCardResponse:
-        normalized_title = _strip_title_markdown(
-            title or text.strip().splitlines()[0]
-        )[:80]
+        normalized_title = _strip_title_markdown(title or text.strip().splitlines()[0])[:80]
         slug = await self._unique_slug(owner_user_id, normalized_title)
         sort_order = await self._next_root_sort_order(owner_user_id=owner_user_id)
         content_object_id = str(uuid4())
@@ -1068,9 +1066,7 @@ class ContentService:
         folder_path: str | None,
         tag_names: list[str],
     ) -> NoteCardResponse:
-        normalized_title = (
-            _strip_title_markdown(title)[:80] if title else self._link_title(url)
-        )
+        normalized_title = _strip_title_markdown(title)[:80] if title else self._link_title(url)
         slug = await self._unique_slug(owner_user_id, normalized_title)
         sort_order = await self._next_root_sort_order(owner_user_id=owner_user_id)
         content_object_id = str(uuid4())
@@ -1305,9 +1301,7 @@ class ContentService:
     ) -> NoteCardResponse:
         file_media_type = self._media_type(uploaded.filename, uploaded.content_type)
         first_line = next(iter(text.strip().splitlines()), "")
-        normalized_title = (
-            _strip_title_markdown(title or first_line)[:80] or uploaded.filename
-        )
+        normalized_title = _strip_title_markdown(title or first_line)[:80] or uploaded.filename
         slug = await self._unique_slug(owner_user_id, normalized_title)
         sort_order = await self._next_root_sort_order(owner_user_id=owner_user_id)
         content_object_id = str(uuid4())
@@ -1509,10 +1503,12 @@ class ContentService:
     ) -> ContentObject:
         media_type = self._media_type(uploaded.filename, uploaded.content_type)
         kind = "complex" if media_type == "document" else "simple"
-        normalized_title = _strip_title_markdown(title)[:80] if title else uploaded.filename
+        normalized_title = (
+            _strip_title_markdown(title)[:80] if title is not None else uploaded.filename
+        )
         slug = await self._unique_slug(
             owner_user_id,
-            Path(uploaded.filename).stem or normalized_title,
+            Path(uploaded.filename).stem or normalized_title or "uploaded-file",
         )
         sort_order = await self._next_root_sort_order(owner_user_id=owner_user_id)
         content_object_id = object_id or str(uuid4())

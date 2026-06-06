@@ -2,7 +2,15 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import type { Note } from '../types'
-import { collectSourceChips, getSavedDateLabel, getTelegramCardModel } from './noteCardPresentation.ts'
+import {
+  cleanDisplayTitle,
+  collectSourceChips,
+  getNoteDisplayTitle,
+  getSavedDateLabel,
+  getTelegramCardModel,
+  isRedundantTextTitle,
+  truncateMarkdownInline,
+} from './noteCardPresentation.ts'
 
 const telegramNote: Note = {
   id: 'note-1',
@@ -74,4 +82,37 @@ test('saved date label uses relative labels for recent notes', () => {
   assert.equal(getSavedDateLabel('2026-05-18T23:00:00+03:00', now), 'Вчера')
   assert.equal(getSavedDateLabel('2026-05-16T12:00:00+03:00', now), '3 дн. назад')
   assert.equal(getSavedDateLabel('2026-05-01T12:00:00+03:00', now), '1 мая')
+})
+
+test('display titles strip markdown and telegram custom emoji markers', () => {
+  assert.equal(
+    cleanDisplayTitle('{{tg_emoji:5296452815005185363|⚡}} **За слово «обезьяна»**'),
+    'За слово «обезьяна»',
+  )
+  assert.equal(cleanDisplayTitle('**Последнее время я всё больше углубляюсь в музыку.**'), 'Последнее время я всё больше углубляюсь в музыку.')
+})
+
+test('redundant text title is hidden when it duplicates the note body start', () => {
+  assert.equal(isRedundantTextTitle('Короткая заметка', 'Короткая заметка'), true)
+  assert.equal(isRedundantTextTitle('Короткая заметка', '**Короткая заметка** и продолжение'), true)
+  assert.equal(isRedundantTextTitle('Отдельный заголовок', 'Совсем другой текст'), false)
+})
+
+test('telegram transport filenames are hidden as display titles', () => {
+  assert.equal(
+    getNoteDisplayTitle({
+      ...telegramNote,
+      title: 'telegram-photo',
+      type: 'simple',
+      objects: [telegramNote.objects[0]],
+    }),
+    null,
+  )
+})
+
+test('truncated inline markdown closes open formatting markers', () => {
+  assert.equal(
+    truncateMarkdownInline('**За слово «обезьяна» в РФ могут ОШТРАФОВАТЬ** на сумму', 32),
+    '**За слово «обезьяна» в РФ могут**...',
+  )
 })
