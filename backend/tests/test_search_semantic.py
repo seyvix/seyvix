@@ -851,6 +851,7 @@ async def test_count_owned_notes_excludes_collections_and_trash() -> None:
     """
     from datetime import UTC, datetime
 
+    from sqlalchemy import text
     from sqlalchemy.ext.asyncio import create_async_engine
 
     from app.core.database import Base
@@ -864,6 +865,7 @@ async def test_count_owned_notes_excludes_collections_and_trash() -> None:
     engine = create_async_engine(database_url)
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.drop_all)
+        await connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await connection.run_sync(Base.metadata.create_all)
     await engine.dispose()
     factory = build_session_factory(database_url)
