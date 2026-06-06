@@ -43,6 +43,7 @@ import HtmlSnapshotViewer from '../components/HtmlSnapshotViewer/HtmlSnapshotVie
 import { LoaderSpinner } from '../components/LoaderSpinner'
 import { apiFetch } from '../lib/apiClient'
 import { deleteNotes } from '../api/notes'
+import { SEARCH_CAPABILITIES_QUERY_KEY } from '../hooks/useSearchCapabilities'
 import { useAuthenticatedObjectUrl } from '../hooks/useAuthenticatedObjectUrl'
 import {
   acceptTagSuggestion,
@@ -1621,6 +1622,10 @@ export default function NotePage() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['notes'] })
       await queryClient.invalidateQueries({ queryKey: ['notes-trash'] })
+      // Any parent collection cached as ['note', parentId] still lists this
+      // child in its objects; drop them all so the next visit refetches.
+      await queryClient.invalidateQueries({ queryKey: ['note'] })
+      await queryClient.invalidateQueries({ queryKey: SEARCH_CAPABILITIES_QUERY_KEY })
       navigate('/notes')
     },
   })
