@@ -18,6 +18,9 @@ import { shouldRenderBeforeAuthRefresh } from './utils/authBootstrap'
 export async function loader({ request }: LoaderFunctionArgs) {
   const auth = await loadServerAuth(request)
   const pathname = new URL(request.url).pathname
+  const headers = new Headers(auth.headers)
+  headers.set('Cache-Control', 'private, no-store, max-age=0')
+  headers.set('Pragma', 'no-cache')
 
   return data(
     {
@@ -25,7 +28,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
       authInitialReady: Boolean(auth.user) || shouldRenderBeforeAuthRefresh(pathname),
     },
     {
-      headers: auth.headers,
+      headers,
     },
   )
 }

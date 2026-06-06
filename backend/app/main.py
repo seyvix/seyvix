@@ -1,3 +1,7 @@
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.api.cache import install_cache_control
 from app.api.errors import install_error_handlers
 from app.api.router import api_router
 from app.core.config import Settings, get_settings
@@ -5,8 +9,6 @@ from app.core.database import build_session_factory
 from app.core.lifespan import lifespan
 from app.core.logging import configure_logging
 from app.platform.storage.factory import build_storage_backend
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 
 
 def configure_cors(app: FastAPI, settings: Settings) -> None:
@@ -44,6 +46,7 @@ def create_app() -> FastAPI:
         build_storage_backend(settings) if settings.storage_backend == "s3" else None
     )
     configure_cors(app, settings)
+    install_cache_control(app, api_prefix=settings.api_prefix)
     install_error_handlers(app)
     app.include_router(api_router, prefix=settings.api_prefix)
     return app

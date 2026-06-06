@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { apiFetch } from '../../lib/apiClient'
+import { authenticatedBlobUrl, cachedAuthenticatedBlobUrl } from '../../utils/authenticatedBlobUrl'
 import { LoaderSpinner } from '../LoaderSpinner'
 import styles from './AuthImage.module.css'
 
@@ -7,31 +7,24 @@ interface AuthImageProps extends React.ImgHTMLAttributes<HTMLImageElement> {
   src: string
 }
 
-const cache = new Map<string, string>()
-
 export default function AuthImage({ src, className, style, ...rest }: AuthImageProps) {
-  const [blobUrl, setBlobUrl] = useState<string | null>(() => cache.get(src) ?? null)
+  const [blobUrl, setBlobUrl] = useState<string | null>(() => cachedAuthenticatedBlobUrl(src))
   const [imgReady, setImgReady] = useState(false)
 
   useEffect(() => {
     if (!src) return
-    if (cache.has(src)) {
-      setBlobUrl(cache.get(src)!)
+    const cached = cachedAuthenticatedBlobUrl(src)
+    if (cached) {
+      setBlobUrl(cached)
       setImgReady(false)
       return
     }
 
     let cancelled = false
     setImgReady(false)
-    apiFetch(src)
-      .then(res => {
-        if (!res.ok) throw new Error('fetch failed')
-        return res.blob()
-      })
-      .then(blob => {
+    authenticatedBlobUrl(src)
+      .then(url => {
         if (cancelled) return
-        const url = URL.createObjectURL(blob)
-        cache.set(src, url)
         setBlobUrl(url)
       })
       .catch(() => {

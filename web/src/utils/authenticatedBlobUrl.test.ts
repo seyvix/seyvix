@@ -29,3 +29,30 @@ test('protected media assets are fetched with auth and cached as object URLs', a
   assert.equal(calls[0].url, '/api/v1/notes/note/asset/audio')
   assert.equal(calls[0].headers.get('Authorization'), 'Bearer access-token')
 })
+
+test('concurrent protected media requests share one fetch and one object URL', async () => {
+  const calls: string[] = []
+  configureApiClient({
+    getToken: () => 'access-token',
+    setToken: () => {},
+    onUnauthenticated: () => {},
+  })
+  globalThis.fetch = async (input) => {
+    calls.push(String(input))
+    await new Promise(resolve => setTimeout(resolve, 1))
+    return new Response(new Blob(['image'], { type: 'image/png' }), { status: 200 })
+  }
+
+  const src = '/api/v1/notes/note/asset/image'
+  const [first, second, third] = await Promise.all([
+    authenticatedBlobUrl(src),
+    authenticatedBlobUrl(src),
+    authenticatedBlobUrl(src),
+  ])
+
+  assert.match(first, /^blob:/)
+  assert.equal(second, first)
+  assert.equal(third, first)
+  assert.equal(cachedAuthenticatedBlobUrl(src), first)
+  assert.deepEqual(calls, [src])
+})
