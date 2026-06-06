@@ -4,19 +4,20 @@ import json
 from datetime import datetime
 from typing import Annotated
 
+from fastapi import APIRouter, Depends, File, Form, Header, Query, UploadFile, status
+from pydantic import ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.api.dependencies import get_db_session
 from app.api.errors import AppError
 from app.core.config import get_settings
 from app.modules.content.presentation.rest.router import get_content_service
 from app.modules.content.service import ContentService, UploadedContent
 from app.modules.telegram_integration.schemas import (
-    TelegramFinishRequest,
-    TelegramFinishResponse,
     TelegramIngestPayload,
     TelegramIngestResponse,
     TelegramMaterialType,
-    TelegramModeRequest,
-    TelegramModeResponse,
+    TelegramStatusResponse,
     UniversalSourcePayload,
 )
 from app.modules.telegram_integration.service import (
@@ -24,9 +25,6 @@ from app.modules.telegram_integration.service import (
     TelegramIngestService,
     TelegramUserNotLinkedError,
 )
-from fastapi import APIRouter, Depends, File, Form, Header, UploadFile, status
-from pydantic import ValidationError
-from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/integrations/telegram", tags=["integrations"])
 
@@ -47,11 +45,9 @@ def get_telegram_ingest_service(
     session: Annotated[AsyncSession, Depends(get_db_session)],
     content_service: Annotated[ContentService, Depends(get_content_service)],
 ) -> TelegramIngestService:
-    settings = get_settings()
     return TelegramIngestService(
         session=session,
         content_service=content_service,
-        default_group_window_seconds=settings.telegram_default_group_window_seconds,
     )
 
 
@@ -107,6 +103,7 @@ async def ingest_telegram_message(
     caption: Annotated[str | None, Form()] = None,
     filename: Annotated[str | None, Form(max_length=512)] = None,
     mime_type: Annotated[str | None, Form(max_length=255)] = None,
+    target_collection_id: Annotated[str | None, Form(max_length=64)] = None,
     source: Annotated[str | None, Form()] = None,
     file: Annotated[UploadFile | None, File()] = None,
 ) -> TelegramIngestResponse:
@@ -129,6 +126,7 @@ async def ingest_telegram_message(
         caption=caption,
         filename=filename,
         mime_type=mime_type,
+        target_collection_id=target_collection_id,
         source=_parse_source_payload(source),
     )
     try:
@@ -138,44 +136,19 @@ async def ingest_telegram_message(
         raise
 
 
-@router.post(
-    "/mode",
-    response_model=TelegramModeResponse,
-    summary="Set Telegram ingest mode",
-    description="Internal endpoint used by the bot to switch between default and grouped modes.",
+@router.get(
+    "/status",
+    response_model=TelegramStatusResponse,
+    summary="Get Telegram link status",
+    description=(
+        "Internal endpoint used by the Telegram bot service to check whether a Telegram "
+        "user id is linked to a Seyvix account. It does not mutate bot ingest state."
+    ),
 )
-async def set_telegram_mode(
-    payload: TelegramModeRequest,
+async def get_telegram_status(
+    telegram_user_id: Annotated[str, Query(max_length=64)],
     service: Annotated[TelegramIngestService, Depends(get_telegram_ingest_service)],
     authorization: Annotated[str | None, Header()] = None,
-) -> TelegramModeResponse:
+) -> TelegramStatusResponse:
     _verify_internal_token(authorization)
-    try:
-        mode = await service.set_mode(
-            telegram_user_id=payload.telegram_user_id,
-            mode=payload.mode,
-        )
-        return TelegramModeResponse(mode=mode)
-    except TelegramUserNotLinkedError as exc:
-        _raise_integration_error(exc)
-        raise
-
-
-@router.post(
-    "/finish",
-    response_model=TelegramFinishResponse,
-    summary="Finish Telegram grouped collection",
-    description="Internal endpoint used by the bot when a user sends /finish.",
-)
-async def finish_telegram_collection(
-    payload: TelegramFinishRequest,
-    service: Annotated[TelegramIngestService, Depends(get_telegram_ingest_service)],
-    authorization: Annotated[str | None, Header()] = None,
-) -> TelegramFinishResponse:
-    _verify_internal_token(authorization)
-    try:
-        await service.finish_collection(telegram_user_id=payload.telegram_user_id)
-        return TelegramFinishResponse(status="finished")
-    except TelegramUserNotLinkedError as exc:
-        _raise_integration_error(exc)
-        raise
+    return await service.status(telegram_user_id=telegram_user_id)

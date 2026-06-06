@@ -1,20 +1,20 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.content.app_note import note_card_to_app_note
 from app.modules.content.schemas import FileUploadResponse, NoteCardResponse
 from app.modules.content.service import ContentService, UploadedContent
 from app.modules.telegram_integration.infrastructure.repositories import TelegramIngestRepository
-from app.modules.telegram_integration.models import TelegramIngestState
 from app.modules.telegram_integration.schemas import (
     TelegramIngestMode,
     TelegramIngestPayload,
     TelegramIngestResponse,
     TelegramIngestStatus,
+    TelegramStatusResponse,
 )
-from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class TelegramUserNotLinkedError(Exception):
@@ -31,38 +31,20 @@ class TelegramIngestService:
         *,
         session: AsyncSession,
         content_service: ContentService,
-        default_group_window_seconds: int,
     ) -> None:
         self.session = session
         self.content = content_service
         self.repo = TelegramIngestRepository(session)
-        self.default_group_window = timedelta(seconds=default_group_window_seconds)
 
-    async def set_mode(
-        self, *, telegram_user_id: str, mode: TelegramIngestMode
-    ) -> TelegramIngestMode:
+    async def status(self, *, telegram_user_id: str) -> TelegramStatusResponse:
         user = await self.repo.get_user_by_telegram_id(telegram_user_id)
         if user is None:
-            raise TelegramUserNotLinkedError
-        state = await self.repo.get_or_create_state(user.id)
-        state.mode = mode
-        if mode == "default":
-            state.active_collection_id = None
-        else:
-            state.default_group_collection_id = None
-            state.last_message_at = None
-        await self.session.commit()
-        return mode
-
-    async def finish_collection(self, *, telegram_user_id: str) -> None:
-        user = await self.repo.get_user_by_telegram_id(telegram_user_id)
-        if user is None:
-            raise TelegramUserNotLinkedError
-        state = await self.repo.get_or_create_state(user.id)
-        state.active_collection_id = None
-        state.default_group_collection_id = None
-        state.last_message_at = None
-        await self.session.commit()
+            return TelegramStatusResponse(linked=False)
+        return TelegramStatusResponse(
+            linked=True,
+            user_id=user.id,
+            display_name=user.display_name,
+        )
 
     async def ingest(
         self,
@@ -74,142 +56,21 @@ class TelegramIngestService:
         if user is None:
             raise TelegramUserNotLinkedError
 
-        state = await self.repo.get_or_create_state(user.id)
-        mode = self._mode(state)
-        message_at = payload.message_date or datetime.now(UTC)
-        if mode == "grouped_notes":
-            return await self._ingest_grouped(
+        if payload.target_collection_id is not None:
+            card = await self._append_to_collection(
                 owner_user_id=user.id,
-                state=state,
+                target_id=payload.target_collection_id,
                 payload=payload,
                 uploaded=uploaded,
-                message_at=message_at,
             )
-        if self._source_group_key(payload) is not None:
-            return await self._ingest_source_group(
-                owner_user_id=user.id,
-                state=state,
-                payload=payload,
-                uploaded=uploaded,
-                message_at=message_at,
-            )
-        return await self._ingest_default(
+            return self._response(status="collection_updated", mode="default", card=card)
+
+        card = await self._create_standalone(
             owner_user_id=user.id,
-            state=state,
-            payload=payload,
-            uploaded=uploaded,
-            message_at=message_at,
-        )
-
-    async def _ingest_source_group(
-        self,
-        *,
-        owner_user_id: str,
-        state: TelegramIngestState,
-        payload: TelegramIngestPayload,
-        uploaded: UploadedContent | None,
-        message_at: datetime,
-    ) -> TelegramIngestResponse:
-        group_key = self._source_group_key(payload)
-        target_id = (
-            state.source_group_collection_id
-            if group_key is not None and state.source_group_key == group_key
-            else None
-        )
-        if target_id is None:
-            card = await self._create_standalone(
-                owner_user_id=owner_user_id,
-                payload=payload,
-                uploaded=uploaded,
-            )
-            state.source_group_key = group_key
-            state.source_group_collection_id = card.id
-            state.source_group_last_message_at = message_at
-            state.default_group_collection_id = card.id
-            state.last_message_at = message_at
-            await self.session.commit()
-            return self._response(status="saved", mode="default", card=card)
-
-        card = await self._append_to_collection(
-            owner_user_id=owner_user_id,
-            target_id=target_id,
             payload=payload,
             uploaded=uploaded,
         )
-        state.source_group_key = group_key
-        state.source_group_collection_id = card.id
-        state.source_group_last_message_at = message_at
-        state.default_group_collection_id = card.id
-        state.last_message_at = message_at
-        await self.session.commit()
-        return self._response(status="collection_updated", mode="default", card=card)
-
-    async def _ingest_default(
-        self,
-        *,
-        owner_user_id: str,
-        state: TelegramIngestState,
-        payload: TelegramIngestPayload,
-        uploaded: UploadedContent | None,
-        message_at: datetime,
-    ) -> TelegramIngestResponse:
-        target_id = (
-            state.default_group_collection_id
-            if self._is_inside_default_window(state=state, message_at=message_at)
-            else None
-        )
-        if target_id is None:
-            card = await self._create_standalone(
-                owner_user_id=owner_user_id,
-                payload=payload,
-                uploaded=uploaded,
-            )
-            state.default_group_collection_id = card.id
-            state.last_message_at = message_at
-            await self.session.commit()
-            return self._response(status="saved", mode="default", card=card)
-
-        card = await self._append_to_collection(
-            owner_user_id=owner_user_id,
-            target_id=target_id,
-            payload=payload,
-            uploaded=uploaded,
-        )
-        state.default_group_collection_id = card.id
-        state.last_message_at = message_at
-        await self.session.commit()
-        return self._response(status="collection_updated", mode="default", card=card)
-
-    async def _ingest_grouped(
-        self,
-        *,
-        owner_user_id: str,
-        state: TelegramIngestState,
-        payload: TelegramIngestPayload,
-        uploaded: UploadedContent | None,
-        message_at: datetime,
-    ) -> TelegramIngestResponse:
-        if state.active_collection_id is None:
-            card = await self._create_standalone(
-                owner_user_id=owner_user_id,
-                payload=payload,
-                uploaded=uploaded,
-            )
-            state.active_collection_id = card.id
-            state.last_message_at = message_at
-            await self.session.commit()
-            return self._response(status="collection_started", mode="grouped_notes", card=card)
-
-        card = await self._append_to_collection(
-            owner_user_id=owner_user_id,
-            target_id=state.active_collection_id,
-            payload=payload,
-            uploaded=uploaded,
-        )
-        state.active_collection_id = card.id
-        state.last_message_at = message_at
-        await self.session.commit()
-        return self._response(status="collection_updated", mode="grouped_notes", card=card)
+        return self._response(status="saved", mode="default", card=card)
 
     async def _append_to_collection(
         self,
@@ -321,30 +182,6 @@ class TelegramIngestService:
             source=payload.source.model_dump(mode="python"),
         )
         return await self.content.get_note(owner_user_id=owner_user_id, slug=card.slug)
-
-    def _is_inside_default_window(
-        self,
-        *,
-        state: TelegramIngestState,
-        message_at: datetime,
-    ) -> bool:
-        if state.default_group_collection_id is None or state.last_message_at is None:
-            return False
-        previous = state.last_message_at
-        if previous.tzinfo is None:
-            previous = previous.replace(tzinfo=UTC)
-        current = message_at if message_at.tzinfo is not None else message_at.replace(tzinfo=UTC)
-        return current - previous <= self.default_group_window
-
-    @staticmethod
-    def _mode(state: TelegramIngestState) -> TelegramIngestMode:
-        return "grouped_notes" if state.mode == "grouped_notes" else "default"
-
-    @staticmethod
-    def _source_group_key(payload: TelegramIngestPayload) -> str | None:
-        if payload.source is None or not payload.source.group_id:
-            return None
-        return f"{payload.source.provider}:{payload.source.group_id}"
 
     @staticmethod
     def _message_text(payload: TelegramIngestPayload) -> str | None:

@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from aiogram.types import Message
+
 from telegram_bot.domain.models import Attachment, InboundMaterial, MaterialType, SourceMetadata
 
 
@@ -208,19 +209,20 @@ def _is_plain_http_url(value: str) -> bool:
 def _markdown_text(value: object, entities_value: object) -> str | None:
     if not isinstance(value, str):
         return None
-    entities = [item for item in entities_value or [] if isinstance(item, Mapping)]
+    raw_entities = entities_value if isinstance(entities_value, list) else []
+    entities = [item for item in raw_entities if isinstance(item, Mapping)]
     if not entities:
         return value
     replacements: list[tuple[int, int, str, str, str]] = []
-    entity_ranges = [
-        _entity_range(value, entity) for entity in entities if isinstance(entity.get("type"), str)
-    ]
-    non_custom_ranges = [
-        item for item in entity_ranges if item is not None and item[2].get("type") != "custom_emoji"
-    ]
-    custom_ranges = [
-        item for item in entity_ranges if item is not None and item[2].get("type") == "custom_emoji"
-    ]
+    entity_ranges: list[tuple[int, int, Mapping[str, Any]]] = []
+    for entity in entities:
+        if not isinstance(entity.get("type"), str):
+            continue
+        entity_range = _entity_range(value, entity)
+        if entity_range is not None:
+            entity_ranges.append(entity_range)
+    non_custom_ranges = [item for item in entity_ranges if item[2].get("type") != "custom_emoji"]
+    custom_ranges = [item for item in entity_ranges if item[2].get("type") == "custom_emoji"]
 
     for start, end, entity in entity_ranges:
         entity_type = entity.get("type")

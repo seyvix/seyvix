@@ -3,8 +3,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from app.modules.content.app_note import AppNote
 from pydantic import BaseModel, Field
+
+from app.modules.content.app_note import AppNote
 
 TelegramIngestMode = Literal["default", "grouped_notes"]
 TelegramMaterialType = Literal[
@@ -20,21 +21,10 @@ TelegramMaterialType = Literal[
 TelegramIngestStatus = Literal["saved", "collection_started", "collection_updated"]
 
 
-class TelegramModeRequest(BaseModel):
-    telegram_user_id: str = Field(min_length=1, max_length=64)
-    mode: TelegramIngestMode
-
-
-class TelegramModeResponse(BaseModel):
-    mode: TelegramIngestMode
-
-
-class TelegramFinishRequest(BaseModel):
-    telegram_user_id: str = Field(min_length=1, max_length=64)
-
-
-class TelegramFinishResponse(BaseModel):
-    status: Literal["finished"]
+class TelegramStatusResponse(BaseModel):
+    linked: bool
+    user_id: str | None = None
+    display_name: str | None = None
 
 
 class UniversalSourcePayload(BaseModel):
@@ -63,6 +53,7 @@ class TelegramIngestPayload(BaseModel):
     caption: str | None = None
     filename: str | None = Field(default=None, max_length=512)
     mime_type: str | None = Field(default=None, max_length=255)
+    target_collection_id: str | None = Field(default=None, max_length=64)
     source: UniversalSourcePayload | None = None
 
 
