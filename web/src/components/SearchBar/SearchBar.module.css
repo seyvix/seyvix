@@ -71,6 +71,16 @@
   opacity: 1;
 }
 
+.chipRemove:focus-visible,
+.historyItem:focus-visible,
+.modeButton:focus-visible,
+.modeItem:focus-visible,
+.modeItemActive:focus-visible,
+.clearBtn:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
 .historyMenu {
   position: absolute;
   top: calc(100% + 7px);
@@ -243,7 +253,17 @@
   }
 
   .historyMenu {
-    width: min(320px, calc(100vw - 72px));
+    left: -30px;
+    width: calc(100vw - 24px);
+    max-height: min(46svh, 360px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .historyItem,
+  .modeItem,
+  .modeItemActive {
+    min-height: 44px;
   }
 
   .input {
@@ -272,17 +292,20 @@
   }
 
   .modeButton {
-    width: 32px;
-    height: 32px;
+    width: 44px;
+    height: 44px;
   }
 
   .modeMenu {
     right: -6px;
-    width: 164px;
+    width: min(220px, calc(100vw - 24px));
+    max-height: min(46svh, 360px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
 
   .clearBtn {
-    width: 44px;
+    width: 48px;
     margin-right: -12px;
     background: transparent;
     color: var(--color-text-secondary);

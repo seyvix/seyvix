@@ -52,6 +52,36 @@
   cursor: default;
 }
 
+.emptyItem {
+  cursor: default;
+}
+
+.emptyState {
+  display: grid;
+  align-content: center;
+  gap: 8px;
+  min-height: 156px;
+  padding: 18px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+}
+
+.emptyState h2 {
+  color: var(--color-text-primary);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-semibold);
+  line-height: 1.25;
+  text-wrap: balance;
+}
+
+.emptyState p {
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
 .mobileGrid .item {
   cursor: default;
   touch-action: pan-y;
@@ -90,7 +120,7 @@
 @media (max-width: 640px) {
   .scrollArea {
     overscroll-behavior: contain;
-    padding-bottom: calc(72px + env(safe-area-inset-bottom));
+    padding-bottom: var(--mobile-bottom-nav-clearance);
   }
 
   .grid {
@@ -103,4 +133,8 @@
     touch-action: pan-y;
   }
 
+  .emptyState {
+    min-height: 132px;
+    padding: 16px;
+  }
 }

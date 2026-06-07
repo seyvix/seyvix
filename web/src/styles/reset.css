@@ -6,11 +6,14 @@
 
 html {
   -webkit-text-size-adjust: 100%;
+  color-scheme: dark;
 }
 
 body {
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  background: var(--color-bg);
+  overscroll-behavior: none;
 }
 
 img, picture, video, canvas, svg {
@@ -20,6 +23,18 @@ img, picture, video, canvas, svg {
 
 input, button, textarea, select {
   font: inherit;
+}
+
+button,
+input,
+textarea,
+select {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button,
+a {
+  touch-action: manipulation;
 }
 
 p, h1, h2, h3, h4, h5, h6 {

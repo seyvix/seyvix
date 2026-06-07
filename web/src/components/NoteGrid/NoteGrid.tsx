@@ -23,11 +23,15 @@ type MuuriItem = import('muuri').Item
 
 interface NoteGridProps {
   notes: Note[]
+  emptyState?: {
+    title: string
+    description: string
+  }
   onAddNote?: () => void
   onTagClick?: (tag: string) => void
 }
 
-export function NoteGrid({ notes, onAddNote, onTagClick }: NoteGridProps) {
+export function NoteGrid({ notes, emptyState, onAddNote, onTagClick }: NoteGridProps) {
   const knownKeysRef  = useRef(new Set<string>())
   const isFirstRender = useRef(true)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -314,6 +318,15 @@ export function NoteGrid({ notes, onAddNote, onTagClick }: NoteGridProps) {
               <AddNoteCard onClick={onAddNote} />
             </div>
           </div>
+
+          {orderedNotes.length === 0 && emptyState ? (
+            <div className={`${styles.item} ${styles.emptyItem}`} style={itemStyle} data-static-item="true" data-muuri-item>
+              <div className={styles.emptyState}>
+                <h2>{emptyState.title}</h2>
+                <p>{emptyState.description}</p>
+              </div>
+            </div>
+          ) : null}
 
           {orderedNotes.map(note => {
             const key = note.stableKey ?? note.id

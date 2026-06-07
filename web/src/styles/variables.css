@@ -50,4 +50,8 @@
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.5);
+
+  /* Mobile layout */
+  --mobile-bottom-nav-height: calc(64px + env(safe-area-inset-bottom));
+  --mobile-bottom-nav-clearance: calc(var(--mobile-bottom-nav-height) + 12px);
 }

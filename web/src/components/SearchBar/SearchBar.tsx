@@ -74,6 +74,10 @@ export function SearchBar({
         })}
         <input
           className={styles.input}
+          type="search"
+          name="notes-search"
+          autoComplete="off"
+          enterKeyHint="search"
           placeholder="Поиск…"
           value={search}
           onChange={e => onSearchChange(e.target.value)}

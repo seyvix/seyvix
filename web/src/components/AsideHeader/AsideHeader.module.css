@@ -348,7 +348,7 @@
     bottom: 0;
     z-index: 60;
     width: auto;
-    height: calc(64px + env(safe-area-inset-bottom));
+    height: var(--mobile-bottom-nav-height);
     padding-bottom: env(safe-area-inset-bottom);
     flex-direction: row;
     align-items: stretch;
@@ -435,7 +435,7 @@
     position: fixed;
     left: 12px;
     right: 12px;
-    bottom: calc(76px + env(safe-area-inset-bottom));
+    bottom: var(--mobile-bottom-nav-clearance);
     z-index: 70;
     max-height: min(68vh, 460px);
     padding: 10px;
