@@ -44,6 +44,7 @@ services:
     restart: unless-stopped
     ports:
       - "${APP_PORT:-8080}:80"
+      - "443:443"
     environment:
       APP_SERVER_NAME: ${APP_SERVER_NAME:-_}
       WEB_SERVER_NAME: ${WEB_SERVER_NAME:-web.localhost}
