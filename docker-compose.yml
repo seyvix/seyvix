@@ -54,7 +54,7 @@ services:
       SSL_CERT_KEY_PATH: ${SSL_CERT_KEY_PATH:-/etc/nginx/templates/seyvix_certificate_private.pem}
       CLIENT_MAX_BODY_SIZE: ${CLIENT_MAX_BODY_SIZE:-100m}
     volumes:
-      - ./docker/nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./docker/nginx:/etc/nginx/templates:ro
     depends_on:
       backend:
         condition: service_healthy
