@@ -291,6 +291,9 @@ class MeilisearchSearchBackend:
             full_text_response=full_text_response,
             semantic_response=semantic_response,
             threshold=self.settings.search_meilisearch_ranking_score_threshold,
+            semantic_only_threshold=(
+                self.settings.search_meilisearch_hybrid_semantic_only_threshold
+            ),
             semantic_weight=self.settings.search_meilisearch_hybrid_semantic_ratio,
             limit=limit,
         )
@@ -515,6 +518,7 @@ def _merge_hybrid_responses(
     full_text_response: dict[str, Any],
     semantic_response: dict[str, Any],
     threshold: float,
+    semantic_only_threshold: float,
     semantic_weight: float,
     limit: int,
 ) -> list[HybridSearchResult]:
@@ -538,6 +542,8 @@ def _merge_hybrid_responses(
         )
         existing = candidates.get(result.chunk_id)
         if existing is None:
+            if ranking_score < semantic_only_threshold:
+                continue
             result.score = ranking_score * semantic_weight
             candidates[result.chunk_id] = result
             continue

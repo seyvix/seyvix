@@ -528,7 +528,18 @@ async def test_meilisearch_hybrid_prioritizes_strong_full_text_over_semantic_onl
                             "text": "Semantic-only result with a high vector score.",
                             "metadata": {"media_type": "text"},
                             "_rankingScore": 0.99,
-                        }
+                        },
+                        {
+                            "id": "weak-semantic-chunk",
+                            "source": "content",
+                            "source_type": "content_object",
+                            "source_id": "weak-semantic-note",
+                            "external_id": "content_object:weak-semantic-note",
+                            "chunk_external_id": "content_object:weak-semantic-note:chunk:0",
+                            "text": "Weak semantic-only result below the hybrid cutoff.",
+                            "metadata": {"media_type": "text"},
+                            "_rankingScore": 0.7,
+                        },
                     ]
                 }
             return {
@@ -553,6 +564,7 @@ async def test_meilisearch_hybrid_prioritizes_strong_full_text_over_semantic_onl
         settings=Settings(
             search_meilisearch_hybrid_semantic_ratio=0.35,
             search_meilisearch_ranking_score_threshold=0.6,
+            search_meilisearch_hybrid_semantic_only_threshold=0.85,
             vector_embedding_dimensions=3,
         ),
     )
