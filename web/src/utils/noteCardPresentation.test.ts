@@ -8,6 +8,7 @@ import {
   cleanDisplayTitle,
   collectSourceChips,
   getNoteDisplayTitle,
+  getNoteDetailModel,
   getSavedDateLabel,
   getTelegramCardModel,
   isRedundantTextTitle,
@@ -62,7 +63,7 @@ const telegramNote: Note = {
   ],
 }
 
-test('telegram collection is presented as one post with source, caption, and media', () => {
+test('telegram card model keeps source, caption, and media together', () => {
   assert.deepEqual(getTelegramCardModel(telegramNote), {
     sourceLabel: 'Telegram',
     originLabel: 'Бэкдор',
@@ -70,6 +71,31 @@ test('telegram collection is presented as one post with source, caption, and med
     media: telegramNote.objects,
     itemCount: 2,
   })
+})
+
+test('telegram detail view uses the shared stream model with source context', () => {
+  const model = getNoteDetailModel(telegramNote)
+
+  assert.equal(model.source?.provider, 'telegram')
+  assert.equal(model.source?.providerLabel, 'Telegram')
+  assert.equal(model.source?.originLabel, 'Бэкдор')
+  assert.deepEqual(model.objects.map(item => item.object.id), ['photo-1', 'photo-2'])
+  assert.deepEqual(model.objects.map(item => item.childHref), [null, null])
+  assert.deepEqual(model.objects.map(item => item.viewerNoteId), ['note-1', 'note-1'])
+})
+
+test('collection detail model keeps child note navigation explicit', () => {
+  const model = getNoteDetailModel({
+    ...telegramNote,
+    source: null,
+    objects: [
+      noteObject({ id: 'child-note-1', slug: 'child-slug', type: 'text', content: 'child text' }),
+      noteObject({ id: 'inline-image', type: 'image', content: '/image.jpg' }),
+    ],
+  })
+
+  assert.deepEqual(model.objects.map(item => item.childHref), ['/notes/child-slug', null])
+  assert.deepEqual(model.objects.map(item => item.viewerNoteId), ['child-note-1', 'note-1'])
 })
 
 test('regular collections do not use telegram presentation', () => {

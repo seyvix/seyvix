@@ -227,6 +227,73 @@
   flex-wrap: wrap;
 }
 
+.detailSourcePanel {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.012)),
+    var(--color-surface);
+  min-width: 0;
+}
+
+.detailSourceIcon {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #d8e7ff;
+  background: rgba(139, 200, 255, 0.12);
+  border: 1px solid rgba(139, 200, 255, 0.18);
+}
+
+.detailSourceBody {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.detailSourceBody span,
+.detailSourceBody small {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+}
+
+.detailSourceBody strong {
+  color: var(--color-text-primary);
+  font-size: var(--font-size-base);
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detailSourceAction {
+  all: unset;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background var(--duration-fast), color var(--duration-fast);
+}
+
+.detailSourceAction:hover {
+  color: var(--color-text-primary);
+  background: var(--color-surface-hover);
+}
+
 .overviewPanel,
 .enrichmentPanel {
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -797,24 +864,6 @@
   letter-spacing: 0.02em;
 }
 
-/* ── Collection sub-note link wrapper ── */
-.objWrapperLink {
-  display: block;
-  text-decoration: none;
-  color: inherit;
-  cursor: pointer;
-  border-radius: var(--radius-md);
-  transition: border-color var(--duration-fast), box-shadow var(--duration-fast), transform var(--duration-fast);
-}
-.objWrapperLink:hover {
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
-  transform: translateY(-1px);
-}
-.objWrapperLink:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 3px;
-}
-
 /* ── Object stream ── */
 .stream {
   display: flex;
@@ -830,34 +879,113 @@
   min-width: 0;
 }
 
-.sourceMeta {
+.detailObjectSection {
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.018);
+  overflow: hidden;
+}
+
+.objectChrome {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 9px 11px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.objectChromeMain {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--color-text-tertiary, #777);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  flex-shrink: 0;
+}
+
+.objectKindBadge {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  width: fit-content;
-  max-width: 100%;
-  margin: 0 0 8px;
-  color: var(--color-text-secondary);
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  padding: 4px 8px;
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-semibold);
-  line-height: 1.3;
-  text-decoration: none;
+  min-height: 26px;
+  padding: 0 9px;
+  border-radius: 999px;
+  color: var(--color-text-primary);
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid rgba(255, 255, 255, 0.075);
 }
 
-.sourceMeta span {
+.objectChromeIndex {
+  font-variant-numeric: tabular-nums;
+}
+
+.objectChromeSource {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: min(320px, 38%);
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  margin-left: auto;
+}
+
+.objectChromeSource span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.sourceMeta:hover {
+.objectChromeSource:hover {
   color: var(--color-text-primary);
+}
+
+.objectOpenLink {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 9px;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+  text-decoration: none;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  flex-shrink: 0;
+  transition: background var(--duration-fast), color var(--duration-fast), border-color var(--duration-fast);
+}
+
+.objectOpenLink:hover {
+  background: var(--color-surface-hover);
   border-color: #555;
+  color: var(--color-text-primary);
+}
+
+.detailObjectBody {
+  position: relative;
+  min-width: 0;
+  padding: 12px;
+}
+
+.detailObjectBody > .objWrapper,
+.detailObjectBody .assetFrame,
+.detailObjectBody .mediaBox,
+.detailObjectBody .objImage {
+  width: 100%;
+}
+
+.detailObjectBody .objText {
+  width: min(100%, 760px);
+  padding: 6px 2px;
 }
 
 .objDeleteBtn {
@@ -891,28 +1019,6 @@
   background: var(--color-surface);
 }
 
-.objImage .sourceMeta {
-  position: absolute;
-  left: 8px;
-  bottom: 8px;
-  margin: 0;
-  max-width: calc(100% - 16px);
-  background: rgba(0, 0, 0, 0.68);
-  color: #fff;
-  border-color: rgba(255, 255, 255, 0.16);
-  backdrop-filter: blur(6px);
-}
-
-.objImageWithCaption .sourceMeta {
-  position: static;
-  margin: 8px 10px 0;
-  max-width: calc(100% - 20px);
-  background: var(--color-surface);
-  color: var(--color-text-secondary);
-  border-color: var(--color-border);
-  backdrop-filter: none;
-}
-
 .objImageCaption {
   margin: 8px 10px 10px;
   color: var(--color-text-primary);
@@ -929,198 +1035,6 @@
 
 .extractionCompanion {
   margin-top: 8px;
-}
-
-/* Telegram detail */
-.telegramDetailPost {
-  margin: 0;
-  width: 100%;
-  border: 1px solid rgba(45, 152, 219, 0.18);
-  border-radius: var(--radius-md);
-  background:
-    linear-gradient(180deg, rgba(45, 152, 219, 0.08), rgba(45, 152, 219, 0) 180px),
-    var(--color-surface);
-  overflow: hidden;
-}
-
-.telegramDetailHeader {
-  display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: center;
-  padding: 14px 16px;
-  border-bottom: 1px solid rgba(45, 152, 219, 0.14);
-}
-
-.telegramDetailIcon {
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #d7efff;
-  background: linear-gradient(145deg, #2496d8, #1b75b2);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
-}
-
-.telegramDetailSource {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.telegramDetailSource span {
-  color: #79bff0;
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-semibold);
-  line-height: 1.2;
-}
-
-.telegramDetailSource strong {
-  color: var(--color-text-primary);
-  font-size: var(--font-size-base);
-  line-height: 1.25;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.telegramDetailMeta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-xs);
-}
-
-.telegramDetailMeta a {
-  display: inline-flex;
-  color: var(--color-text-secondary);
-}
-
-.telegramDetailMeta a:hover {
-  color: var(--color-text-primary);
-}
-
-.telegramDetailMediaGrid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 2px;
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.telegramDetailMediaSingle {
-  display: block;
-}
-
-.telegramDetailMediaPair {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.telegramDetailMediaTile {
-  all: unset;
-  box-sizing: border-box;
-  display: block;
-  position: relative;
-  min-height: 220px;
-  aspect-ratio: 4 / 3;
-  overflow: hidden;
-  background: #111722;
-  color: var(--color-text-secondary);
-  cursor: zoom-in;
-}
-
-.telegramDetailMediaSingle .telegramDetailMediaTile {
-  width: 100%;
-  aspect-ratio: auto;
-  min-height: 0;
-  max-height: 70vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.telegramDetailMediaPair .telegramDetailMediaTile {
-  aspect-ratio: 3 / 4;
-}
-
-.telegramDetailMediaTile img,
-.telegramDetailMediaTile video {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.telegramDetailMediaSingle .telegramDetailMediaTile img,
-.telegramDetailMediaSingle .telegramDetailMediaTile video {
-  width: 100%;
-  height: auto;
-  max-height: 70vh;
-  object-fit: contain;
-}
-
-.telegramDetailMediaTile svg {
-  position: absolute;
-  left: 50%;
-  top: 42%;
-  transform: translate(-50%, -50%);
-}
-
-.telegramDetailMediaTile span {
-  position: absolute;
-  left: 12px;
-  right: 12px;
-  bottom: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--font-size-xs);
-  text-align: center;
-}
-
-.telegramDetailAudioTile {
-  display: flex;
-  min-height: 180px;
-  aspect-ratio: auto;
-  cursor: default;
-  padding: 22px;
-  align-items: center;
-  justify-content: center;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.telegramDetailAudioTile audio {
-  width: min(100%, 520px);
-}
-
-.telegramDetailAudioIcon {
-  width: 58px;
-  height: 58px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #d7efff;
-  background: linear-gradient(145deg, #2496d8, #1b75b2);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
-}
-
-.telegramDetailAudioTile span {
-  position: static;
-  max-width: min(100%, 520px);
-}
-
-.telegramDetailCaption {
-  padding: 18px 20px 20px;
-  color: var(--color-text-primary);
-  font-size: var(--font-size-base);
-  line-height: 1.7;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
 
 /* Text */
@@ -1686,20 +1600,12 @@
 
   .objImage,
   .mediaBox,
-  .telegramDetailPost {
+  .detailObjectSection {
     width: 100%;
     margin-left: 0;
     margin-right: 0;
   }
 
-  .telegramDetailMediaGrid {
-    grid-template-columns: 1fr;
-  }
-
-  .telegramDetailMediaPair .telegramDetailMediaTile,
-  .telegramDetailMediaTile {
-    aspect-ratio: 4 / 3;
-  }
 }
 
 @media (max-width: 760px) {
@@ -1763,7 +1669,8 @@
   .enrichmentPanel,
   .assetFrame,
   .mediaBox,
-  .telegramDetailPost {
+  .detailSourcePanel,
+  .detailObjectSection {
     border-radius: var(--radius-md);
   }
 
@@ -1771,8 +1678,38 @@
     gap: 14px;
   }
 
-  .sourceMeta {
-    max-width: 100%;
+  .detailSourcePanel {
+    grid-template-columns: 36px minmax(0, 1fr) 32px;
+    padding: 10px;
+  }
+
+  .detailSourceIcon {
+    width: 36px;
+    height: 36px;
+  }
+
+  .objectChrome {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    padding: 9px;
+  }
+
+  .objectChromeMain {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+  }
+
+  .objectChromeSource {
+    margin-left: 0;
+    max-width: calc(100% - 96px);
+  }
+
+  .objectOpenLink {
+    margin-left: auto;
+  }
+
+  .detailObjectBody {
+    padding: 9px;
   }
 
   .assetChrome {
@@ -1816,23 +1753,6 @@
     min-height: 320px;
     padding: 18px;
     font-size: var(--font-size-sm);
-  }
-
-  .telegramDetailHeader {
-    grid-template-columns: 32px minmax(0, 1fr);
-  }
-
-  .telegramDetailMeta {
-    grid-column: 2;
-    justify-content: flex-start;
-  }
-
-  .telegramDetailMediaTile {
-    min-height: 180px;
-  }
-
-  .telegramDetailCaption {
-    padding: 14px 16px 16px;
   }
 
   .objText {

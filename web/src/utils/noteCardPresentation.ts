@@ -7,6 +7,27 @@ export type SourceChip = {
   title: string
 }
 
+export type NoteDetailSourceModel = {
+  provider: string
+  providerLabel: string
+  originLabel: string | null
+  title: string
+  href: string | null
+  originalCreatedAt: string | null
+}
+
+export type NoteDetailObjectModel = {
+  object: NoteObject
+  index: number
+  childHref: string | null
+  viewerNoteId: string
+}
+
+export type NoteDetailModel = {
+  source: NoteDetailSourceModel | null
+  objects: NoteDetailObjectModel[]
+}
+
 export type TelegramCardModel = {
   sourceLabel: string
   originLabel: string | null
@@ -172,6 +193,32 @@ export function collectSourceChips(note: Note): SourceChip[] {
 
 function firstSource(note: Note): SourceMetadata | null {
   return note.source ?? note.objects.find(obj => obj.source)?.source ?? null
+}
+
+export function getNoteDetailModel(note: Note): NoteDetailModel {
+  const source = firstSource(note)
+  const sourceOrigin = source ? sourceOriginLabel(source) : null
+  return {
+    source: source
+      ? {
+          provider: source.provider,
+          providerLabel: source.providerLabel || source.provider,
+          originLabel: sourceOrigin,
+          title: sourceOrigin ? `${source.providerLabel || source.provider}: ${sourceOrigin}` : source.providerLabel || source.provider,
+          href: source.url ?? null,
+          originalCreatedAt: source.originalCreatedAt ?? null,
+        }
+      : null,
+    objects: note.objects.map((object, index) => {
+      const childHref = note.type === 'collection' && object.slug ? `/notes/${object.slug}` : null
+      return {
+        object,
+        index,
+        childHref,
+        viewerNoteId: childHref ? object.id : note.id,
+      }
+    }),
+  }
 }
 
 function cleanPreviewText(value: string | null | undefined): string | null {

@@ -35,8 +35,12 @@ import { useNote } from '../hooks/useNote'
 import { useUpdateNote } from '../hooks/useUpdateNote'
 import { useRemoveCollectionItems } from '../hooks/useRemoveCollectionItems'
 import { getTagColor } from '../utils/tagColor'
-import { getObjectPreviewSource } from '../utils/notePreview'
-import { getNoteDisplayTitle, getTelegramCardModel, type TelegramCardModel } from '../utils/noteCardPresentation'
+import {
+  getNoteDetailModel,
+  getNoteDisplayTitle,
+  type NoteDetailObjectModel,
+  type NoteDetailSourceModel,
+} from '../utils/noteCardPresentation'
 import { parseMarkdownBlocks, type MarkdownBlock } from '../utils/markdownBlocks'
 import AuthImage from '../components/AuthImage/AuthImage'
 import HtmlSnapshotViewer from '../components/HtmlSnapshotViewer/HtmlSnapshotViewer'
@@ -107,7 +111,7 @@ function sourceLabel(source: SourceMetadata): string {
   return origin ? `${source.providerLabel} · ${origin}` : source.providerLabel
 }
 
-function ObjectSource({ source }: { source?: SourceMetadata | null }) {
+function ObjectSourceInline({ source }: { source?: SourceMetadata | null }) {
   if (!source) return null
   const label = sourceLabel(source)
   const children = (
@@ -119,12 +123,35 @@ function ObjectSource({ source }: { source?: SourceMetadata | null }) {
   )
   if (source.url) {
     return (
-      <a className={styles.sourceMeta} href={source.url} target="_blank" rel="noreferrer">
+      <a className={styles.objectChromeSource} href={source.url} target="_blank" rel="noreferrer">
         {children}
       </a>
     )
   }
-  return <div className={styles.sourceMeta}>{children}</div>
+  return <span className={styles.objectChromeSource}>{children}</span>
+}
+
+function DetailSourcePanel({ source }: { source: NoteDetailSourceModel }) {
+  const sourceDate = source.originalCreatedAt ? formatDetailDate(source.originalCreatedAt) : null
+  const Icon = source.provider === 'telegram' ? Send : Globe
+
+  return (
+    <section className={styles.detailSourcePanel}>
+      <div className={styles.detailSourceIcon}>
+        <Icon size={16} />
+      </div>
+      <div className={styles.detailSourceBody}>
+        <span>{source.providerLabel}</span>
+        <strong>{source.originLabel ?? source.providerLabel}</strong>
+        {sourceDate && <small>{sourceDate}</small>}
+      </div>
+      {source.href && (
+        <a className={styles.detailSourceAction} href={source.href} target="_blank" rel="noreferrer" title="Открыть оригинал">
+          <ExternalLink size={14} />
+        </a>
+      )}
+    </section>
+  )
 }
 
 function notePrimarySource(note: Note, objects: NoteObject[]): SourceMetadata | null {
@@ -877,7 +904,6 @@ function ImageObj({
         style={{ cursor: 'zoom-in' }}
         onClick={() => openProtectedAsset(obj.content)}
       />
-      <ObjectSource source={obj.source} />
       {obj.caption && <MarkdownText className={styles.objImageCaption} text={obj.caption} source={obj.source} />}
       <div className={styles.extractionCompanion}>
         <AssetViewer
@@ -916,7 +942,6 @@ function TextObj({
   }
   return (
     <div className={styles.objWrapper}>
-      <ObjectSource source={obj.source} />
       <MarkdownText className={styles.objText} text={obj.content} source={obj.source} />
     </div>
   )
@@ -1358,127 +1383,6 @@ function MediaObj({
   )
 }
 
-function ProtectedVideo({ obj }: { obj: NoteObject }) {
-  const media = useAuthenticatedObjectUrl(obj.content)
-  if (media.error) return <div className={styles.mediaError}>Не удалось загрузить видео</div>
-  if (!media.url) {
-    return (
-      <div className="appLoaderOverlay" aria-hidden>
-        <LoaderSpinner />
-      </div>
-    )
-  }
-  return <video controls src={media.url} />
-}
-
-function ProtectedAudio({ obj }: { obj: NoteObject }) {
-  const media = useAuthenticatedObjectUrl(obj.content)
-  if (media.error) return <div className={styles.mediaError}>Не удалось загрузить аудио</div>
-  if (!media.url) {
-    return (
-      <div className="appLoaderOverlay" aria-hidden>
-        <LoaderSpinner />
-      </div>
-    )
-  }
-  return <audio controls src={media.url} />
-}
-
-// ─── Telegram detail post ─────────────────────────────────────────────────────
-
-function TelegramDetailMediaTile({ obj }: { obj: NoteObject }) {
-  if (obj.type === 'image') {
-    return (
-      <button type="button" className={styles.telegramDetailMediaTile} onClick={() => openProtectedAsset(obj.content)} title="Открыть изображение">
-        <AuthImage src={getObjectPreviewSource(obj)} alt="" />
-      </button>
-    )
-  }
-  if (obj.type === 'video') {
-    return (
-      <div className={styles.telegramDetailMediaTile}>
-        <ProtectedVideo obj={obj} />
-      </div>
-    )
-  }
-  if (obj.type === 'audio') {
-    return (
-      <div className={`${styles.telegramDetailMediaTile} ${styles.telegramDetailAudioTile}`}>
-        <div className={styles.telegramDetailAudioIcon}>
-          <Mic2 size={26} />
-        </div>
-        <ProtectedAudio obj={obj} />
-        <span>{obj.filename ?? 'Голосовое сообщение'}</span>
-      </div>
-    )
-  }
-  if (obj.type === 'document') {
-    const thumb = obj.thumbnailUrl ?? obj.cover
-    return (
-      <button className={styles.telegramDetailMediaTile} onClick={() => authDownload(obj.content, obj.filename)} title="Скачать документ">
-        {thumb ? <AuthImage src={thumb} alt="" /> : <FileText size={30} />}
-        <span>{obj.filename ?? 'Документ'}</span>
-      </button>
-    )
-  }
-  return null
-}
-
-function TelegramDetailPost({
-  note,
-  objects,
-  model,
-}: {
-  note: Note
-  objects: NoteObject[]
-  model: TelegramCardModel
-}) {
-  const source = notePrimarySource(note, objects)
-  const dateLabel = sourceDateLabel(source)
-  const captionObj = objects.find(obj => obj.caption?.trim())
-  const textObj = objects.find(obj => obj.type === 'text' && obj.content.trim())
-  const caption = captionObj?.caption ?? textObj?.content ?? null
-  const sourceTitle = model.originLabel ?? model.sourceLabel
-  const media = model.media.filter(obj => objects.some(visible => visible.id === obj.id))
-  const gridClass = [
-    styles.telegramDetailMediaGrid,
-    media.length === 1 ? styles.telegramDetailMediaSingle : '',
-    media.length === 2 ? styles.telegramDetailMediaPair : '',
-  ].filter(Boolean).join(' ')
-
-  return (
-    <article className={styles.telegramDetailPost}>
-      <header className={styles.telegramDetailHeader}>
-        <div className={styles.telegramDetailIcon}>
-          <Send size={16} />
-        </div>
-        <div className={styles.telegramDetailSource}>
-          <span>{model.sourceLabel}</span>
-          <strong>{sourceTitle}</strong>
-        </div>
-        <div className={styles.telegramDetailMeta}>
-          {dateLabel && <span>{dateLabel}</span>}
-          {source?.url && (
-            <a href={source.url} target="_blank" rel="noreferrer" title="Открыть оригинал">
-              <ExternalLink size={14} />
-            </a>
-          )}
-        </div>
-      </header>
-
-      {media.length > 0 && (
-        <div className={gridClass}>
-          {media.map(obj => <TelegramDetailMediaTile key={obj.id} obj={obj} />)}
-        </div>
-      )}
-
-      {caption && (
-        <MarkdownText className={styles.telegramDetailCaption} text={caption} source={captionObj?.source ?? textObj?.source ?? source} />
-      )}
-    </article>
-  )
-}
-
 // ─── Document viewer ───────────────────────────────────────────────────────────
 
 function DocViewer({
@@ -1499,117 +1403,161 @@ function DocViewer({
   return <AssetViewer obj={obj} noteId={noteId} isEditing={isEditing} isOpen={isOpen} onOpen={onOpen} onDelete={onDelete} />
 }
 
-// ─── Collection stream ─────────────────────────────────────────────────────────
+// ─── Shared detail stream ─────────────────────────────────────────────────────
 
-function CollectionStream({
-  objects,
+function DetailObjectChrome({ item }: { item: NoteDetailObjectModel }) {
+  const obj = item.object
+  return (
+    <div className={styles.objectChrome}>
+      <div className={styles.objectChromeMain}>
+        <span className={styles.objectKindBadge}>
+          {objectKindIcon(obj.type)}
+          {objectKindLabel(obj.type)}
+        </span>
+        <span className={styles.objectChromeIndex}>#{item.index + 1}</span>
+        <span>{formatDetailDate(obj.createdAt)}</span>
+      </div>
+      <ObjectSourceInline source={obj.source} />
+      {item.childHref && (
+        <Link className={styles.objectOpenLink} to={item.childHref} title="Открыть дочернюю заметку">
+          <ExternalLink size={13} />
+          <span>Открыть</span>
+        </Link>
+      )}
+    </div>
+  )
+}
+
+function DetailObjectSection({
+  item,
   isEditing,
   openViewerId,
   onOpenViewer,
   onRemove,
 }: {
-  objects: NoteObject[]
+  item: NoteDetailObjectModel
   isEditing: boolean
   openViewerId: string | null
   onOpenViewer: (id: string) => void
   onRemove: (id: string, slug?: string) => void
 }) {
+  const obj = item.object
+  const removeObject = () => onRemove(obj.id, obj.slug)
+  const objectOpen = openViewerId === obj.id
+
+  let body: ReactNode = null
+
+  if (obj.type === 'image') {
+    body = (
+      <ImageObj
+        obj={obj}
+        noteId={item.viewerNoteId}
+        isEditing={isEditing}
+        isOpen={objectOpen}
+        onOpen={() => onOpenViewer(obj.id)}
+        onDelete={removeObject}
+      />
+    )
+  } else if (obj.type === 'document') {
+    body = (
+      <DocViewer
+        obj={obj}
+        noteId={item.viewerNoteId}
+        isEditing={isEditing}
+        isOpen={objectOpen}
+        onOpen={() => onOpenViewer(obj.id)}
+        onDelete={removeObject}
+      />
+    )
+  } else if (obj.type === 'link') {
+    body = (
+      <LinkObj
+        obj={obj}
+        noteId={item.viewerNoteId}
+        isEditing={isEditing}
+        isOpen={objectOpen}
+        onOpen={() => onOpenViewer(obj.id)}
+        onDelete={removeObject}
+      />
+    )
+  } else if (obj.type === 'audio' || obj.type === 'video') {
+    body = (
+      <MediaObj
+        obj={obj}
+        noteId={item.viewerNoteId}
+        isEditing={isEditing}
+        isOpen={objectOpen}
+        onOpen={() => onOpenViewer(obj.id)}
+        onDelete={removeObject}
+      />
+    )
+  }
+
+  return (
+    <section id={objectDomId(obj.id)} className={`${styles.objectSection} ${styles.detailObjectSection}`}>
+      <DetailObjectChrome item={item} />
+      <div className={styles.detailObjectBody}>
+        {body}
+      </div>
+    </section>
+  )
+}
+
+function DetailStream({
+  items,
+  isEditing,
+  canEditText,
+  editTexts,
+  openViewerId,
+  onOpenViewer,
+  onTextChange,
+  onRemove,
+}: {
+  items: NoteDetailObjectModel[]
+  isEditing: boolean
+  canEditText: boolean
+  editTexts: Record<string, string>
+  openViewerId: string | null
+  onOpenViewer: (id: string) => void
+  onTextChange: (id: string, value: string) => void
+  onRemove: (id: string, slug?: string) => void
+}) {
   return (
     <div className={styles.stream}>
-      {objects.map(obj => {
-        const canOpen = Boolean(obj.id) && !isEditing
-        const ariaLabel = `Открыть заметку: ${obj.filename ?? 'без названия'}`
-        const wrap = (node: React.ReactNode) =>
-          canOpen ? (
-            <Link
-              key={obj.id}
-              to={`/notes/${obj.id}`}
-              className={styles.objWrapperLink}
-              aria-label={ariaLabel}
-            >
-              {node}
-            </Link>
-          ) : (
-            node
+      {items.map(item => {
+        if (item.object.type === 'text') {
+          const isTextEditing = isEditing && canEditText
+          return (
+            <section key={item.object.id} id={objectDomId(item.object.id)} className={`${styles.objectSection} ${styles.detailObjectSection}`}>
+              <DetailObjectChrome item={item} />
+              <div className={styles.detailObjectBody}>
+                <TextObj
+                  obj={item.object}
+                  isEditing={isTextEditing}
+                  editValue={editTexts[item.object.id] ?? item.object.content}
+                  onChangeEdit={value => onTextChange(item.object.id, value)}
+                  onDelete={() => onRemove(item.object.id, item.object.slug)}
+                />
+                {isEditing && !canEditText && (
+                  <button className={styles.objDeleteBtn} onClick={() => onRemove(item.object.id, item.object.slug)}>
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
+            </section>
           )
-        const removeBtn = isEditing
-          ? (
-            <button
-              className={styles.objDeleteBtn}
-              onClick={e => { e.preventDefault(); e.stopPropagation(); onRemove(obj.id, obj.slug) }}
-            >
-              <X size={12} />
-            </button>
-          )
-          : null
+        }
 
-        if (obj.type === 'image') return wrap(
-          <section
-            key={canOpen ? undefined : obj.id}
-            id={objectDomId(obj.id)}
-            className={`${styles.objectSection} ${styles.objWrapper} ${styles.objImage} ${obj.caption ? styles.objImageWithCaption : ''}`}
-          >
-            <AuthImage
-              src={obj.content}
-              alt=""
-              style={{ cursor: canOpen ? 'pointer' : 'zoom-in' }}
-              onClick={canOpen ? undefined : () => openProtectedAsset(obj.content)}
-            />
-            <ObjectSource source={obj.source} />
-            {obj.caption && <MarkdownText className={styles.objImageCaption} text={obj.caption} source={obj.source} />}
-            {removeBtn}
-          </section>
+        return (
+          <DetailObjectSection
+            key={item.object.id}
+            item={item}
+            isEditing={isEditing}
+            openViewerId={openViewerId}
+            onOpenViewer={onOpenViewer}
+            onRemove={onRemove}
+          />
         )
-
-        if (obj.type === 'document') return wrap(
-          <section key={canOpen ? undefined : obj.id} id={objectDomId(obj.id)} className={`${styles.objectSection} ${styles.objWrapper}`}>
-            <DocViewer
-              obj={obj}
-              noteId={obj.id}
-              isEditing={isEditing}
-              isOpen={openViewerId === obj.id}
-              onOpen={() => onOpenViewer(obj.id)}
-              onDelete={() => onRemove(obj.id, obj.slug)}
-            />
-          </section>
-        )
-
-        if (obj.type === 'link') return wrap(
-          <section key={canOpen ? undefined : obj.id} id={objectDomId(obj.id)} className={`${styles.objectSection} ${styles.objWrapper}`}>
-            <LinkObj
-              obj={obj}
-              noteId={obj.id}
-              isEditing={isEditing}
-              isOpen={openViewerId === obj.id}
-              onOpen={() => onOpenViewer(obj.id)}
-              onDelete={() => onRemove(obj.id, obj.slug)}
-            />
-          </section>
-        )
-
-        if (obj.type === 'text') return wrap(
-          <section key={canOpen ? undefined : obj.id} id={objectDomId(obj.id)} className={`${styles.objectSection} ${styles.objWrapper}`}>
-            <ObjectSource source={obj.source} />
-            <MarkdownText className={styles.objText} text={obj.content} source={obj.source} />
-            {removeBtn}
-          </section>
-        )
-
-        if (obj.type === 'audio' || obj.type === 'video') return wrap(
-          <section key={canOpen ? undefined : obj.id} id={objectDomId(obj.id)} className={`${styles.objectSection} ${styles.objWrapper}`}>
-            <MediaObj
-              obj={obj}
-              noteId={obj.id}
-              isEditing={isEditing}
-              isOpen={openViewerId === obj.id}
-              onOpen={() => onOpenViewer(obj.id)}
-              onDelete={() => onRemove(obj.id, obj.slug)}
-              showExtraction={false}
-            />
-          </section>
-        )
-
-        return null
       })}
     </div>
   )
@@ -1710,9 +1658,7 @@ export default function NotePage() {
   }
 
   const visibleObjects = note.objects.filter(o => !deletedObjs.has(o.id))
-  const telegramDetailModel = !isEditing
-    ? getTelegramCardModel({ ...note, objects: visibleObjects })
-    : null
+  const detailModel = getNoteDetailModel({ ...note, objects: visibleObjects })
   const formattedDate = formatDetailDate(note.createdAt)
   const firstTextObject = visibleObjects.find(obj => obj.type === 'text')
   const displayTitle = getNoteDisplayTitle(note, firstTextObject?.content)
@@ -1792,82 +1738,23 @@ export default function NotePage() {
               </div>
             </div>
 
-            {telegramDetailModel && (
-              <TelegramDetailPost note={note} objects={visibleObjects} model={telegramDetailModel} />
+            {detailModel.source && (
+              <DetailSourcePanel source={detailModel.source} />
             )}
 
-            {!telegramDetailModel && note.type === 'collection' && (
-              <CollectionStream
-                objects={visibleObjects}
-                isEditing={isEditing}
-                openViewerId={openViewerId}
-                onOpenViewer={setOpenViewerId}
-                onRemove={(id, slug) => {
-                  setDeletedObjs(p => new Set([...p, id]))
-                  if (slug) setRemovedSlugs(p => new Set([...p, slug]))
-                }}
-              />
-            )}
-
-            {!telegramDetailModel && note.type !== 'collection' && (
-              <div className={styles.stream}>
-                {visibleObjects.map(obj => {
-                  if (obj.type === 'image') return (
-                    <section key={obj.id} id={objectDomId(obj.id)} className={styles.objectSection}>
-                      <ImageObj
-                        obj={obj} noteId={note.id} isEditing={isEditing}
-                        isOpen={openViewerId === obj.id}
-                        onOpen={() => setOpenViewerId(obj.id)}
-                        onDelete={() => setDeletedObjs(p => new Set([...p, obj.id]))}
-                      />
-                    </section>
-                  )
-                  if (obj.type === 'link') return (
-                    <section key={obj.id} id={objectDomId(obj.id)} className={styles.objectSection}>
-                      <LinkObj
-                        obj={obj} noteId={note.id} isEditing={isEditing}
-                        isOpen={openViewerId === obj.id}
-                        onOpen={() => setOpenViewerId(obj.id)}
-                        onDelete={() => setDeletedObjs(p => new Set([...p, obj.id]))}
-                      />
-                    </section>
-                  )
-                  if (obj.type === 'document') return (
-                    <section key={obj.id} id={objectDomId(obj.id)} className={styles.objectSection}>
-                      <DocViewer
-                        obj={obj}
-                        noteId={note.id}
-                        isEditing={isEditing}
-                        isOpen={openViewerId === obj.id}
-                        onOpen={() => setOpenViewerId(obj.id)}
-                        onDelete={() => setDeletedObjs(p => new Set([...p, obj.id]))}
-                      />
-                    </section>
-                  )
-                  if (obj.type === 'text') return (
-                    <section key={obj.id} id={objectDomId(obj.id)} className={styles.objectSection}>
-                      <TextObj
-                        obj={obj} isEditing={isEditing}
-                        editValue={editTexts[obj.id] ?? obj.content}
-                        onChangeEdit={v => setEditTexts(p => ({ ...p, [obj.id]: v }))}
-                        onDelete={() => setDeletedObjs(p => new Set([...p, obj.id]))}
-                      />
-                    </section>
-                  )
-                  if (obj.type === 'audio' || obj.type === 'video') return (
-                    <section key={obj.id} id={objectDomId(obj.id)} className={styles.objectSection}>
-                      <MediaObj
-                        obj={obj} noteId={note.id} isEditing={isEditing}
-                        isOpen={openViewerId === obj.id}
-                        onOpen={() => setOpenViewerId(obj.id)}
-                        onDelete={() => setDeletedObjs(p => new Set([...p, obj.id]))}
-                      />
-                    </section>
-                  )
-                  return null
-                })}
-              </div>
-            )}
+            <DetailStream
+              items={detailModel.objects}
+              isEditing={isEditing}
+              canEditText={note.type !== 'collection'}
+              editTexts={editTexts}
+              openViewerId={openViewerId}
+              onOpenViewer={setOpenViewerId}
+              onTextChange={(id, value) => setEditTexts(p => ({ ...p, [id]: value }))}
+              onRemove={(id, slug) => {
+                setDeletedObjs(p => new Set([...p, id]))
+                if (slug) setRemovedSlugs(p => new Set([...p, slug]))
+              }}
+            />
           </main>
 
           <aside className={styles.detailSidebar}>
