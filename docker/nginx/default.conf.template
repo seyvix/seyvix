@@ -125,7 +125,7 @@ server {
 }
 
 server {
-    listen 443;
+    listen 443 ssl;
     ssl_certificate     ${SSL_CERT_PATH};
     ssl_certificate_key ${SSL_CERT_KEY_PATH};
     server_name ${WEB_SERVER_NAME};
@@ -211,7 +211,7 @@ server {
 }
 
 server {
-    listen 443;
+    listen 443 ssl;
     ssl_certificate     ${SSL_CERT_PATH};
     ssl_certificate_key ${SSL_CERT_KEY_PATH};
     server_name ${API_SERVER_NAME};
