@@ -320,6 +320,10 @@
   mask-image: linear-gradient(180deg, #000 72%, transparent 100%);
 }
 
+.excerptAsTitle {
+  color: var(--color-text-primary);
+}
+
 .searchSnippet {
   padding: 8px 9px;
   border: 1px solid rgba(255, 213, 116, 0.18);

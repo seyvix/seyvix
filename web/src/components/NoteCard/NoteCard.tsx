@@ -311,6 +311,9 @@ function SimpleCard({ note, onTagClick }: { note: Note; onTagClick?: (name: stri
   const text = textObj ? getObjectDisplayMarkdown(textObj) : null
   const title = getNoteDisplayTitle(note, textObj?.content)
   const titleNode = title ? <div className={styles.title}>{title}</div> : null
+  const textOnlyExcerptClassName = title
+    ? styles.excerpt
+    : `${styles.excerpt} ${styles.excerptAsTitle}`
 
   // Только медиа — без текстового cover, медиа в край
   if (mediaObj && !textObj) {
@@ -357,7 +360,7 @@ function SimpleCard({ note, onTagClick }: { note: Note; onTagClick?: (name: stri
         {titleNode}
       </div>
       <SearchMatchSnippet note={note} />
-      {textObj && text && <div className={styles.excerpt}><MarkdownSnippet text={text} source={textObj.source} /></div>}
+      {textObj && text && <div className={textOnlyExcerptClassName}><MarkdownSnippet text={text} source={textObj.source} /></div>}
       <CardMeta note={note} onTagClick={onTagClick} />
     </Link>
   )
