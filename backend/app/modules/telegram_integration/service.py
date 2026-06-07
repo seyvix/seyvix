@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.content.app_note import note_card_to_app_note
-from app.modules.content.schemas import FileUploadResponse, NoteCardResponse
+from app.modules.content.schemas import FileUploadResponse, NoteAssetResponse, NoteCardResponse
 from app.modules.content.service import ContentService, UploadedContent
 from app.modules.telegram_integration.infrastructure.repositories import TelegramIngestRepository
 from app.modules.telegram_integration.schemas import (
@@ -14,6 +16,8 @@ from app.modules.telegram_integration.schemas import (
     TelegramIngestStatus,
     TelegramStatusResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class TelegramUserNotLinkedError(Exception):
@@ -193,11 +197,16 @@ class TelegramIngestService:
             folder_path=None,
             tag_names=[],
         )
-        for payload in payloads:
+        for payload, content_asset_id in self._batch_source_targets(
+            card=card,
+            payloads=payloads,
+            uploaded=uploaded,
+        ):
             await self._attach_source_and_reload(
                 owner_user_id=owner_user_id,
                 card=card,
                 payload=payload,
+                content_asset_id=content_asset_id,
             )
         return await self.content.get_note(owner_user_id=owner_user_id, slug=card.slug)
 
@@ -276,15 +285,94 @@ class TelegramIngestService:
         owner_user_id: str,
         card: NoteCardResponse,
         payload: TelegramIngestPayload,
+        content_asset_id: str | None = None,
     ) -> NoteCardResponse:
         if payload.source is None:
+            logger.info(
+                "Telegram source attach skipped user=%s object=%s message=%s reason=no_source",
+                owner_user_id,
+                card.id,
+                payload.telegram_message_id,
+            )
             return card
+        logger.info(
+            "Telegram source attach requested user=%s object=%s asset=%s message=%s "
+            "source_external_id=%s source_title=%s",
+            owner_user_id,
+            card.id,
+            content_asset_id,
+            payload.telegram_message_id,
+            payload.source.external_id,
+            payload.source.title,
+        )
         await self.content.attach_source_metadata(
             owner_user_id=owner_user_id,
             content_object_id=card.id,
             source=payload.source.model_dump(mode="python"),
+            content_asset_id=content_asset_id,
         )
+        await self.session.commit()
         return await self.content.get_note(owner_user_id=owner_user_id, slug=card.slug)
+
+    @staticmethod
+    def _batch_source_targets(
+        *,
+        card: NoteCardResponse,
+        payloads: list[TelegramIngestPayload],
+        uploaded: list[UploadedContent | None],
+    ) -> list[tuple[TelegramIngestPayload, str | None]]:
+        file_assets = [asset for asset in card.assets if asset.media_type != "text"]
+        targets: list[tuple[TelegramIngestPayload, str | None]] = []
+        object_source_external_id: str | None = None
+        file_index = 0
+
+        for payload, upload in zip(payloads, uploaded, strict=False):
+            if payload.source is None:
+                if upload is not None:
+                    file_index += 1
+                continue
+
+            external_id = payload.source.external_id
+            if object_source_external_id is None:
+                object_source_external_id = external_id
+                targets.append((payload, None))
+                if upload is not None:
+                    file_index += 1
+                continue
+
+            if upload is not None:
+                asset = TelegramIngestService._file_asset_for_upload(
+                    file_assets=file_assets,
+                    upload=upload,
+                    file_index=file_index,
+                )
+                file_index += 1
+                if asset is not None and external_id != object_source_external_id:
+                    targets.append((payload, asset.id))
+                continue
+
+            if external_id != object_source_external_id:
+                targets.append((payload, None))
+
+        return targets
+
+    @staticmethod
+    def _file_asset_for_upload(
+        *,
+        file_assets: list[NoteAssetResponse],
+        upload: UploadedContent,
+        file_index: int,
+    ) -> NoteAssetResponse | None:
+        matches = [
+            asset
+            for asset in file_assets
+            if asset.filename == upload.filename and asset.mime_type == upload.content_type
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if file_index < len(file_assets):
+            return file_assets[file_index]
+        return None
 
     @staticmethod
     def _message_text(payload: TelegramIngestPayload) -> str | None:

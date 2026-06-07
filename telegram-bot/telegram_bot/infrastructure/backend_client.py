@@ -60,12 +60,16 @@ class HttpSeyvixBackend:
         target_collection_id: str | None = None,
     ) -> dict[str, object]:
         logger.info(
-            "Sending Telegram material to backend user=%s chat=%s message=%s type=%s target=%s",
+            "Sending Telegram material to backend user=%s chat=%s message=%s type=%s "
+            "target=%s has_source=%s source_external_id=%s source_title=%s",
             material.telegram_user_id,
             material.telegram_chat_id,
             material.telegram_message_id,
             material.material_type.value,
             target_collection_id,
+            material.source is not None,
+            material.source.external_id if material.source else None,
+            material.source.title if material.source else None,
         )
         data = {
             "telegram_user_id": material.telegram_user_id,
@@ -127,11 +131,18 @@ class HttpSeyvixBackend:
 
         first = materials[0]
         logger.info(
-            "Sending Telegram material batch to backend user=%s chat=%s messages=%s target=%s",
+            "Sending Telegram material batch to backend user=%s chat=%s messages=%s target=%s "
+            "source_count=%s source_external_ids=%s",
             first.telegram_user_id,
             first.telegram_chat_id,
             [material.telegram_message_id for material in materials],
             target_collection_id,
+            sum(1 for material in materials if material.source is not None),
+            [
+                material.source.external_id
+                for material in materials
+                if material.source is not None
+            ],
         )
         parts: list[dict[str, object]] = []
         files: list[tuple[str, tuple[str, bytes, str | None]]] = []

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from typing import Annotated
 
@@ -28,6 +29,7 @@ from app.modules.telegram_integration.service import (
 )
 
 router = APIRouter(prefix="/integrations/telegram", tags=["integrations"])
+logger = logging.getLogger(__name__)
 
 
 def _verify_internal_token(authorization: str | None) -> None:
@@ -149,6 +151,17 @@ async def ingest_telegram_message(
         target_collection_id=target_collection_id,
         source=_parse_source_payload(source),
     )
+    logger.info(
+        "Telegram ingest request parsed user=%s chat=%s message=%s type=%s "
+        "has_source=%s source_external_id=%s source_title=%s",
+        payload.telegram_user_id,
+        payload.telegram_chat_id,
+        payload.telegram_message_id,
+        payload.material_type,
+        payload.source is not None,
+        payload.source.external_id if payload.source else None,
+        payload.source.title if payload.source else None,
+    )
     try:
         return await service.ingest(payload=payload, uploaded=upload)
     except (TelegramUserNotLinkedError, TelegramCollectionNotFoundError) as exc:
@@ -186,11 +199,21 @@ async def ingest_telegram_message_batch(
         for file in files or []
     ]
     try:
+        parsed_parts = _parse_batch_parts(parts)
+        logger.info(
+            "Telegram batch ingest request parsed user=%s chat=%s count=%s "
+            "source_count=%s source_external_ids=%s",
+            telegram_user_id,
+            telegram_chat_id,
+            len(parsed_parts),
+            sum(1 for part in parsed_parts if part.source is not None),
+            [part.source.external_id for part in parsed_parts if part.source is not None],
+        )
         return await service.ingest_batch(
             telegram_user_id=telegram_user_id,
             telegram_chat_id=telegram_chat_id,
             target_collection_id=target_collection_id,
-            parts=_parse_batch_parts(parts),
+            parts=parsed_parts,
             uploaded=uploads,
         )
     except (TelegramUserNotLinkedError, TelegramCollectionNotFoundError) as exc:
