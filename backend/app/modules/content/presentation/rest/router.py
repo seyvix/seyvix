@@ -210,13 +210,9 @@ async def list_notes(
     search_service = SemanticSearchService(service.session)
     settings = search_service.settings
     normalized_search = search.strip() if search else None
-    if (
-        normalized_search
-        and search_mode in ("semantic", "hybrid")
-    ):
-        meilisearch_available = (
-            settings.search_engine == "meilisearch"
-            and bool(settings.search_meilisearch_url)
+    if normalized_search and search_mode in ("semantic", "hybrid"):
+        meilisearch_available = settings.search_engine == "meilisearch" and bool(
+            settings.search_meilisearch_url
         )
         below_threshold = False
         if meilisearch_available:
@@ -235,9 +231,7 @@ async def list_notes(
             search_mode = "full_text"
     search_result_ids: list[str] | None = None
     search_matches_by_object_id = None
-    if normalized_search and (
-        settings.search_engine == "meilisearch" or search_mode != "hybrid"
-    ):
+    if normalized_search and (settings.search_engine == "meilisearch" or search_mode != "hybrid"):
         try:
             search_matches_by_object_id = await search_service.search_content_object_matches(
                 owner_user_id=context.user.id,
@@ -250,7 +244,11 @@ async def list_notes(
                 ),
             )
             search_result_ids = list(search_matches_by_object_id)
-            if search_mode in ("full_text", "hybrid") and not search_result_ids:
+            if (
+                settings.search_engine != "meilisearch"
+                and search_mode in ("full_text", "hybrid")
+                and not search_result_ids
+            ):
                 logger.info(
                     "search.mode.empty_external_result_fallback",
                     requested=search_mode,

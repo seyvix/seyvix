@@ -137,9 +137,9 @@ class Settings(BaseSettings):
     search_meilisearch_index_uid: str = "content_chunks"
     search_meilisearch_embedder: str = "content"
     search_meilisearch_timeout_seconds: int = 5
-    search_meilisearch_hybrid_semantic_ratio: float = 0.5
-    search_meilisearch_ranking_score_threshold: float = 0.6
-    search_vector_modes_min_notes: int = 20
+    search_meilisearch_hybrid_semantic_ratio: float = Field(default=0.35, ge=0.0, le=1.0)
+    search_meilisearch_ranking_score_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
+    search_vector_modes_min_notes: int = Field(default=0, ge=0)
     taxonomy_classification_high_threshold: float = 0.80
     taxonomy_classification_medium_threshold: float = 0.60
     taxonomy_llm_classification_accept_threshold: float = 0.80

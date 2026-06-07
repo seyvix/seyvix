@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from collections.abc import Sequence
+from contextlib import suppress
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 import httpx
 
@@ -188,7 +190,123 @@ class MeilisearchSearchBackend:
         source_type: str | None = None,
         source_id: str | None = None,
     ) -> list[HybridSearchResult]:
-        payload: dict[str, Any] = {
+        if mode == "hybrid":
+            return await self._hybrid_search(
+                owner_user_id=owner_user_id,
+                query=query,
+                limit=limit,
+                filters=filters,
+                source=source,
+                source_type=source_type,
+                source_id=source_id,
+            )
+
+        payload = self._base_search_payload(
+            owner_user_id=owner_user_id,
+            query=query,
+            limit=limit,
+            filters=filters,
+            source=source,
+            source_type=source_type,
+            source_id=source_id,
+        )
+        score_kind: _MeilisearchScoreKind = "full_text"
+        if mode == "full_text":
+            payload["matchingStrategy"] = "all"
+        else:
+            payload["vector"] = await self._query_vector(query)
+            payload["hybrid"] = {
+                "embedder": self.settings.search_meilisearch_embedder,
+                "semanticRatio": 1.0,
+            }
+            score_kind = "semantic"
+
+        response = await self.client.search(
+            index_uid=self.settings.search_meilisearch_index_uid,
+            payload=payload,
+        )
+        return _results_from_response(
+            response,
+            score_kind=score_kind,
+            threshold=self.settings.search_meilisearch_ranking_score_threshold,
+        )
+
+    async def _hybrid_search(
+        self,
+        *,
+        owner_user_id: str,
+        query: str,
+        limit: int,
+        filters: SearchFilters | None,
+        source: str | None,
+        source_type: str | None,
+        source_id: str | None,
+    ) -> list[HybridSearchResult]:
+        full_text_payload = self._base_search_payload(
+            owner_user_id=owner_user_id,
+            query=query,
+            limit=limit,
+            filters=filters,
+            source=source,
+            source_type=source_type,
+            source_id=source_id,
+        )
+        full_text_payload["matchingStrategy"] = "all"
+        full_text_task = asyncio.create_task(
+            self.client.search(
+                index_uid=self.settings.search_meilisearch_index_uid,
+                payload=full_text_payload,
+            )
+        )
+        try:
+            vector = await self._query_vector(query)
+        except Exception:
+            full_text_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await full_text_task
+            raise
+
+        semantic_payload = self._base_search_payload(
+            owner_user_id=owner_user_id,
+            query=query,
+            limit=limit,
+            filters=filters,
+            source=source,
+            source_type=source_type,
+            source_id=source_id,
+        )
+        semantic_payload["vector"] = vector
+        semantic_payload["hybrid"] = {
+            "embedder": self.settings.search_meilisearch_embedder,
+            "semanticRatio": 1.0,
+        }
+        semantic_response, full_text_response = await asyncio.gather(
+            self.client.search(
+                index_uid=self.settings.search_meilisearch_index_uid,
+                payload=semantic_payload,
+            ),
+            full_text_task,
+        )
+        return _merge_hybrid_responses(
+            full_text_response=full_text_response,
+            semantic_response=semantic_response,
+            threshold=self.settings.search_meilisearch_ranking_score_threshold,
+            semantic_weight=self.settings.search_meilisearch_hybrid_semantic_ratio,
+            limit=limit,
+        )
+
+    def _base_search_payload(
+        self,
+        *,
+        owner_user_id: str,
+        query: str,
+        limit: int,
+        filters: SearchFilters | None,
+        source: str | None,
+        source_type: str | None,
+        source_id: str | None,
+    ) -> dict[str, Any]:
+        return {
             "q": query,
             "limit": limit,
             "filter": build_meilisearch_filter_expression(
@@ -199,34 +317,16 @@ class MeilisearchSearchBackend:
                 source_id=source_id,
             ),
             "showRankingScore": True,
-            "rankingScoreThreshold": self.settings.search_meilisearch_ranking_score_threshold,
         }
-        if mode != "full_text":
-            vector = (
-                await self.embedding_provider.embed_texts(
-                    [query],
-                    model=self.settings.vector_embedding_model,
-                    dimensions=self.settings.vector_embedding_dimensions,
-                )
-            )[0]
-            payload["vector"] = vector
-            payload["hybrid"] = {
-                "embedder": self.settings.search_meilisearch_embedder,
-                "semanticRatio": (
-                    1.0
-                    if mode == "semantic"
-                    else self.settings.search_meilisearch_hybrid_semantic_ratio
-                ),
-            }
 
-        response = await self.client.search(
-            index_uid=self.settings.search_meilisearch_index_uid,
-            payload=payload,
-        )
-        hits = response.get("hits", [])
-        if not isinstance(hits, list):
-            return []
-        return [_result_from_hit(hit) for hit in hits if isinstance(hit, dict)]
+    async def _query_vector(self, query: str) -> list[float]:
+        return (
+            await self.embedding_provider.embed_texts(
+                [query],
+                model=self.settings.vector_embedding_model,
+                dimensions=self.settings.vector_embedding_dimensions,
+            )
+        )[0]
 
 
 async def sync_meilisearch_source(
@@ -395,7 +495,102 @@ def build_meilisearch_filter_expression(
     return " AND ".join(clauses)
 
 
-def _result_from_hit(hit: dict[str, Any]) -> HybridSearchResult:
+_MeilisearchScoreKind = Literal["full_text", "semantic"]
+
+
+def _results_from_response(
+    response: dict[str, Any],
+    *,
+    score_kind: _MeilisearchScoreKind,
+    threshold: float,
+) -> list[HybridSearchResult]:
+    return [
+        _result_from_hit(hit, score_kind=score_kind, rank=rank, ranking_score=ranking_score)
+        for rank, hit, ranking_score in _ranked_hits(response, threshold=threshold)
+    ]
+
+
+def _merge_hybrid_responses(
+    *,
+    full_text_response: dict[str, Any],
+    semantic_response: dict[str, Any],
+    threshold: float,
+    semantic_weight: float,
+    limit: int,
+) -> list[HybridSearchResult]:
+    candidates: dict[str, HybridSearchResult] = {}
+    for rank, hit, ranking_score in _ranked_hits(full_text_response, threshold=threshold):
+        result = _result_from_hit(
+            hit,
+            score_kind="full_text",
+            rank=rank,
+            ranking_score=ranking_score,
+        )
+        result.score = 1.0 + ranking_score
+        candidates[result.chunk_id] = result
+
+    for rank, hit, ranking_score in _ranked_hits(semantic_response, threshold=threshold):
+        result = _result_from_hit(
+            hit,
+            score_kind="semantic",
+            rank=rank,
+            ranking_score=ranking_score,
+        )
+        existing = candidates.get(result.chunk_id)
+        if existing is None:
+            result.score = ranking_score * semantic_weight
+            candidates[result.chunk_id] = result
+            continue
+        existing.vector_score = _best_float(existing.vector_score, ranking_score)
+        existing.vector_rank = _best_rank(existing.vector_rank, rank)
+        existing.score = 1.0 + (existing.full_text_score or 0) + ranking_score * semantic_weight
+
+    return sorted(
+        candidates.values(),
+        key=lambda item: (
+            item.full_text_score is not None,
+            item.score,
+            -(item.full_text_rank or 10**9),
+            -(item.vector_rank or 10**9),
+            item.text,
+        ),
+        reverse=True,
+    )[:limit]
+
+
+def _ranked_hits(
+    response: dict[str, Any],
+    *,
+    threshold: float,
+) -> list[tuple[int, dict[str, Any], float]]:
+    hits = response.get("hits", [])
+    if not isinstance(hits, list):
+        return []
+    ranked: list[tuple[int, dict[str, Any], float]] = []
+    for rank, hit in enumerate(hits, start=1):
+        if not isinstance(hit, dict):
+            continue
+        ranking_score = _ranking_score(hit)
+        if ranking_score < threshold:
+            continue
+        ranked.append((rank, hit, ranking_score))
+    return ranked
+
+
+def _ranking_score(hit: dict[str, Any]) -> float:
+    try:
+        return float(hit.get("_rankingScore") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _result_from_hit(
+    hit: dict[str, Any],
+    *,
+    score_kind: _MeilisearchScoreKind,
+    rank: int,
+    ranking_score: float,
+) -> HybridSearchResult:
     metadata: dict[str, object] = hit["metadata"] if isinstance(hit.get("metadata"), dict) else {}
     return HybridSearchResult(
         source=str(hit.get("source") or ""),
@@ -406,9 +601,20 @@ def _result_from_hit(hit: dict[str, Any]) -> HybridSearchResult:
         chunk_external_id=str(hit.get("chunk_external_id") or ""),
         text=str(hit.get("text") or ""),
         metadata=metadata,
-        score=float(hit.get("_rankingScore") or 0),
-        full_text_score=float(hit.get("_rankingScore") or 0),
+        score=ranking_score,
+        vector_score=ranking_score if score_kind == "semantic" else None,
+        full_text_score=ranking_score if score_kind == "full_text" else None,
+        vector_rank=rank if score_kind == "semantic" else None,
+        full_text_rank=rank if score_kind == "full_text" else None,
     )
+
+
+def _best_float(current: float | None, candidate: float) -> float:
+    return candidate if current is None else max(current, candidate)
+
+
+def _best_rank(current: int | None, candidate: int) -> int:
+    return candidate if current is None else min(current, candidate)
 
 
 def _content_type(metadata: dict[str, Any]) -> str | None:

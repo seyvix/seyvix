@@ -487,21 +487,87 @@ async def test_meilisearch_backend_uses_selected_search_mode() -> None:
 
     full_text_payload = client.search_payloads[0]["payload"]
     semantic_payload = client.search_payloads[1]["payload"]
-    hybrid_payload = client.search_payloads[2]["payload"]
+    hybrid_full_text_payload = client.search_payloads[2]["payload"]
+    hybrid_semantic_payload = client.search_payloads[3]["payload"]
 
     assert full_text_payload["q"] == "hybrid typo"
+    assert full_text_payload["showRankingScore"] is True
+    assert full_text_payload["matchingStrategy"] == "all"
     assert "vector" not in full_text_payload
     assert "hybrid" not in full_text_payload
+    assert "rankingScoreThreshold" not in full_text_payload
     assert semantic_payload["vector"] == [1.0, 1.0, 1.0]
     assert semantic_payload["hybrid"] == {
         "embedder": "content",
         "semanticRatio": 1.0,
     }
-    assert hybrid_payload["vector"] == [1.0, 1.0, 1.0]
-    assert hybrid_payload["hybrid"] == {
+    assert hybrid_full_text_payload["matchingStrategy"] == "all"
+    assert "vector" not in hybrid_full_text_payload
+    assert "hybrid" not in hybrid_full_text_payload
+    assert hybrid_semantic_payload["vector"] == [1.0, 1.0, 1.0]
+    assert hybrid_semantic_payload["hybrid"] == {
         "embedder": "content",
-        "semanticRatio": 0.5,
+        "semanticRatio": 1.0,
     }
+
+
+@pytest.mark.asyncio
+async def test_meilisearch_hybrid_prioritizes_strong_full_text_over_semantic_only() -> None:
+    class _PriorityClient:
+        async def search(self, *, index_uid: str, payload: dict[str, Any]) -> dict[str, Any]:
+            if "vector" in payload:
+                return {
+                    "hits": [
+                        {
+                            "id": "semantic-chunk",
+                            "source": "content",
+                            "source_type": "content_object",
+                            "source_id": "semantic-note",
+                            "external_id": "content_object:semantic-note",
+                            "chunk_external_id": "content_object:semantic-note:chunk:0",
+                            "text": "Semantic-only result with a high vector score.",
+                            "metadata": {"media_type": "text"},
+                            "_rankingScore": 0.99,
+                        }
+                    ]
+                }
+            return {
+                "hits": [
+                    {
+                        "id": "full-text-chunk",
+                        "source": "content",
+                        "source_type": "content_object",
+                        "source_id": "full-text-note",
+                        "external_id": "content_object:full-text-note",
+                        "chunk_external_id": "content_object:full-text-note:chunk:0",
+                        "text": "Full-text result that passes the confidence threshold.",
+                        "metadata": {"media_type": "text"},
+                        "_rankingScore": 0.63,
+                    }
+                ]
+            }
+
+    backend = MeilisearchSearchBackend(
+        client=cast(Any, _PriorityClient()),
+        embedding_provider=_FakeEmbeddingProvider(),
+        settings=Settings(
+            search_meilisearch_hybrid_semantic_ratio=0.35,
+            search_meilisearch_ranking_score_threshold=0.6,
+            vector_embedding_dimensions=3,
+        ),
+    )
+
+    results = await backend.search(
+        owner_user_id="user-1",
+        query="important words",
+        limit=10,
+        mode="hybrid",
+        filters=None,
+    )
+
+    assert [result.chunk_id for result in results] == ["full-text-chunk", "semantic-chunk"]
+    assert results[0].full_text_score == 0.63
+    assert results[1].vector_score == 0.99
 
 
 @pytest.mark.asyncio
@@ -780,23 +846,45 @@ async def test_http_client_replace_documents_pins_primary_key_to_id() -> None:
 
 
 @pytest.mark.asyncio
-async def test_meilisearch_backend_sets_ranking_score_threshold() -> None:
+async def test_meilisearch_backend_filters_ranking_scores_client_side() -> None:
     """
-    Without a ranking-score threshold, hybrid search returns every indexed
-    document for any query — semantic similarity is always nonzero, so an
-    unrelated query yields every chunk with a score around 0.5. We pin a
-    threshold so unrelated queries return nothing.
+    Meilisearch provides `_rankingScore` when `showRankingScore` is enabled.
+    The application owns the confidence cutoff so an unrelated query can
+    intentionally return an empty or partial result set.
     """
 
     class _CapturingClient:
         def __init__(self) -> None:
             self.payloads: list[dict[str, Any]] = []
 
-        async def search(
-            self, *, index_uid: str, payload: dict[str, Any]
-        ) -> dict[str, Any]:
+        async def search(self, *, index_uid: str, payload: dict[str, Any]) -> dict[str, Any]:
             self.payloads.append(payload)
-            return {"hits": []}
+            return {
+                "hits": [
+                    {
+                        "id": "strong-chunk",
+                        "source": "content",
+                        "source_type": "content_object",
+                        "source_id": "strong-note",
+                        "external_id": "content_object:strong-note",
+                        "chunk_external_id": "content_object:strong-note:chunk:0",
+                        "text": "Strong enough full-text result.",
+                        "metadata": {"media_type": "text"},
+                        "_rankingScore": 0.75,
+                    },
+                    {
+                        "id": "weak-chunk",
+                        "source": "content",
+                        "source_type": "content_object",
+                        "source_id": "weak-note",
+                        "external_id": "content_object:weak-note",
+                        "chunk_external_id": "content_object:weak-note:chunk:0",
+                        "text": "Weak result below the confidence threshold.",
+                        "metadata": {"media_type": "text"},
+                        "_rankingScore": 0.2,
+                    },
+                ]
+            }
 
         async def configure_index(self, **kwargs: Any) -> None:
             return None
@@ -828,18 +916,20 @@ async def test_meilisearch_backend_sets_ranking_score_threshold() -> None:
         settings=settings,
     )
 
-    await backend.search(
+    results = await backend.search(
         owner_user_id="user-1",
         query="anything",
         limit=10,
-        mode="hybrid",
+        mode="full_text",
         filters=None,
         source="content",
         source_type="content_object",
     )
 
     assert len(client.payloads) == 1
-    assert client.payloads[0]["rankingScoreThreshold"] == 0.62
+    assert client.payloads[0]["showRankingScore"] is True
+    assert "rankingScoreThreshold" not in client.payloads[0]
+    assert [result.chunk_id for result in results] == ["strong-chunk"]
 
 
 @pytest.mark.asyncio
@@ -961,6 +1051,26 @@ def test_search_capabilities_below_threshold_only_full_text(
     assert body["defaultMode"] == "full_text"
 
 
+def test_search_capabilities_default_unlocks_vector_modes_for_small_note_sets(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client)
+    settings = get_settings()
+    settings.search_vector_modes_min_notes = 0
+    settings.search_engine = "meilisearch"
+    settings.search_meilisearch_url = "http://meilisearch:7700"
+
+    _create_text_note(content_client, headers, title="A", text="alpha")
+
+    response = content_client.get("/api/v1/search/capabilities", headers=headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["noteCount"] == 1
+    assert body["threshold"] == 0
+    assert body["unlockedModes"] == ["full_text", "semantic", "hybrid"]
+    assert body["defaultMode"] == "hybrid"
+
+
 def test_search_capabilities_above_threshold_unlocks_vector_modes(
     content_client: TestClient,
 ) -> None:
@@ -1020,8 +1130,7 @@ def test_list_notes_downgrades_locked_mode_silently(
         return {}
 
     monkeypatch.setattr(
-        "app.modules.search.service.SemanticSearchService."
-        "search_content_object_matches",
+        "app.modules.search.service.SemanticSearchService." "search_content_object_matches",
         fake_search,
     )
 
@@ -1034,3 +1143,33 @@ def test_list_notes_downgrades_locked_mode_silently(
     )
     assert response.status_code == 200
     assert used_mode == ["full_text"]
+
+
+def test_list_notes_keeps_empty_meilisearch_result_set(
+    content_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers = _auth_headers(content_client)
+    settings = get_settings()
+    settings.search_vector_modes_min_notes = 0
+    settings.search_engine = "meilisearch"
+    settings.search_meilisearch_url = "http://meilisearch:7700"
+
+    async def fake_search(self, *, owner_user_id, query, limit, mode, filters):  # type: ignore[no-untyped-def]
+        return {}
+
+    monkeypatch.setattr(
+        "app.modules.search.service.SemanticSearchService." "search_content_object_matches",
+        fake_search,
+    )
+
+    _create_text_note(content_client, headers, title="A", text="alpha")
+
+    response = content_client.get(
+        "/api/v1/notes",
+        headers=headers,
+        params={"search": "alpha", "search_mode": "full_text"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["items"] == []
