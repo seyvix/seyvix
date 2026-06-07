@@ -1,0 +1,75 @@
+{
+  "slug": "software",
+  "aliases": ["programming", "development", "tech"],
+  "name": "Software & Tech",
+  "description": "Programming, developer tools, web development, backend systems, infrastructure, data, security, and technical implementation.",
+  "tree": [
+    {
+      "name": "Software",
+      "description": "Code, developer tools, technical implementation, infrastructure, and software engineering practice.",
+      "profile": {
+        "summary": "Use when the saved material is mainly about building, debugging, shipping, or understanding software. Do not use for AI service news unless the software implementation is the main reason to save it.",
+        "keywords": ["software", "programming", "development", "code", "developer-tools", "engineering"],
+        "positive_examples": ["Open source repository for a parser.", "Backend architecture note.", "Frontend component implementation tip."],
+        "negative_examples": ["Movie release news.", "General AI product announcement with no implementation details.", "Shopping deal for a physical device."]
+      },
+      "children": [
+        {
+          "name": "Programming",
+          "description": "Languages, code examples, libraries, repositories, algorithms, snippets, and implementation techniques.",
+          "profile": {
+            "summary": "Use for concrete coding material: repositories, snippets, libraries, language features, algorithms, implementation guides, and code examples.",
+            "keywords": ["programming", "code", "repository", "library", "snippet", "algorithm", "github"],
+            "positive_examples": ["GitHub repository that solves a coding task.", "Code snippet for parsing content.", "Library comparison for a developer workflow."],
+            "negative_examples": ["No-code website list.", "AI tool announcement without code.", "Game or movie news."]
+          },
+          "children": []
+        },
+        {
+          "name": "Web & Frontend",
+          "description": "Frontend engineering, web UI implementation, CSS, JavaScript, TypeScript, React, browser APIs, and web tools.",
+          "profile": {
+            "summary": "Use when the technical focus is web or frontend implementation: React, JavaScript, TypeScript, CSS, browser APIs, UI code, build tools, and frontend libraries.",
+            "keywords": ["frontend", "web", "javascript", "typescript", "react", "css", "browser"],
+            "positive_examples": ["Collection of CSS transitions for frontend work.", "React component implementation pattern.", "Browser API tutorial."],
+            "negative_examples": ["Visual reference with no implementation detail.", "Backend-only service architecture.", "General useful website with no web development angle."]
+          },
+          "children": []
+        },
+        {
+          "name": "Backend & Infrastructure",
+          "description": "APIs, servers, databases, queues, auth, deployment, DevOps, hosting, and reliability.",
+          "profile": {
+            "summary": "Use for server-side and infrastructure material: APIs, backend services, databases, queues, auth, deployment, hosting, observability, networking, and reliability.",
+            "keywords": ["backend", "api", "database", "devops", "hosting", "server", "infrastructure", "auth"],
+            "positive_examples": ["API design article.", "Database migration approach.", "Free domain or hosting infrastructure resource."],
+            "negative_examples": ["Frontend-only visual transition.", "AI image generator with no backend details.", "Movie or game release."]
+          },
+          "children": []
+        },
+        {
+          "name": "Security & Privacy",
+          "description": "Security, privacy, bypasses, paywalls, identity, permissions, surveillance, and risk-related tools.",
+          "profile": {
+            "summary": "Use for security and privacy topics: vulnerabilities, bypasses, paywalls, identity, permissions, surveillance, privacy tools, and risk analysis.",
+            "keywords": ["security", "privacy", "bypass", "paywall", "permissions", "surveillance", "risk"],
+            "positive_examples": ["Paywall bypass repository.", "Wi-Fi surveillance proof of concept.", "Privacy tool for removing traces."],
+            "negative_examples": ["Ordinary productivity app.", "AI prompt pack with no security angle.", "Entertainment news."]
+          },
+          "children": []
+        },
+        {
+          "name": "Data & Automation",
+          "description": "Parsers, scraping, data extraction, automation scripts, workflows, and structured data processing.",
+          "profile": {
+            "summary": "Use for data extraction and automation: parsers, scraping, converters, automation scripts, structured data, ETL-like workflows, and repeatable technical pipelines.",
+            "keywords": ["data", "parser", "scraping", "automation", "workflow", "converter", "extraction"],
+            "positive_examples": ["Collection of parsers.", "Tool that turns documents into structured output.", "Automation workflow for downloading and cutting video."],
+            "negative_examples": ["Manual personal todo.", "Visual design reference.", "AI model news with no data workflow."]
+          },
+          "children": []
+        }
+      ]
+    }
+  ]
+}

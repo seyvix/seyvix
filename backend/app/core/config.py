@@ -1,10 +1,17 @@
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import URL
+
+
+def _settings_env_files(config_file: Path = Path(__file__)) -> tuple[Path, Path]:
+    backend_root = config_file.resolve().parents[2]
+    project_root = backend_root.parent
+    return project_root / ".env", backend_root / ".env"
 
 
 class Settings(BaseSettings):
@@ -176,7 +183,11 @@ class Settings(BaseSettings):
     cors_allowed_origins: list[str] = Field(default_factory=list)
     cors_allow_origin_regex: str | None = None
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=_settings_env_files(),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     @property
     def sqlalchemy_database_uri(self) -> str:

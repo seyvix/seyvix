@@ -1,0 +1,64 @@
+{
+  "slug": "gear",
+  "aliases": ["gadgets", "hardware", "shopping"],
+  "name": "Gear & Gadgets",
+  "description": "Hardware, gadgets, accessories, cables, mobile devices, audio/video gear, deals, and shopping notes.",
+  "tree": [
+    {
+      "name": "Gear",
+      "description": "Physical products, gadgets, accessories, hardware, deals, and device-related notes.",
+      "profile": {
+        "summary": "Use when the saved material is mainly about a physical product, gadget, accessory, device, hardware setup, or shopping decision. Do not use for software utilities unless hardware is the main subject.",
+        "keywords": ["gear", "gadgets", "hardware", "shopping", "accessories", "devices", "deals"],
+        "positive_examples": ["USB-C PD to DC adapter.", "HDMI capture card.", "Android device setup."],
+        "negative_examples": ["Download utility with no hardware.", "Movie or game release.", "AI service announcement."]
+      },
+      "children": [
+        {
+          "name": "Hardware",
+          "description": "Computers, components, peripherals, networking devices, cameras, and physical tech hardware.",
+          "profile": {
+            "summary": "Use for physical tech hardware: computers, components, peripherals, routers, cameras, capture devices, networking gear, and hardware capabilities.",
+            "keywords": ["hardware", "computer", "peripherals", "router", "camera", "capture-card", "components"],
+            "positive_examples": ["HDMI capture card specs.", "Wi-Fi router camera experiment.", "Peripheral comparison."],
+            "negative_examples": ["Software-only video downloader.", "AI image generator.", "Movie release news."]
+          },
+          "children": []
+        },
+        {
+          "name": "Accessories & Cables",
+          "description": "Adapters, cables, chargers, connectors, docks, mounts, cases, and small physical accessories.",
+          "profile": {
+            "summary": "Use for small accessories and physical add-ons: adapters, cables, chargers, docks, connectors, mounts, cases, and similar buying notes.",
+            "keywords": ["accessories", "cables", "adapter", "charger", "dock", "connector", "usb-c"],
+            "positive_examples": ["USB-C PD to DC laptop charging adapter.", "Cable or connector compatibility note.", "Docking accessory listing."],
+            "negative_examples": ["Software plugin.", "Streaming service news.", "AI prompt pack."]
+          },
+          "children": []
+        },
+        {
+          "name": "Mobile & Android",
+          "description": "Phones, tablets, Android devices, mobile setups, device reuse, apps tied to physical devices.",
+          "profile": {
+            "summary": "Use for phones, tablets, Android devices, device reuse, mobile setups, and hardware-tied mobile workflows.",
+            "keywords": ["mobile", "android", "phone", "tablet", "device", "setup", "panel"],
+            "positive_examples": ["Old Android turned into a control panel.", "Phone accessory note.", "Tablet setup guide."],
+            "negative_examples": ["Generic mobile app list with no device setup.", "Backend code repository.", "Movie trailer."]
+          },
+          "children": []
+        },
+        {
+          "name": "Deals & Shopping",
+          "description": "Discounts, purchase options, product roundups, shopping comparisons, and buy-later notes.",
+          "profile": {
+            "summary": "Use for purchase-oriented material: discounts, deals, product roundups, shopping comparisons, buy-later notes, and practical purchasing decisions.",
+            "keywords": ["deals", "shopping", "discount", "buy", "product-roundup", "comparison", "price"],
+            "positive_examples": ["Useful gadget deal.", "Product comparison before buying.", "Discount roundup."],
+            "negative_examples": ["Free software resource with no purchase decision.", "Research article.", "Game release news."]
+          },
+          "children": []
+        }
+      ]
+    }
+  ]
+}

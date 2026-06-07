@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 from uuid import uuid4
 
+from pydantic import BaseModel, Field, ValidationError
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.contracts.events import EventEnvelope, TaxonomyClassificationCompletedPayload
 from app.core.config import Settings, get_settings
 from app.modules.content.models import ContentObject
@@ -54,15 +58,22 @@ from app.modules.vectorization.contracts import (
 )
 from app.modules.vectorization.models import VectorizationJob
 from app.platform.events.outbox import EventOutboxRepository
-from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 SLUG_PATTERN = re.compile(r"^[a-z0-9_-]+$")
 LLM_JUDGE_PROMPT_VERSION = "taxonomy_classification_llm_judge_v1"
 TAXONOMY_TEMPLATE_DIR = Path(__file__).with_name("templates")
 INTEREST_SPECS_DIR = TAXONOMY_TEMPLATE_DIR / "interests"
-INTEREST_SPEC_SLUGS = ("programming", "ai", "design", "business", "science", "personal")
+INTEREST_SPEC_SLUGS = (
+    "ai",
+    "software",
+    "tools",
+    "creative",
+    "media",
+    "learning",
+    "gear",
+    "work",
+    "life",
+)
 
 
 class TaxonomyNotFoundError(Exception):
@@ -674,9 +685,6 @@ class TaxonomyService:
         ]
         if profile is not None:
             lines.extend(f"- {example}" for example in profile.positive_examples)
-        lines.append("Negative examples:")
-        if profile is not None:
-            lines.extend(f"- {example}" for example in profile.negative_examples)
         return "\n".join(lines)
 
     async def build_category_profile_vector_subject(
@@ -1004,12 +1012,19 @@ class TaxonomyService:
             owner_user_id=owner_user_id,
             search_results=search_results,
         )
-        if not candidates:
-            candidates = await self._load_textual_classification_candidates(
-                owner_user_id=owner_user_id,
-                classification_text=query,
-                limit=candidate_limit,
+        textual_candidates = await self._load_textual_classification_candidates(
+            owner_user_id=owner_user_id,
+            classification_text=query,
+            limit=candidate_limit,
+        )
+        if mode == "llm_judge":
+            candidates = self._merge_classification_candidates(
+                candidates,
+                textual_candidates,
+                limit=max(candidate_limit, min(candidate_limit + 3, 10)),
             )
+        elif not candidates:
+            candidates = textual_candidates
         if not candidates:
             inbox_assignment = await self._create_inbox_assignment(
                 owner_user_id=owner_user_id,
@@ -1457,7 +1472,9 @@ class TaxonomyService:
                 "max_tokens": 768,
             },
         )
-        decision = TaxonomyLLMDecisionResponse.model_validate(result)
+        decision = TaxonomyLLMDecisionResponse.model_validate(
+            self._normalize_llm_decision_payload(result)
+        )
         candidate_ids = {candidate.category.id for candidate in candidates}
         if decision.selected_category_id is not None and (
             decision.selected_category_id not in candidate_ids
@@ -1493,6 +1510,12 @@ class TaxonomyService:
             )
             if category is None:
                 continue
+            if category.path != "inbox" and await self.repository.has_children(
+                owner_user_id=owner_user_id,
+                category_id=category.id,
+                active_only=True,
+            ):
+                continue
             profile = await self.repository.get_profile(category_id=category.id)
             candidates.append(
                 ClassificationCandidate(result=result, category=category, profile=profile)
@@ -1514,28 +1537,60 @@ class TaxonomyService:
             owner_user_id=owner_user_id,
             include_archived=False,
         )
+        parent_category_ids = {category.parent_id for category in categories if category.parent_id}
         scored: list[tuple[float, TaxonomyCategory, TaxonomyCategoryProfile | None, str]] = []
         for category in categories:
-            profile = category.profile
-            document = self._category_textual_candidate_document(category, profile)
-            document_tokens = self._classification_tokens(document)
-            if not document_tokens:
+            if category.path != "inbox" and category.id in parent_category_ids:
                 continue
-            matches = query_tokens & document_tokens
+            profile = category.profile
+            category_tokens = self._classification_tokens(
+                "\n".join([category.path.replace("/", " "), category.name])
+            )
+            context_tokens = self._classification_tokens(
+                "\n".join([category.description or "", profile.summary if profile else ""])
+            )
+            keyword_tokens: set[str] = set()
+            positive_tokens: set[str] = set()
+            if profile is not None:
+                keyword_tokens = self._classification_tokens(" ".join(profile.keywords))
+                positive_tokens = self._classification_tokens(" ".join(profile.positive_examples))
+            candidate_tokens = category_tokens | keyword_tokens | positive_tokens | context_tokens
+            if not candidate_tokens:
+                continue
+            matches = query_tokens & candidate_tokens
             if not matches:
                 continue
-            keyword_matches = set()
+            negative_matches = set()
             if profile is not None:
-                keyword_matches = query_tokens & self._classification_tokens(
-                    " ".join(profile.keywords)
+                negative_matches = query_tokens & self._classification_tokens(
+                    " ".join(profile.negative_examples)
                 )
+            if negative_matches and negative_matches == matches:
+                continue
+            category_matches = query_tokens & category_tokens
+            keyword_matches = query_tokens & keyword_tokens
+            positive_matches = query_tokens & positive_tokens
+            context_matches = query_tokens & context_tokens
+            signal_matches = category_matches | keyword_matches | positive_matches
+            if not signal_matches:
+                continue
             score = min(
                 0.95,
-                0.52
-                + (len(matches) * 0.045)
-                + (len(keyword_matches) * 0.06)
-                + (category.depth * 0.015),
+                0.48
+                + (min(len(category_matches), 3) * 0.05)
+                + (min(len(keyword_matches), 5) * 0.09)
+                + (min(len(positive_matches), 5) * 0.045)
+                + (min(len(context_matches), 4) * 0.012)
+                + (0.04 if keyword_matches else 0)
+                + (0.025 if positive_matches else 0)
+                + (0.03 if category_matches else 0)
+                + (category.depth * 0.02),
             )
+            if negative_matches:
+                score -= min(0.45, len(negative_matches) * 0.1)
+            if score < 0.5:
+                continue
+            document = self._category_textual_candidate_document(category, profile)
             scored.append((score, category, profile, document))
 
         scored.sort(key=lambda item: (item[0], item[1].depth, -item[1].sort_order), reverse=True)
@@ -1580,10 +1635,27 @@ class TaxonomyService:
                     profile.summary or "",
                     " ".join(profile.keywords),
                     " ".join(profile.positive_examples),
-                    " ".join(profile.negative_examples),
                 ]
             )
         return "\n".join(part for part in parts if part)
+
+    @staticmethod
+    def _merge_classification_candidates(
+        semantic_candidates: list[ClassificationCandidate],
+        textual_candidates: list[ClassificationCandidate],
+        *,
+        limit: int,
+    ) -> list[ClassificationCandidate]:
+        by_category_id: dict[str, ClassificationCandidate] = {}
+        for candidate in [*semantic_candidates, *textual_candidates]:
+            existing = by_category_id.get(candidate.category.id)
+            if existing is None or candidate.result.score > existing.result.score:
+                by_category_id[candidate.category.id] = candidate
+        return sorted(
+            by_category_id.values(),
+            key=lambda candidate: (candidate.result.score, candidate.category.depth),
+            reverse=True,
+        )[:limit]
 
     @staticmethod
     def _classification_tokens(text: str) -> set[str]:
@@ -1622,6 +1694,8 @@ class TaxonomyService:
             "or choose a category outside the candidate list.",
             "Prefer the deepest specific category when it clearly fits.",
             "Prefer a parent or broader category only if the specific candidate is too narrow.",
+            "Treat negative_examples as exclusion rules, not supporting evidence.",
+            "If content mainly resembles a candidate's negative_examples, do not choose it.",
             "Return should_assign = false if none of the candidates fit.",
             "Use semantic score as a signal, not as the only decision factor.",
             "Explain briefly why the selected category fits.",
@@ -1679,7 +1753,10 @@ class TaxonomyService:
                 "You improve taxonomy category profiles for a personal knowledge base.",
                 "Return a draft only. Do not save or apply changes.",
                 "Keep the category boundary practical for classification.",
-                "Prefer concise Russian text if the user guidance is in Russian.",
+                "Write summaries, keywords, and examples in English, even when the user guidance "
+                "is not English.",
+                "Use negative examples only for exclusion boundaries; do not repeat likely "
+                "positive retrieval terms there unless needed to prevent a common mistake.",
                 "",
                 "Category:",
                 f"Category path: {category.path}",
@@ -1732,9 +1809,31 @@ class TaxonomyService:
                 "should_assign": {"type": "boolean"},
                 "status": {"enum": ["accepted", "proposed", "no_assignment"]},
                 "reasoning": {"type": "string"},
-                "alternatives": {"type": "array"},
+                "alternatives": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "category_id": {"type": ["string", "null"]},
+                            "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+                            "reasoning": {"type": "string"},
+                        },
+                        "additionalProperties": True,
+                    },
+                },
             },
         }
+
+    @staticmethod
+    def _normalize_llm_decision_payload(result: dict[str, Any]) -> dict[str, Any]:
+        alternatives = result.get("alternatives")
+        if isinstance(alternatives, list):
+            result = dict(result)
+            result["alternatives"] = [
+                item if isinstance(item, dict) else {"reasoning": str(item)}
+                for item in alternatives
+            ]
+        return result
 
     def list_interest_options(self) -> list[InterestOption]:
         return [
@@ -2200,20 +2299,20 @@ class TaxonomyService:
         keyword = TaxonomyService._slugify_path_segment(name)
         return {
             "profile_summary": (
-                f"Материалы, где {name} является основной темой, задачей или областью "
-                "принятия решений. Категория подходит для заметок, ссылок и файлов, "
-                "которые помогут быстро восстановить контекст и применить знания."
+                f"Materials where {name} is the primary topic, task, or decision area. "
+                "Use this category for notes, links, and files that should be found later "
+                "because of this topic, not because it is mentioned in passing."
             ),
             "profile_keywords": [keyword, name.strip().casefold()],
             "profile_positive_examples": [
-                f"Конспект, ссылка или файл, где {name} - главный предмет содержания.",
-                f"Материал с выводами, инструментами, примерами или источниками по теме {name}.",
-                f"Рабочая заметка, которую позже будут искать именно через {name}.",
+                f"A note, link, or file where {name} is the main subject.",
+                f"Material with decisions, examples, tools, or sources about {name}.",
+                f"A working note that should later be searched through {name}.",
             ],
             "profile_negative_examples": [
-                f"Случайное упоминание {name} без полезного содержания по теме.",
-                "Общая заметка, которую точнее отнести к другой категории.",
-                "Материал, где категория является только форматом файла или источником.",
+                f"A passing mention of {name} without useful content about the topic.",
+                "A general note that clearly belongs to a more specific category.",
+                "Material where this category is only the file format, source, or context.",
             ],
         }
 
@@ -2325,8 +2424,8 @@ class TaxonomyService:
         summary = str(profile["profile_summary"])
         if parent_hint is not None:
             summary = (
-                f"{summary} Граница категории: относите сюда материалы про {category.name} "
-                f"в контексте {parent_hint}, а не все общие материалы с похожими словами."
+                f"{summary} Boundary: classify content here only when {category.name} "
+                f"is relevant within {parent_hint}, not for every generic mention of similar words."
             )
         return TaxonomyCategoryProfile(
             category_id=category.id,

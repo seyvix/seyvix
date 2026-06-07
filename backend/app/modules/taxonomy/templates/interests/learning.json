@@ -1,0 +1,64 @@
+{
+  "slug": "learning",
+  "aliases": ["science", "research", "education"],
+  "name": "Learning & Knowledge",
+  "description": "Articles, tutorials, courses, explainers, research, papers, study material, and knowledge saved to understand later.",
+  "tree": [
+    {
+      "name": "Learning",
+      "description": "Knowledge material, articles, tutorials, courses, research, study notes, and explainers.",
+      "profile": {
+        "summary": "Use when the main reason to save the material is to learn, understand, study, or reference knowledge later. Prefer Software for implementation-heavy developer material and AI for AI-specific tool or model material.",
+        "keywords": ["learning", "knowledge", "articles", "tutorials", "courses", "research", "study"],
+        "positive_examples": ["Habr article to read later.", "Beginner explainer.", "Course or study material."],
+        "negative_examples": ["Entertainment release.", "Pure shopping deal.", "Utility saved only to use, not to learn."]
+      },
+      "children": [
+        {
+          "name": "Articles & Reading",
+          "description": "Articles, blog posts, essays, saved links, long reads, and reading-list material.",
+          "profile": {
+            "summary": "Use for articles and reading-list items: blog posts, essays, Habr links, long reads, explainers, and saved references intended for reading.",
+            "keywords": ["articles", "reading", "blog", "habr", "essay", "long-read", "link"],
+            "positive_examples": ["Habr article link.", "Long-read about a technical topic.", "Saved essay for later."],
+            "negative_examples": ["Tool directory saved for direct use.", "Movie news.", "Hardware product listing."]
+          },
+          "children": []
+        },
+        {
+          "name": "Tutorials & Courses",
+          "description": "How-to guides, courses, lessons, exercises, beginner material, and step-by-step learning.",
+          "profile": {
+            "summary": "Use for guided learning: tutorials, courses, lessons, exercises, beginner guides, step-by-step instructions, and skill-building material.",
+            "keywords": ["tutorial", "course", "lesson", "guide", "beginner", "exercise", "how-to"],
+            "positive_examples": ["Info for beginners.", "Course protection presentation guide.", "How-to write better prompts over a week."],
+            "negative_examples": ["Reference list without teaching.", "Movie release date.", "App roundup with no learning path."]
+          },
+          "children": []
+        },
+        {
+          "name": "Research & Papers",
+          "description": "Academic papers, research notes, scientific material, datasets, experiments, and evidence.",
+          "profile": {
+            "summary": "Use for research-oriented material: papers, scientific claims, datasets, experiments, research notes, citations, methods, and evidence-based investigation.",
+            "keywords": ["research", "papers", "science", "dataset", "experiment", "evidence", "citations"],
+            "positive_examples": ["Paper summary.", "Experiment result.", "Dataset limitation note."],
+            "negative_examples": ["AI tool announcement with no research detail.", "Personal productivity app.", "Game news."]
+          },
+          "children": []
+        },
+        {
+          "name": "Explainers",
+          "description": "Concept explanations, comparisons, summaries, pros and cons, context notes, and decision background.",
+          "profile": {
+            "summary": "Use for material that explains a concept or compares options: summaries, pros and cons, context notes, background explanations, and decision-support knowledge.",
+            "keywords": ["explainer", "summary", "comparison", "pros-cons", "context", "background"],
+            "positive_examples": ["Pros and cons by category.", "Concept overview.", "Comparison note to understand options."],
+            "negative_examples": ["Specific app saved only to install.", "Movie trailer.", "Raw visual reference."]
+          },
+          "children": []
+        }
+      ]
+    }
+  ]
+}

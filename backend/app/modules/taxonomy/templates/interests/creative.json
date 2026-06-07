@@ -1,0 +1,64 @@
+{
+  "slug": "creative",
+  "aliases": ["design", "creator"],
+  "name": "Creative & Design",
+  "description": "UI/UX, visual references, 3D assets, content creation, design inspiration, and creative workflows.",
+  "tree": [
+    {
+      "name": "Creative",
+      "description": "Design, creative tools, visual references, assets, content creation, and interface ideas.",
+      "profile": {
+        "summary": "Use when the saved material is mainly useful for visual, creative, design, or content production work. Do not use only because an item has an image preview.",
+        "keywords": ["creative", "design", "visual", "content-creation", "assets", "inspiration"],
+        "positive_examples": ["Visual reference for a poster.", "3D asset generator.", "UI inspiration collection."],
+        "negative_examples": ["Movie news saved for release information.", "AI model benchmark with no creative workflow.", "Hardware accessory listing."]
+      },
+      "children": [
+        {
+          "name": "UI & UX",
+          "description": "Interface patterns, user flows, usability, components, interaction states, and product experience.",
+          "profile": {
+            "summary": "Use for interface and experience material: UI patterns, UX flows, components, states, usability ideas, design systems, and product interaction examples.",
+            "keywords": ["ui", "ux", "interface", "components", "user-flow", "design-system", "usability"],
+            "positive_examples": ["Beautiful transition collection for web design.", "Review queue UI pattern.", "Onboarding flow inspiration."],
+            "negative_examples": ["React implementation detail without design angle.", "Movie poster news.", "Backend infrastructure article."]
+          },
+          "children": []
+        },
+        {
+          "name": "Design References",
+          "description": "Screenshots, posters, visual benchmarks, moodboards, style references, and inspiration galleries.",
+          "profile": {
+            "summary": "Use for reference material saved because of its visual style: screenshots, posters, moodboards, visual benchmarks, style references, and inspiration galleries.",
+            "keywords": ["references", "screenshots", "poster", "moodboard", "inspiration", "visual-style"],
+            "positive_examples": ["Fan-made cinematic poster reference.", "Gallery of interface examples.", "Visual benchmark for a product page."],
+            "negative_examples": ["Useful website list with no visual reason.", "Film release saved for watching later.", "Coding library documentation."]
+          },
+          "children": []
+        },
+        {
+          "name": "3D & Assets",
+          "description": "3D models, assets, textures, mockups, icons, fonts, templates, and creative resources.",
+          "profile": {
+            "summary": "Use for reusable creative assets and asset generation: 3D models, textures, mockups, icons, fonts, templates, and asset libraries.",
+            "keywords": ["3d", "assets", "models", "textures", "mockups", "icons", "templates"],
+            "positive_examples": ["Tool that generates 3D models.", "Icon pack collection.", "Mockup template library."],
+            "negative_examples": ["AI news without asset output.", "Game release article.", "Backend repository."]
+          },
+          "children": []
+        },
+        {
+          "name": "Content Creation",
+          "description": "Tools and workflows for images, video, audio, writing, thumbnails, presentations, and publishing.",
+          "profile": {
+            "summary": "Use for creating content: image/video/audio generation, writing workflows, thumbnails, social posts, presentations, publishing, and creator tools.",
+            "keywords": ["content-creation", "creator-tools", "video", "image", "audio", "publishing", "thumbnails"],
+            "positive_examples": ["AI service for generating videos.", "Tool for making presentations.", "Voice cloning for content production."],
+            "negative_examples": ["Media downloader utility.", "Movie release news.", "Security bypass repository."]
+          },
+          "children": []
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "slug": "media",
+  "aliases": ["entertainment", "games"],
+  "name": "Media & Entertainment",
+  "description": "Movies, series, games, VR, pop culture, trailers, releases, and entertainment news.",
+  "tree": [
+    {
+      "name": "Media",
+      "description": "Entertainment material, releases, movies, series, games, VR, pop culture, and watch/play later items.",
+      "profile": {
+        "summary": "Use when the saved material is primarily entertainment or media to watch, play, follow, or remember. Do not route these into Design just because they include posters or visuals.",
+        "keywords": ["media", "entertainment", "movies", "series", "games", "vr", "releases"],
+        "positive_examples": ["Movie release date.", "VR game announcement.", "Series adaptation news."],
+        "negative_examples": ["Poster saved as a design reference.", "Game development tutorial.", "AI tool for generating videos."]
+      },
+      "children": [
+        {
+          "name": "Movies & Series",
+          "description": "Films, series, adaptations, trailers, release dates, cast news, and things to watch.",
+          "profile": {
+            "summary": "Use for film and series material: release news, trailers, adaptations, cast details, cinema dates, streaming releases, and watchlist items.",
+            "keywords": ["movies", "films", "series", "trailer", "release", "cinema", "watchlist"],
+            "positive_examples": ["Scary Movie 6 release date.", "Backrooms adaptation news.", "Cheburashka poster for a new movie."],
+            "negative_examples": ["Poster saved for design analysis.", "Video generation AI model.", "Presentation-making tool."]
+          },
+          "children": []
+        },
+        {
+          "name": "Games",
+          "description": "Video games, game releases, Minecraft, gameplay, mods, game stores, and gaming news.",
+          "profile": {
+            "summary": "Use for video game content: releases, gameplay, mods, game stores, Minecraft seeds, game news, and play-later items.",
+            "keywords": ["games", "gaming", "minecraft", "game-release", "gameplay", "mods", "steam"],
+            "positive_examples": ["Minecraft ideal world seed.", "Game release announcement.", "Steam game link."],
+            "negative_examples": ["Game development coding tutorial.", "VR hardware accessory.", "Movie trailer."]
+          },
+          "children": []
+        },
+        {
+          "name": "VR & Immersive",
+          "description": "VR games, Quest, PICO, immersive media, mixed reality, and headset-specific releases.",
+          "profile": {
+            "summary": "Use for VR and immersive entertainment: Quest, PICO, headset games, mixed reality experiences, VR releases, and immersive media.",
+            "keywords": ["vr", "quest", "pico", "immersive", "mixed-reality", "headset"],
+            "positive_examples": ["PICO game release.", "Quest version of a VR title.", "VR adventure announcement."],
+            "negative_examples": ["VR development SDK docs.", "Ordinary movie release.", "Hardware cable for a laptop."]
+          },
+          "children": []
+        },
+        {
+          "name": "Pop Culture",
+          "description": "Memes, fandoms, creators, internet culture, viral media, and lightweight entertainment notes.",
+          "profile": {
+            "summary": "Use for pop culture and viral entertainment: fandom items, memes, creators, internet culture, and lightweight media notes that are not specifically movie, series, game, or VR items.",
+            "keywords": ["pop-culture", "fandom", "memes", "viral", "creators", "internet-culture"],
+            "positive_examples": ["Rick and Morty fan project news.", "Viral entertainment clip.", "Creator culture note."],
+            "negative_examples": ["Serious product strategy.", "Technical tutorial.", "Physical gadget deal."]
+          },
+          "children": []
+        }
+      ]
+    }
+  ]
+}
