@@ -1,0 +1,75 @@
+{
+  "slug": "tools",
+  "aliases": ["utilities", "productivity"],
+  "name": "Tools & Productivity",
+  "description": "Useful websites, apps, utilities, productivity workflows, document tools, media tools, and everyday digital helpers.",
+  "tree": [
+    {
+      "name": "Tools",
+      "description": "Practical digital tools, websites, apps, utilities, and workflows saved for later use.",
+      "profile": {
+        "summary": "Use when the primary reason to save the material is a useful tool, app, website, service, or repeatable workflow. Prefer more specific categories for coding tools, AI tools, or physical gadgets.",
+        "keywords": ["tools", "utilities", "apps", "websites", "productivity", "workflow", "service"],
+        "positive_examples": ["List of useful websites.", "App roundup for everyday tasks.", "Tool that simplifies a recurring workflow."],
+        "negative_examples": ["Movie trailer.", "Hardware adapter listing.", "Research paper without a practical tool."]
+      },
+      "children": [
+        {
+          "name": "Useful Websites",
+          "description": "Website lists, web services, directories, online helpers, and browser-based utilities.",
+          "profile": {
+            "summary": "Use for saved lists or individual web services that are useful because they are websites: directories, online utilities, browser tools, and web resources.",
+            "keywords": ["websites", "web-service", "directory", "online-tool", "browser-tool", "resource-list"],
+            "positive_examples": ["Sites you should know part 282.", "Collection of websites that simplify life.", "Online utility directory."],
+            "negative_examples": ["Frontend development article.", "AI model release without a website list.", "Physical device deal."]
+          },
+          "children": []
+        },
+        {
+          "name": "Apps & Utilities",
+          "description": "Desktop, mobile, browser, and command-line utilities for practical everyday use.",
+          "profile": {
+            "summary": "Use for apps and utilities: desktop apps, mobile apps, browser extensions, command-line utilities, and small tools that solve a practical task.",
+            "keywords": ["apps", "utilities", "desktop-app", "mobile-app", "extension", "cli", "tool"],
+            "positive_examples": ["Top useful apps for everyday life.", "Open source voice input utility.", "File exchange app for multiple devices."],
+            "negative_examples": ["AI model research note.", "Game release.", "UI reference image."]
+          },
+          "children": []
+        },
+        {
+          "name": "Documents & Presentations",
+          "description": "Tools for presentations, documents, PDFs, reports, writing, formatting, and office workflows.",
+          "profile": {
+            "summary": "Use for document and presentation helpers: slide tools, PDF tools, report generators, writing utilities, formatting helpers, and office workflows.",
+            "keywords": ["documents", "presentations", "slides", "pdf", "reports", "office", "writing"],
+            "positive_examples": ["Tool for creating a study presentation.", "Repository that writes academic work from text.", "PDF conversion utility."],
+            "negative_examples": ["Design reference unrelated to documents.", "Movie release.", "Backend API article."]
+          },
+          "children": []
+        },
+        {
+          "name": "Media Download & Conversion",
+          "description": "Downloaders, cutters, converters, transcoders, capture tools, and media processing utilities.",
+          "profile": {
+            "summary": "Use for media utilities: video downloaders, cutters, converters, transcoders, audio/video capture, subtitle tools, and media processing workflows.",
+            "keywords": ["download", "converter", "video", "audio", "media-tool", "capture", "transcode"],
+            "positive_examples": ["Tool for downloading and cutting YouTube videos.", "HDMI capture workflow.", "Audio conversion utility."],
+            "negative_examples": ["Movie news with no utility.", "AI video model release.", "Design inspiration gallery."]
+          },
+          "children": []
+        },
+        {
+          "name": "Productivity Systems",
+          "description": "Task systems, knowledge workflows, notes, habits, time management, and personal operating systems.",
+          "profile": {
+            "summary": "Use for productivity methods and systems: task management, note workflows, knowledge organization, personal operating systems, time management, and repeatable routines.",
+            "keywords": ["productivity", "tasks", "notes", "knowledge-management", "workflow", "time-management"],
+            "positive_examples": ["Workflow for organizing saved links.", "Task system template.", "Knowledge-base process."],
+            "negative_examples": ["Single useful website without workflow advice.", "Programming tutorial.", "Entertainment release."]
+          },
+          "children": []
+        }
+      ]
+    }
+  ]
+}

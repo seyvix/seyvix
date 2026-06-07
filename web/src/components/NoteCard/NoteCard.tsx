@@ -58,6 +58,7 @@ import {
   chooseCompositeCardVisualObject,
   collectSourceChips,
   getCardObjectAspectRatio,
+  getCompositePreviewObjects,
   getNoteDisplayTitle,
   getSavedDateLabel,
   isCardVisualObjectType,
@@ -444,44 +445,38 @@ function CollectionStats({ objects }: { objects: Note['objects'] }) {
   )
 }
 
-function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClick?: (name: string) => void; titleNode?: ReactNode | null }) {
-  const visualObjs = note.objects.filter(o => isCardVisualObjectType(o.type)).slice(0, 5)
-  const textObj = note.objects.find(o => o.type === 'text')
-  const text = textObj ? getObjectDisplayMarkdown(textObj) : null
-  const description = textObj && text ? <MarkdownSnippet text={text} source={textObj.source} /> : null
-  const fallback   = FALLBACK_COLORS[note.id.charCodeAt(0) % FALLBACK_COLORS.length]
-
-  let visual: React.ReactNode
-
+function MultiObjectPreview({ visualObjs, fallback }: { visualObjs: NoteObject[]; fallback: string }) {
   if (visualObjs.length === 1) {
     const obj = visualObjs[0]
     if (obj.type === 'image') {
-      visual = <AuthImage src={getObjectPreviewSource(obj)} alt="" className={styles.collectionSingle} />
+      return <AuthImage src={getObjectPreviewSource(obj)} alt="" className={styles.collectionSingle} />
     } else if (obj.type === 'video' && obj.thumbnailUrl) {
-      visual = <AuthImage src={obj.thumbnailUrl} alt="" className={styles.collectionSingle} />
+      return <AuthImage src={obj.thumbnailUrl} alt="" className={styles.collectionSingle} />
     } else if (obj.type === 'audio') {
-      visual = (
+      return (
         <div className={styles.collectionSingleNonImage}>
           <MediaPlaceholder type="audio" className={styles.collectionLayerBg} />
         </div>
       )
     } else if (obj.type === 'document' && !obj.thumbnailUrl && !obj.cover) {
-      visual = (
+      return (
         <div className={styles.collectionSingleNonImage}>
           <MediaPlaceholder type="document" className={styles.collectionLayerBg} label={obj.filename ?? null} />
         </div>
       )
     } else if (obj.type === 'link' && obj.thumbnailUrl) {
-      visual = <AuthImage src={obj.thumbnailUrl} alt="" className={styles.collectionSingle} />
+      return <AuthImage src={obj.thumbnailUrl} alt="" className={styles.collectionSingle} />
     } else {
-      visual = (
+      return (
         <div className={styles.collectionSingleNonImage}>
           <LayerContent obj={obj} fallback={fallback} />
         </div>
       )
     }
-  } else if (visualObjs.length === 2) {
-    visual = (
+  }
+
+  if (visualObjs.length === 2) {
+    return (
       <div className={styles.collectionPair}>
         {visualObjs.map(obj => (
           obj.type === 'image'
@@ -504,9 +499,11 @@ function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClic
         ))}
       </div>
     )
-  } else if (visualObjs.length > 2) {
+  }
+
+  if (visualObjs.length > 2) {
     const visible = visualObjs.slice(0, 4)
-    visual = (
+    return (
       <div className={styles.collectionMosaic}>
         {visible.map((obj, index) => (
           <div key={obj.id} className={index === 0 ? styles.collectionMosaicMain : styles.collectionMosaicCell}>
@@ -518,14 +515,21 @@ function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClic
         )}
       </div>
     )
-  } else {
-    visual = (
-      <div className={styles.collectionSingleNonImage}>
-        <LayerContent obj={undefined} fallback={fallback} />
-      </div>
-    )
   }
 
+  return (
+    <div className={styles.collectionSingleNonImage}>
+      <LayerContent obj={undefined} fallback={fallback} />
+    </div>
+  )
+}
+
+function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClick?: (name: string) => void; titleNode?: ReactNode | null }) {
+  const visualObjs = note.objects.filter(o => isCardVisualObjectType(o.type)).slice(0, 5)
+  const textObj = note.objects.find(o => o.type === 'text')
+  const text = textObj ? getObjectDisplayMarkdown(textObj) : null
+  const description = textObj && text ? <MarkdownSnippet text={text} source={textObj.source} /> : null
+  const fallback   = FALLBACK_COLORS[note.id.charCodeAt(0) % FALLBACK_COLORS.length]
   const primaryVisual = chooseCardRatioObject(visualObjs)
 
   return (
@@ -536,7 +540,7 @@ function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClic
       style={visualRatioStyle(primaryVisual, visualObjs.length > 2 ? 1.12 : 1.05)}
     >
       <div className={styles.collectionVisual}>
-        {visual}
+        <MultiObjectPreview visualObjs={visualObjs} fallback={fallback} />
       </div>
       <SoftOverlay note={note} titleNode={titleNode} description={description} onTagClick={onTagClick}>
         <div className={styles.overlayMetaCluster}>
@@ -608,6 +612,8 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
   const firstLinkThumb = firstLink?.thumbnailUrl ?? null
   const videoThumb = videoObj?.thumbnailUrl ?? null
   const visualObject = chooseCompositeCardVisualObject(note.objects)
+  const previewObjects = getCompositePreviewObjects(note.objects)
+  const fallback = FALLBACK_COLORS[note.id.charCodeAt(0) % FALLBACK_COLORS.length]
   const text = textObj ? getObjectDisplayMarkdown(textObj) : null
   const hasAttachmentFooter = links.length > 0 || docs.length > 0
   const shouldOverlayText = Boolean(visualObject && text && !/^https?:\/\//.test(textObj?.content ?? ''))
@@ -617,12 +623,14 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
       draggable={false}
       to={notePageHref(note)}
       className={`${styles.card} ${styles.cardMedia} ${styles.cardComposite}`}
-      style={visualRatioStyle(visualObject, textObj ? 0.92 : 1.18)}
+      style={visualRatioStyle(visualObject, previewObjects.length > 1 ? 1.12 : textObj ? 0.92 : 1.18)}
     >
 
       {/* Cover */}
       <div className={styles.compositeCover}>
-        {imageObj
+        {previewObjects.length > 1
+          ? <MultiObjectPreview visualObjs={previewObjects} fallback={fallback} />
+        : imageObj
           ? <AuthImage src={getObjectPreviewSource(imageObj)} alt="" className={styles.compositeCoverImg} />
           : videoObj
             ? videoThumb

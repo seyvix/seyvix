@@ -53,6 +53,38 @@ def test_parse_message_extracts_plain_text_payload() -> None:
     assert material.source.provider == "telegram"
 
 
+def test_parse_direct_private_message_uses_sender_as_source_origin() -> None:
+    material = material_from_mapping(
+        {
+            "message_id": 22,
+            "date": 1_777_777_784,
+            "chat": {
+                "id": 700,
+                "type": "private",
+                "first_name": "Tema",
+                "username": "hardzz",
+            },
+            "from": {
+                "id": 700,
+                "is_bot": False,
+                "first_name": "Tema",
+                "username": "hardzz",
+            },
+            "text": "Direct Telegram note",
+        }
+    )
+
+    assert material is not None
+    assert material.source is not None
+    assert material.source.title == "Tema"
+    assert material.source.origin == {
+        "type": "user",
+        "id": 700,
+        "name": "Tema",
+        "username": "hardzz",
+    }
+
+
 def test_parse_message_uses_largest_photo_and_caption() -> None:
     material = material_from_mapping(
         {

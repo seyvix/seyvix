@@ -1,10 +1,15 @@
 import asyncio
 import hashlib
 import hmac
+import json
 import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from fastapi.testclient import TestClient
+from sqlalchemy import func, select
 
 from app.core.config import Settings, get_settings
 from app.core.database import build_session_factory
@@ -23,8 +28,6 @@ from app.modules.taxonomy.service import TaxonomyLLMClassificationError, Taxonom
 from app.modules.vectorization.contracts import build_taxonomy_category_profile_vector_subject
 from app.modules.vectorization.models import VectorizationJob
 from app.modules.vectorization.worker import VectorizationWorker
-from fastapi.testclient import TestClient
-from sqlalchemy import func, select
 
 TELEGRAM_BOT_TOKEN = "123456:test-bot-token"
 
@@ -110,6 +113,27 @@ def _template_paths(items: list[dict[str, object]]) -> set[str]:
         paths.add(str(item["path"]))
         paths.update(_template_paths(item["children"]))  # type: ignore[arg-type]
     return paths
+
+
+def test_interest_presets_are_practical_and_english() -> None:
+    specs = TaxonomyService._interest_specs()
+
+    assert {
+        "ai",
+        "software",
+        "tools",
+        "creative",
+        "media",
+        "learning",
+        "gear",
+        "work",
+        "life",
+    }.issubset(specs)
+    assert specs["software"]["aliases"] == ["programming", "development", "tech"]
+
+    serialized = json.dumps(specs, ensure_ascii=False)
+    assert "programming/python" not in serialized
+    assert not re.search(r"[А-Яа-яЁё]", serialized)
 
 
 def test_taxonomy_classification_jobs_endpoint_lists_jobs_for_current_user(
@@ -650,7 +674,7 @@ def test_interest_onboarding_initializes_taxonomy_and_profile_index_jobs(
     tree_response = content_client.get("/api/v1/taxonomy/categories/tree", headers=headers)
     assert tree_response.status_code == 200
     paths = _template_paths(tree_response.json())
-    assert {"programming/python", "ai/llm", "custom-interests"}.issubset(paths)
+    assert {"software/programming", "ai/llm-chatbots", "custom-interests"}.issubset(paths)
 
     profile_response = content_client.get(
         f"/api/v1/taxonomy/categories/{next(iter(tree_response.json()))['id']}/profile",
@@ -726,16 +750,16 @@ def test_end_to_end_taxonomy_cutover_flow(content_client: TestClient) -> None:
     tree_response = content_client.get("/api/v1/taxonomy/categories/tree", headers=headers)
     assert tree_response.status_code == 200
     tree = tree_response.json()
-    programming = next(item for item in tree if item["path"] == "programming")
-    python_category = next(
-        item for item in programming["children"] if item["path"] == "programming/python"
+    software = next(item for item in tree if item["path"] == "software")
+    programming_category = next(
+        item for item in software["children"] if item["path"] == "software/programming"
     )
 
     custom_response = content_client.post(
         "/api/v1/taxonomy/categories",
         headers=headers,
         json={
-            "parent_id": programming["id"],
+            "parent_id": software["id"],
             "slug": "inference",
             "name": "Inference",
             "description": "Runtime serving and inference notes.",
@@ -744,7 +768,7 @@ def test_end_to_end_taxonomy_cutover_flow(content_client: TestClient) -> None:
     )
     assert custom_response.status_code == 201, custom_response.text
     custom_category = custom_response.json()
-    assert custom_category["path"] == "programming/inference"
+    assert custom_category["path"] == "software/inference"
 
     create_profile_response = content_client.put(
         f"/api/v1/taxonomy/categories/{custom_category['id']}/profile",
@@ -788,7 +812,7 @@ def test_end_to_end_taxonomy_cutover_flow(content_client: TestClient) -> None:
     assert first_assignment_response.status_code == 201, first_assignment_response.text
     first_assignment = first_assignment_response.json()
     assert first_assignment["is_current"] is True
-    assert first_assignment["category_path_snapshot"] == "programming/inference"
+    assert first_assignment["category_path_snapshot"] == "software/inference"
 
     current_response = content_client.get(
         f"/api/v1/taxonomy/content/{note['id']}/category",
@@ -800,11 +824,11 @@ def test_end_to_end_taxonomy_cutover_flow(content_client: TestClient) -> None:
     second_assignment_response = content_client.post(
         f"/api/v1/taxonomy/content/{note['id']}/assignments",
         headers=headers,
-        json={"category_id": python_category["id"], "reasoning": "Manual reassignment."},
+        json={"category_id": programming_category["id"], "reasoning": "Manual reassignment."},
     )
     assert second_assignment_response.status_code == 201, second_assignment_response.text
     second_assignment = second_assignment_response.json()
-    assert second_assignment["category_path_snapshot"] == "programming/python"
+    assert second_assignment["category_path_snapshot"] == "software/programming"
 
     history_response = content_client.get(
         f"/api/v1/taxonomy/content/{note['id']}/assignments",
@@ -822,7 +846,7 @@ def test_end_to_end_taxonomy_cutover_flow(content_client: TestClient) -> None:
     assert get_note_response.status_code == 200
     get_note_payload = get_note_response.json()
     assert "folder" not in get_note_payload
-    assert get_note_payload["taxonomyCategory"]["path"] == "programming/python"
+    assert get_note_payload["taxonomyCategory"]["path"] == "software/programming"
 
     async def load_content_object() -> ContentObject | None:
         async with content_client.app.state.session_factory() as session:
@@ -916,11 +940,9 @@ def test_taxonomy_search_breadcrumbs_restore_and_profile_document(
         "Keywords: vllm, inference, serving, kv-cache\n"
         "Positive examples:\n"
         "- article about speculative decoding\n"
-        "- note about continuous batching\n"
-        "Negative examples:\n"
-        "- LLM model architecture\n"
-        "- model training"
+        "- note about continuous batching"
     )
+    assert "model training" not in document
 
     async def build_subject_external_id() -> str:
         async with content_client.app.state.session_factory() as session:
@@ -1401,6 +1423,46 @@ def test_taxonomy_llm_judge_dry_run_uses_only_semantic_candidates(
     assert str(training["id"]) in prompt
 
 
+def test_taxonomy_llm_judge_normalizes_string_alternatives(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client, telegram_id=301125)
+    inference = _create_category(content_client, headers, slug="inference", name="Inference")
+    note = _create_note(content_client, headers, "LLM alternatives")
+    llm = _FakeLLMStructuredGenerator(
+        {
+            "selected_category_id": inference["id"],
+            "confidence": 0.91,
+            "should_assign": True,
+            "status": "accepted",
+            "reasoning": "The content is about inference.",
+            "alternatives": ["No other category is close."],
+        }
+    )
+
+    async def scenario() -> dict[str, object]:
+        async with content_client.app.state.session_factory() as session:
+            response = await TaxonomyService(
+                session, llm_generator=llm
+            ).classify_content_object_with_response(
+                owner_user_id=str(inference["owner_user_id"]),
+                content_object_id=str(note["id"]),
+                mode="llm_judge",
+                candidate_limit=5,
+                dry_run=False,
+                semantic_search_service=_FakeSemanticSearchService(
+                    [_semantic_result(inference, chunk_id="chunk-inference", score=0.83)]
+                ),
+            )
+            return response.model_dump(mode="json")
+
+    response = content_client.portal.call(scenario)
+
+    assert response["assigned"] is True
+    assert response["selected_category"]["id"] == inference["id"]
+    assert response["reasoning"] == "The content is about inference."
+
+
 def test_taxonomy_llm_judge_uses_textual_candidates_when_vector_index_is_empty(
     content_client: TestClient,
 ) -> None:
@@ -1473,6 +1535,192 @@ def test_taxonomy_llm_judge_uses_textual_candidates_when_vector_index_is_empty(
     assert response["status"] == "accepted"
     assert assignment_count == 1
     assert "programming/python" in prompt
+
+
+def test_taxonomy_textual_candidates_do_not_match_negative_examples(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client, telegram_id=301175)
+    _enable_profile_editing(content_client, headers)
+    programming = _create_category(
+        content_client,
+        headers,
+        slug="programming",
+        name="Programming",
+    )
+    python = _create_category(
+        content_client,
+        headers,
+        parent_id=programming["id"],
+        slug="python",
+        name="Python",
+    )
+    design = _create_category(content_client, headers, slug="design", name="Design")
+    ui = _create_category(
+        content_client,
+        headers,
+        parent_id=design["id"],
+        slug="ui",
+        name="UI",
+    )
+
+    assert (
+        content_client.put(
+            f"/api/v1/taxonomy/categories/{python['id']}/profile",
+            headers=headers,
+            json={
+                "summary": "Python backend code, FastAPI services, and pytest.",
+                "keywords": ["python", "fastapi", "pytest"],
+                "positive_examples": ["Async SQLAlchemy repository"],
+                "negative_examples": ["CSS layout idea", "React component styling"],
+            },
+        ).status_code
+        == 200
+    )
+    assert (
+        content_client.put(
+            f"/api/v1/taxonomy/categories/{ui['id']}/profile",
+            headers=headers,
+            json={
+                "summary": "Interface implementation, CSS layout, React components, and styling.",
+                "keywords": ["ui", "css", "layout", "react", "components"],
+                "positive_examples": ["CSS layout idea", "React component styling"],
+                "negative_examples": ["FastAPI repository"],
+            },
+        ).status_code
+        == 200
+    )
+
+    async def scenario() -> list[str]:
+        async with content_client.app.state.session_factory() as session:
+            service = TaxonomyService(session)
+            candidates = await service._load_textual_classification_candidates(
+                owner_user_id=str(python["owner_user_id"]),
+                classification_text="Title: CSS layout idea\nContent:\nReact component styling",
+                limit=5,
+            )
+            return [candidate.category.path for candidate in candidates]
+
+    paths = content_client.portal.call(scenario)
+
+    assert paths[0] == "design/ui"
+    assert "programming/python" not in paths
+
+
+def test_taxonomy_classification_prefers_leaf_categories(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client, telegram_id=301178)
+    _enable_profile_editing(content_client, headers)
+    media = _create_category(content_client, headers, slug="media", name="Media")
+    games = _create_category(
+        content_client,
+        headers,
+        parent_id=media["id"],
+        slug="games",
+        name="Games",
+    )
+    note = _create_note(content_client, headers, "Stronghold 4 medieval strategy game")
+
+    async def scenario() -> dict[str, object]:
+        async with content_client.app.state.session_factory() as session:
+            response = await TaxonomyService(session).classify_content_object_with_response(
+                owner_user_id=str(media["owner_user_id"]),
+                content_object_id=str(note["id"]),
+                mode="semantic_only",
+                candidate_limit=5,
+                dry_run=False,
+                semantic_search_service=_FakeSemanticSearchService(
+                    [
+                        _semantic_result(media, chunk_id="chunk-media", score=0.95),
+                        _semantic_result(games, chunk_id="chunk-games", score=0.82),
+                    ]
+                ),
+            )
+            return response.model_dump(mode="json")
+
+    response = content_client.portal.call(scenario)
+
+    assert response["assigned"] is True
+    assert response["selected_category"]["id"] == games["id"]
+    assert response["selected_category"]["path"] == "media/games"
+
+
+def test_taxonomy_llm_judge_adds_textual_candidates_to_semantic_results(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client, telegram_id=301180)
+    _enable_profile_editing(content_client, headers)
+    programming = _create_category(
+        content_client,
+        headers,
+        slug="programming",
+        name="Programming",
+    )
+    backend = _create_category(
+        content_client,
+        headers,
+        parent_id=programming["id"],
+        slug="backend",
+        name="Backend",
+    )
+    design = _create_category(content_client, headers, slug="design", name="Design")
+    ui = _create_category(
+        content_client,
+        headers,
+        parent_id=design["id"],
+        slug="ui",
+        name="UI",
+    )
+    note = _create_note(content_client, headers, "React component layout")
+
+    assert (
+        content_client.put(
+            f"/api/v1/taxonomy/categories/{ui['id']}/profile",
+            headers=headers,
+            json={
+                "summary": "Interface implementation, React components, CSS layout, and UI polish.",
+                "keywords": ["ui", "react", "component", "css", "layout"],
+                "positive_examples": ["React component layout", "CSS visual polish"],
+                "negative_examples": ["Backend worker queue"],
+            },
+        ).status_code
+        == 200
+    )
+
+    llm = _FakeLLMStructuredGenerator(
+        {
+            "selected_category_id": ui["id"],
+            "confidence": 0.9,
+            "should_assign": True,
+            "status": "accepted",
+            "reasoning": "The content is about UI component layout.",
+            "alternatives": [],
+        }
+    )
+    semantic = _FakeSemanticSearchService(
+        [_semantic_result(backend, chunk_id="chunk-backend", score=0.84)]
+    )
+
+    async def scenario() -> tuple[dict[str, object], str]:
+        async with content_client.app.state.session_factory() as session:
+            service = TaxonomyService(session, llm_generator=llm)
+            response = await service.classify_content_object_with_response(
+                owner_user_id=str(ui["owner_user_id"]),
+                content_object_id=str(note["id"]),
+                mode="llm_judge",
+                candidate_limit=5,
+                dry_run=True,
+                semantic_search_service=semantic,
+            )
+            return response.model_dump(mode="json"), llm.calls[0]["prompt"]
+
+    response, prompt = content_client.portal.call(scenario)
+
+    assert response["selected_category"]["id"] == ui["id"]
+    assert response["would_assign"] is True
+    assert "design/ui" in prompt
+    assert "programming/backend" in prompt
 
 
 def test_taxonomy_llm_judge_creates_assignment_and_audit_metadata(

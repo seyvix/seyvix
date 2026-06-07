@@ -1,0 +1,64 @@
+{
+  "slug": "life",
+  "aliases": ["personal"],
+  "name": "Life & Personal",
+  "description": "Personal notes, finance, health, habits, home, everyday plans, and private ideas.",
+  "tree": [
+    {
+      "name": "Life",
+      "description": "Personal material, life admin, finance, health, habits, home, plans, and private ideas.",
+      "profile": {
+        "summary": "Use for material that is primarily personal rather than work, software, AI, entertainment, gear, or learning: life admin, private notes, habits, health, finance, and everyday plans.",
+        "keywords": ["life", "personal", "notes", "finance", "health", "habits", "plans"],
+        "positive_examples": ["Personal weekly note.", "Budget reminder.", "Habit plan."],
+        "negative_examples": ["Developer tool.", "Movie release.", "AI service announcement."]
+      },
+      "children": [
+        {
+          "name": "Personal Notes",
+          "description": "Private notes, reminders, plans, reflections, todos, and general personal context.",
+          "profile": {
+            "summary": "Use for private personal notes: reminders, plans, reflections, todos, personal context, and things that do not fit a more specific category.",
+            "keywords": ["personal-notes", "reminders", "plans", "todos", "reflection", "private"],
+            "positive_examples": ["Personal reminder.", "Private plan.", "Everyday note to revisit."],
+            "negative_examples": ["Product idea.", "Technical article.", "Entertainment release."]
+          },
+          "children": []
+        },
+        {
+          "name": "Finance",
+          "description": "Personal budget, money decisions, expenses, savings, accounts, subscriptions, and financial notes.",
+          "profile": {
+            "summary": "Use for personal finance: budget, expenses, savings, subscriptions, accounts, bills, money decisions, and financial tracking.",
+            "keywords": ["finance", "budget", "expenses", "savings", "money", "accounts", "subscriptions"],
+            "positive_examples": ["Budget plan.", "Subscription review.", "Savings goal."],
+            "negative_examples": ["Company business model.", "Shopping deal with no personal finance tracking.", "Sales pipeline."]
+          },
+          "children": []
+        },
+        {
+          "name": "Health & Habits",
+          "description": "Health, fitness, sleep, routines, nutrition, wellbeing, medical notes, and habit tracking.",
+          "profile": {
+            "summary": "Use for health and habits: routines, fitness, sleep, nutrition, wellbeing, medical notes, habit tracking, and personal state observations.",
+            "keywords": ["health", "habits", "fitness", "sleep", "routine", "wellbeing", "medical"],
+            "positive_examples": ["Workout routine.", "Sleep observation.", "Medical appointment note."],
+            "negative_examples": ["Health-tech product idea.", "Productivity app with no habit plan.", "AI medical model news."]
+          },
+          "children": []
+        },
+        {
+          "name": "Home & Everyday",
+          "description": "Home tasks, household notes, everyday errands, practical life logistics, and non-digital chores.",
+          "profile": {
+            "summary": "Use for home and everyday life logistics: errands, household tasks, non-digital chores, home planning, travel logistics, and practical life admin.",
+            "keywords": ["home", "everyday", "errands", "household", "chores", "life-admin", "logistics"],
+            "positive_examples": ["Home task list.", "Errand reminder.", "Travel logistics note."],
+            "negative_examples": ["Software utility.", "Movie watchlist item.", "Hardware gadget review."]
+          },
+          "children": []
+        }
+      ]
+    }
+  ]
+}

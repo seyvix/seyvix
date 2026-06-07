@@ -1,71 +1,82 @@
 {
   "slug": "ai",
-  "aliases": [],
-  "name": "AI",
-  "description": "Искусственный интеллект, LLM, агенты, RAG, machine learning и AI-инструменты.",
+  "aliases": ["automation", "neural"],
+  "name": "AI & Automation",
+  "description": "AI tools, chatbots, LLMs, agents, AI coding, image/video generation, voice/music AI, prompts, and automation workflows.",
   "tree": [
     {
       "name": "AI",
-      "description": "AI-инженерия, модели, промпты, retrieval, агенты и практические AI-продукты.",
+      "description": "Artificial intelligence tools, models, automation workflows, generative media, agents, and practical AI use cases.",
       "profile": {
-        "summary": "Материалы про AI как основную тему: модели, промпты, агенты, ML-подходы, RAG, embeddings, продукты и практические сценарии применения.",
-        "keywords": ["ai", "llm", "agents", "rag", "machine-learning", "prompting"],
-        "positive_examples": ["Архитектура RAG-пайплайна.", "Промпт для классификации заметок.", "Сравнение инструментов для AI-пайплайна."],
-        "negative_examples": ["Обычная backend-задача без AI-логики.", "Маркетинговая заметка, где AI упомянут вскользь.", "Данные или аналитика без ML/AI-компонента."]
+        "summary": "Use when AI or automation is the primary reason to save the material: AI services, LLMs, chatbots, agents, coding assistants, prompt packs, generative media, AI news, or practical AI workflows. Do not use only because the item mentions AI casually.",
+        "keywords": ["ai", "artificial-intelligence", "automation", "llm", "agents", "neural-network", "generative-ai"],
+        "positive_examples": ["Free AI video generation service.", "Prompt collection for ChatGPT.", "AI agent workflow for coding."],
+        "negative_examples": ["Regular software tool with no AI behavior.", "Movie release news unrelated to AI.", "Physical gadget listing."]
       },
       "children": [
         {
-          "name": "LLM",
-          "description": "Большие языковые модели, prompts, structured output, tool calling и eval.",
+          "name": "LLM & Chatbots",
+          "description": "ChatGPT-like assistants, language models, chat interfaces, structured output, tool calling, and text reasoning.",
           "profile": {
-            "summary": "Материалы, где LLM является основной технологией: prompts, structured output, tool calling, function calling, hallucination control, eval и интеграция в backend.",
-            "keywords": ["llm", "prompting", "structured-output", "tool-calling", "function-calling", "eval"],
-            "positive_examples": ["JSON schema для LLM classification.", "Промпт улучшения category profile.", "Тестовый набор для оценки LLM решений."],
-            "negative_examples": ["RAG storage без LLM-логики.", "Обычный ML classifier без языковой модели.", "Frontend UI без LLM-поведения."]
+            "summary": "Use for language-model and chatbot material: ChatGPT, Claude, Gemini, local LLMs, prompts for text reasoning, structured output, tool calling, and LLM behavior. If the main topic is coding automation, use AI Coding.",
+            "keywords": ["llm", "chatbot", "chatgpt", "claude", "gemini", "structured-output", "tool-calling"],
+            "positive_examples": ["ChatGPT prompt collection.", "Claude Code behavior note.", "Structured output classification prompt."],
+            "negative_examples": ["AI image generator with no text assistant angle.", "General website list.", "Backend API article."]
           },
           "children": []
         },
         {
-          "name": "Agents",
-          "description": "AI-агенты, планирование, tools, memory, retries и контроль автономных действий.",
+          "name": "AI Coding",
+          "description": "Coding assistants, vibe coding, code agents, repository generators, IDE copilots, and AI-assisted software workflows.",
           "profile": {
-            "summary": "Материалы про агентные AI-системы: planner/executor циклы, tool calls, память, task decomposition, retries, permissions и безопасное выполнение действий.",
-            "keywords": ["agents", "planner", "executor", "tools", "memory", "permissions"],
-            "positive_examples": ["Дизайн worker-agent для фоновой обработки.", "Паттерн approval перед destructive action.", "Логика памяти агента."],
-            "negative_examples": ["Один LLM prompt без цикла действий.", "Очередь jobs без AI-решателя.", "Простая API-интеграция без автономности."]
+            "summary": "Use for AI-assisted programming: coding agents, vibe coding, IDE assistants, code generation, repository automation, AI debugging, and tools where AI writes or changes code.",
+            "keywords": ["ai-coding", "coding-agent", "vibe-coding", "copilot", "code-generation", "ide", "developer-ai"],
+            "positive_examples": ["Claude Code workflow.", "Dog vibe-coding games.", "AI agent that builds apps from prompts."],
+            "negative_examples": ["Regular programming tutorial without AI.", "AI music generator.", "Movie release news."]
           },
           "children": []
         },
         {
-          "name": "RAG",
-          "description": "Retrieval augmented generation, embeddings, chunking, ranking и контекстная выдача.",
+          "name": "AI Agents",
+          "description": "Agentic workflows, planners, tools, memory, autonomous tasks, multi-step automation, and AI operators.",
           "profile": {
-            "summary": "Материалы про RAG и retrieval: embeddings, chunking, vector search, reranking, grounding, context assembly и качество ответов по базе знаний.",
-            "keywords": ["rag", "retrieval", "embeddings", "chunking", "reranking", "vector-search"],
-            "positive_examples": ["Схема индекса category profiles.", "Настройка vector search для заметок.", "Стратегия chunking для документов."],
-            "negative_examples": ["LLM prompt без retrieval.", "Обычный SQL search без embeddings.", "ML обучение без генеративного retrieval."]
+            "summary": "Use for agentic AI systems: planner/executor loops, tool use, memory, autonomous tasks, multi-step automation, approvals, and AI operators. A single prompt or simple chatbot is not enough.",
+            "keywords": ["agents", "agentic", "planner", "tools", "memory", "autonomous", "operator"],
+            "positive_examples": ["AI agents for any task.", "Agent memory workflow.", "Approval-controlled automation loop."],
+            "negative_examples": ["Single ChatGPT prompt.", "Generic job queue without AI decision-making.", "No-code utility unrelated to AI."]
           },
           "children": []
         },
         {
-          "name": "Machine Learning",
-          "description": "ML-модели, обучение, признаки, метрики и эксперименты.",
+          "name": "Image & Video AI",
+          "description": "AI image generation, video generation, 3D generation, visual editing, model releases, and generative visual tools.",
           "profile": {
-            "summary": "Материалы про машинное обучение как инженерную или исследовательскую область: модели, датасеты, признаки, обучение, eval и production ML.",
-            "keywords": ["machine-learning", "ml", "training", "dataset", "features", "evaluation"],
-            "positive_examples": ["Заметка о метриках классификации.", "Конспект статьи про embedding-модель.", "План эксперимента с датасетом."],
-            "negative_examples": ["LLM-интеграция без обучения модели.", "Обычная аналитика без ML.", "Продуктовая идея с упоминанием AI без технических деталей."]
+            "summary": "Use for visual generative AI: image generation, video generation, visual editing, 3D model generation, generative design tools, and releases of visual AI models.",
+            "keywords": ["image-ai", "video-ai", "generative-video", "3d-generation", "visual-ai", "image-generation", "model-release"],
+            "positive_examples": ["Google free video generation.", "Modly generating 3D models.", "AI visual model release."],
+            "negative_examples": ["Movie trailer saved to watch.", "UI reference with no AI generation.", "Video downloader utility."]
           },
           "children": []
         },
         {
-          "name": "Tools",
-          "description": "AI SDK, сервисы, библиотеки, платформы и developer tooling для AI-фич.",
+          "name": "Voice & Music AI",
+          "description": "Voice cloning, speech tools, AI music, audio generation, transcription, dubbing, and voice interfaces.",
           "profile": {
-            "summary": "Материалы про конкретные AI-инструменты для разработчика: SDK, inference APIs, vector DB clients, prompt tooling, observability и eval tools.",
-            "keywords": ["ai-tools", "sdk", "inference-api", "vector-db", "prompt-tools", "observability"],
-            "positive_examples": ["Сравнение SDK для structured generation.", "Документация vector database client.", "Инструмент для prompt regression tests."],
-            "negative_examples": ["Теория RAG без инструмента.", "Обычная DevOps утилита без AI.", "Бизнес-статья про AI без developer tooling."]
+            "summary": "Use for AI audio: voice cloning, speech generation, music generation, transcription, dubbing, voice input, and audio model tools.",
+            "keywords": ["voice-ai", "music-ai", "audio-ai", "voice-cloning", "speech", "transcription", "suno"],
+            "positive_examples": ["Suno alternative release.", "Russian voice cloning tool.", "Open source voice input powered by AI."],
+            "negative_examples": ["Ordinary microphone hardware.", "Video game audio news.", "Text-only prompt collection."]
+          },
+          "children": []
+        },
+        {
+          "name": "Prompts & Workflows",
+          "description": "Prompt packs, prompt engineering, reusable AI workflows, templates, system prompts, and AI task recipes.",
+          "profile": {
+            "summary": "Use for reusable prompt and workflow material: prompt packs, system prompts, prompt engineering, templates, chains, task recipes, and practical AI workflows.",
+            "keywords": ["prompts", "prompt-engineering", "workflow", "system-prompt", "templates", "chatgpt-prompts"],
+            "positive_examples": ["Huge prompt collection for ChatGPT.", "Week-long prompt engineering course.", "Reusable prompt workflow for text cleanup."],
+            "negative_examples": ["AI model news with no prompt workflow.", "Regular productivity app.", "Game release."]
           },
           "children": []
         }

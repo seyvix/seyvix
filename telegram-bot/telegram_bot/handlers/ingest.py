@@ -55,12 +55,15 @@ async def ingest_handler(
 
     logger.info(
         "Telegram material received user=%s chat=%s message=%s type=%s "
-        "has_attachment=%s group_id=%s",
+        "has_attachment=%s has_source=%s source_external_id=%s source_title=%s group_id=%s",
         material.telegram_user_id,
         material.telegram_chat_id,
         material.telegram_message_id,
         material.material_type.value,
         material.attachment is not None,
+        material.source is not None,
+        material.source.external_id if material.source else None,
+        material.source.title if material.source else None,
         material.source.group_id if material.source else None,
     )
     state = await mode_service.get_state(telegram_user_id)

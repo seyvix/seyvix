@@ -80,6 +80,7 @@ class AppCollectionParent(BaseModel):
 class AppNoteObject(BaseModel):
     model_config = ConfigDict(serialize_by_alias=True)
     id: str
+    noteId: str | None = None
     object_type: NoteObjectType = Field(serialization_alias="type")
     content: str
     caption: str | None = None
@@ -208,51 +209,34 @@ def _map_asset(asset: NoteAssetResponse, download_url: str, created_at: datetime
     )
 
 
-def _collection_item_to_object(item: NoteCardResponse) -> AppNoteObject:
-    first = next((asset for asset in item.assets if asset.media_type != "text"), None)
-    first = first or (item.assets[0] if item.assets else None)
-    text_asset = next((asset for asset in item.assets if asset.media_type == "text"), None)
-    ot = _media_to_object_type(first.media_type if first else item.media_type)
-    if ot in ("text", "link"):
-        tc = first.text_content if first else None
-        url = first.url if first else None
-        content = tc or url or item.download_url
-    else:
-        content = (first.url if first else None) or item.download_url
-    thumb = None
-    if ot in ("document", "link", "video") and first is not None:
-        thumb = first.thumbnail_url
-    cover = None if ot == "document" else (first.url if first else None)
-    snaps = _snapshots(first.snapshot_views) if first is not None else []
-    return AppNoteObject(
+def _collection_asset_to_object(item: NoteCardResponse, asset: NoteAssetResponse) -> AppNoteObject:
+    obj = _map_asset(asset, item.download_url, item.created_at)
+    obj.noteId = item.id
+    obj.slug = item.slug
+    if obj.source is None:
+        obj.source = _source(item.source)
+    return obj
+
+
+def _collection_item_to_objects(item: NoteCardResponse) -> list[AppNoteObject]:
+    if item.assets:
+        return [_collection_asset_to_object(item, asset) for asset in item.assets]
+
+    ot = _media_to_object_type(item.media_type)
+    return [AppNoteObject(
         id=item.id,
+        noteId=item.id,
         object_type=ot,
-        content=content,
-        caption=(
-            text_asset.text_content
-            if text_asset is not None and first is not None and first.id != text_asset.id
-            else None
-        ),
-        cover=cover,
-        thumbnailUrl=thumb,
-        thumbnailText=first.thumbnail_text if first else None,
-        imageWidth=first.image_width if first else None,
-        imageHeight=first.image_height if first else None,
-        visualWidth=first.image_width if first else None,
-        visualHeight=first.image_height if first else None,
-        snapshotViews=snaps,
+        content=item.download_url,
         slug=item.slug,
-        filename=first.filename if first else None,
-        mimeType=first.mime_type if first else None,
-        sizeBytes=first.size_bytes if first else None,
-        source=_source(item.source or (first.source if first else None)),
+        source=_source(item.source),
         createdAt=item.created_at,
-    )
+    )]
 
 
 def note_card_to_app_note(card: NoteCardResponse) -> AppNote:
     if card.kind == "collection":
-        objects = [_collection_item_to_object(ch) for ch in card.items]
+        objects = [obj for ch in card.items for obj in _collection_item_to_objects(ch)]
     elif card.assets:
         objects = [_map_asset(a, card.download_url, card.created_at) for a in card.assets]
     elif card.media_type == "text" or card.media_type is None:

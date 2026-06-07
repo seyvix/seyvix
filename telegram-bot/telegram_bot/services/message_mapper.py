@@ -345,6 +345,8 @@ def _source_metadata(
     origin = _forward_origin(forward_origin if isinstance(forward_origin, Mapping) else None)
     if origin is None:
         origin = _legacy_forward_origin(message)
+    if origin is None:
+        origin = _direct_message_origin(message)
     source_url = origin.get("url") if origin is not None else None
     title = _source_title(origin)
     entities = _all_entities(message)
@@ -424,6 +426,16 @@ def _legacy_forward_origin(message: Mapping[str, Any]) -> dict[str, Any] | None:
         return result
 
     return None
+
+
+def _direct_message_origin(message: Mapping[str, Any]) -> dict[str, Any] | None:
+    chat = message.get("chat")
+    sender = message.get("from")
+    if isinstance(chat, Mapping) and chat.get("type") == "private":
+        return _telegram_user(sender) or _telegram_chat(chat)
+    if isinstance(chat, Mapping) and (chat.get("title") or chat.get("username")):
+        return _telegram_chat(chat)
+    return _telegram_user(sender)
 
 
 def _telegram_user(value: object) -> dict[str, Any] | None:

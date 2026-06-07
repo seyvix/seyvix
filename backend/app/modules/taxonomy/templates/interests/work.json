@@ -1,0 +1,64 @@
+{
+  "slug": "work",
+  "aliases": ["business", "product"],
+  "name": "Work & Business",
+  "description": "Product ideas, strategy, marketing, sales, operations, customer work, and professional decisions.",
+  "tree": [
+    {
+      "name": "Work",
+      "description": "Professional, product, business, marketing, sales, and operations material.",
+      "profile": {
+        "summary": "Use when the saved material is mainly about work decisions, product direction, business context, marketing, sales, customers, or operations. Do not use for technical implementation unless the business decision is primary.",
+        "keywords": ["work", "business", "product", "strategy", "marketing", "sales", "operations"],
+        "positive_examples": ["Product idea with target users.", "Go-to-market note.", "Customer discovery summary."],
+        "negative_examples": ["Coding library documentation.", "Movie release.", "Personal health note."]
+      },
+      "children": [
+        {
+          "name": "Product Ideas",
+          "description": "Product concepts, feature ideas, user problems, MVPs, prioritization, and product discovery.",
+          "profile": {
+            "summary": "Use for product concepts and product management: feature ideas, user problems, MVPs, prioritization, discovery, product requirements, and user impact.",
+            "keywords": ["product", "feature", "mvp", "users", "discovery", "prioritization", "idea"],
+            "positive_examples": ["Idea validation framework.", "Feature concept for saved-content categorization.", "User problem note."],
+            "negative_examples": ["Raw personal idea with no product context.", "Technical implementation detail.", "Marketing campaign copy."]
+          },
+          "children": []
+        },
+        {
+          "name": "Strategy & Market",
+          "description": "Markets, competitors, positioning, business models, strategic bets, and long-term choices.",
+          "profile": {
+            "summary": "Use for strategic business material: markets, competitors, positioning, business models, segments, long-term choices, and trade-offs.",
+            "keywords": ["strategy", "market", "competitors", "positioning", "business-model", "segments"],
+            "positive_examples": ["Competitor analysis.", "Target market decision.", "Business model comparison."],
+            "negative_examples": ["Tactical app utility.", "Single customer follow-up.", "Software bug fix."]
+          },
+          "children": []
+        },
+        {
+          "name": "Marketing & Content",
+          "description": "Positioning, messaging, channels, campaigns, content ideas, audience work, and creator distribution.",
+          "profile": {
+            "summary": "Use for marketing and content distribution: positioning, messaging, audience, channels, campaigns, content ideas, copywriting, and demand generation.",
+            "keywords": ["marketing", "content", "positioning", "messaging", "channels", "audience", "campaign"],
+            "positive_examples": ["Positioning draft.", "Content campaign idea.", "Audience/channel analysis."],
+            "negative_examples": ["Specific sales call note.", "UI reference without messaging.", "Hardware purchase listing."]
+          },
+          "children": []
+        },
+        {
+          "name": "Sales & Customers",
+          "description": "Customer calls, CRM, deals, objections, follow-ups, customer development, and sales process.",
+          "profile": {
+            "summary": "Use for sales and customer interaction: calls, CRM notes, objections, follow-ups, deals, customer development, and sales process.",
+            "keywords": ["sales", "customers", "crm", "deals", "objections", "follow-up", "customer-development"],
+            "positive_examples": ["Customer call notes.", "Objection list.", "Deal follow-up plan."],
+            "negative_examples": ["Marketing channel strategy.", "Technical tutorial.", "Personal finance note."]
+          },
+          "children": []
+        }
+      ]
+    }
+  ]
+}

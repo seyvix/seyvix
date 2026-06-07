@@ -84,6 +84,10 @@ export function chooseCompositeCardVisualObject(objects: NoteObject[]): NoteObje
   ].filter((obj): obj is NoteObject => Boolean(obj)))
 }
 
+export function getCompositePreviewObjects(objects: NoteObject[]): NoteObject[] {
+  return objects.filter(obj => isCardVisualObjectType(obj.type)).slice(0, 5)
+}
+
 export function stripTelegramEmojiMarkers(text: string): string {
   return text.replace(/\{\{tg_emoji:[0-9]+\|([^}]+)\}\}/g, '$1')
 }
@@ -215,7 +219,7 @@ export function getNoteDetailModel(note: Note): NoteDetailModel {
         object,
         index,
         childHref,
-        viewerNoteId: childHref ? object.id : note.id,
+        viewerNoteId: childHref ? (object.noteId ?? object.id) : note.id,
       }
     }),
   }

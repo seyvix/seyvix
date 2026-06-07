@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 
-from app.modules.content.schemas import SourceMetadataResponse
+from app.modules.content.schemas import NoteAssetResponse, NoteCardResponse, SourceMetadataResponse
 from app.modules.content.service import ContentService, UploadedContent
 from app.modules.telegram_integration.schemas import TelegramIngestPayload
 from app.modules.telegram_integration.service import TelegramIngestService
@@ -112,6 +112,161 @@ def test_telegram_batch_text_deduplicates_caption_parts() -> None:
     ]
 
     assert TelegramIngestService._batch_text(payloads) == "Shared caption\n\nSecond text"
+
+
+def test_telegram_batch_source_targets_keep_first_source_as_object_fallback() -> None:
+    created_at = datetime.now(UTC)
+    first = TelegramIngestPayload(
+        telegram_user_id="100500",
+        telegram_chat_id="801627037",
+        telegram_message_id="51",
+        material_type="photo",
+        caption="Shared caption",
+        source={
+            "provider": "telegram",
+            "provider_label": "Telegram",
+            "external_id": "801627037:51",
+        },
+    )
+    second = TelegramIngestPayload(
+        telegram_user_id="100500",
+        telegram_chat_id="801627037",
+        telegram_message_id="52",
+        material_type="video",
+        source={
+            "provider": "telegram",
+            "provider_label": "Telegram",
+            "external_id": "801627037:52",
+        },
+    )
+    card = NoteCardResponse(
+        id="note-1",
+        slug="telegram-batch",
+        kind="complex",
+        media_type="image",
+        title="Telegram batch",
+        source_filename="first.jpg",
+        taxonomy_category=None,
+        tags=[],
+        is_favorite=False,
+        sort_order=0,
+        created_at=created_at,
+        updated_at=created_at,
+        download_url="/api/v1/notes/telegram-batch/download",
+        assets=[
+            NoteAssetResponse(
+                id="asset-text",
+                role="text",
+                media_type="text",
+                filename="content.md",
+                mime_type="text/markdown",
+                size_bytes=14,
+            ),
+            NoteAssetResponse(
+                id="asset-image",
+                role="original",
+                media_type="image",
+                filename="first.jpg",
+                mime_type="image/jpeg",
+                size_bytes=10,
+            ),
+            NoteAssetResponse(
+                id="asset-video",
+                role="original",
+                media_type="video",
+                filename="second.mp4",
+                mime_type="video/mp4",
+                size_bytes=10,
+            ),
+        ],
+    )
+
+    targets = TelegramIngestService._batch_source_targets(
+        card=card,
+        payloads=[first, second],
+        uploaded=[
+            UploadedContent(filename="first.jpg", content_type="image/jpeg", data=b"image"),
+            UploadedContent(filename="second.mp4", content_type="video/mp4", data=b"video"),
+        ],
+    )
+
+    assert [(payload.source.external_id, asset_id) for payload, asset_id in targets] == [
+        ("801627037:51", None),
+        ("801627037:52", "asset-video"),
+    ]
+
+
+def test_telegram_batch_source_targets_use_upload_order_for_duplicate_names() -> None:
+    created_at = datetime.now(UTC)
+    first = TelegramIngestPayload(
+        telegram_user_id="100500",
+        telegram_chat_id="801627037",
+        telegram_message_id="51",
+        material_type="photo",
+        source={
+            "provider": "telegram",
+            "provider_label": "Telegram",
+            "external_id": "801627037:51",
+        },
+    )
+    second = TelegramIngestPayload(
+        telegram_user_id="100500",
+        telegram_chat_id="801627037",
+        telegram_message_id="52",
+        material_type="photo",
+        source={
+            "provider": "telegram",
+            "provider_label": "Telegram",
+            "external_id": "801627037:52",
+        },
+    )
+    card = NoteCardResponse(
+        id="note-1",
+        slug="telegram-batch",
+        kind="complex",
+        media_type="image",
+        title="Telegram batch",
+        source_filename="telegram-photo.jpg",
+        taxonomy_category=None,
+        tags=[],
+        is_favorite=False,
+        sort_order=0,
+        created_at=created_at,
+        updated_at=created_at,
+        download_url="/api/v1/notes/telegram-batch/download",
+        assets=[
+            NoteAssetResponse(
+                id="asset-first",
+                role="original",
+                media_type="image",
+                filename="telegram-photo.jpg",
+                mime_type="image/jpeg",
+                size_bytes=10,
+            ),
+            NoteAssetResponse(
+                id="asset-second",
+                role="original",
+                media_type="image",
+                filename="telegram-photo.jpg",
+                mime_type="image/jpeg",
+                size_bytes=10,
+            ),
+        ],
+    )
+
+    targets = TelegramIngestService._batch_source_targets(
+        card=card,
+        payloads=[first, second],
+        uploaded=[
+            UploadedContent(filename="telegram-photo.jpg", content_type="image/jpeg", data=b"1"),
+            UploadedContent(filename="telegram-photo.jpg", content_type="image/jpeg", data=b"2"),
+        ],
+    )
+
+    assert [(payload.source.external_id, asset_id) for payload, asset_id in targets] == [
+        ("801627037:51", None),
+        ("801627037:52", "asset-second"),
+    ]
 
 
 def test_telegram_source_metadata_merges_custom_emoji_assets_from_later_sources() -> None:
@@ -279,6 +434,14 @@ def test_telegram_ingest_returns_universal_source_metadata(
     assert obj["source"]["origin"]["username"] == "luvrikin"
     assert obj["source"]["rawPayload"]["message_id"] == 28
 
+    fresh_response = content_client.get(
+        f"/api/v1/notes/{response.json()['note']['slug']}",
+        headers=_auth_headers(content_client),
+    )
+    assert fresh_response.status_code == 200, fresh_response.text
+    fresh_obj = fresh_response.json()["objects"][0]
+    assert fresh_obj["source"]["externalId"] == "801627037:28"
+
 
 def test_telegram_media_group_appends_to_explicit_collection_with_item_sources(
     content_client: TestClient,
@@ -411,6 +574,9 @@ def test_telegram_batch_ingest_creates_single_composite_note_with_shared_text(
     assert objects[0]["content"] == shared_caption
     assert objects[1]["caption"] is None
     assert objects[2]["caption"] is None
+    assert objects[0]["source"]["externalId"] == "801627037:51:0"
+    assert objects[1]["source"]["externalId"] == "801627037:51:0"
+    assert objects[2]["source"]["externalId"] == "801627037:52:1"
 
 
 def test_telegram_photo_without_caption_does_not_use_filename_as_title(
