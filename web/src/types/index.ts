@@ -108,6 +108,7 @@ export interface CategoryProfileDraft {
 
 export interface NoteObject {
   id: string
+  noteId?: string | null
   type: NoteObjectType
   content: string
   caption?: string | null

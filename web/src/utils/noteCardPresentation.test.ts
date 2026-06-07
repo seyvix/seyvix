@@ -7,6 +7,7 @@ import {
   chooseCompositeCardVisualObject,
   cleanDisplayTitle,
   collectSourceChips,
+  getCompositePreviewObjects,
   getNoteDisplayTitle,
   getNoteDetailModel,
   getSavedDateLabel,
@@ -98,6 +99,25 @@ test('collection detail model keeps child note navigation explicit', () => {
   assert.deepEqual(model.objects.map(item => item.viewerNoteId), ['child-note-1', 'note-1'])
 })
 
+test('collection detail model uses child note id for flattened child assets', () => {
+  const model = getNoteDetailModel({
+    ...telegramNote,
+    source: null,
+    objects: [
+      noteObject({
+        id: 'asset-1',
+        slug: 'child-slug',
+        noteId: 'child-note-1',
+        type: 'image',
+        content: '/api/v1/notes/child-slug/asset/asset-1',
+      }),
+    ],
+  })
+
+  assert.equal(model.objects[0].childHref, '/notes/child-slug')
+  assert.equal(model.objects[0].viewerNoteId, 'child-note-1')
+})
+
 test('regular collections do not use telegram presentation', () => {
   assert.equal(getTelegramCardModel({
     ...telegramNote,
@@ -187,4 +207,16 @@ test('composite card visual object keeps media placeholders eligible', () => {
   assert.equal(chooseCompositeCardVisualObject([text, video]), video)
   assert.equal(chooseCompositeCardVisualObject([text, audio]), audio)
   assert.equal(chooseCompositeCardVisualObject([text, document]), document)
+})
+
+test('composite preview objects keep multiple media in note order', () => {
+  const text = noteObject({ id: 'text-1', type: 'text', content: 'caption' })
+  const video = noteObject({ id: 'video-1', type: 'video', content: '/video.mp4' })
+  const image = noteObject({ id: 'image-1', type: 'image', content: '/image.jpg' })
+  const audio = noteObject({ id: 'audio-1', type: 'audio', content: '/audio.mp3' })
+
+  assert.deepEqual(
+    getCompositePreviewObjects([text, video, image, audio]).map(obj => obj.id),
+    ['video-1', 'image-1', 'audio-1'],
+  )
 })
