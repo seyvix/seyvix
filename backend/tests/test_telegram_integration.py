@@ -5,7 +5,8 @@ from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 
-from app.modules.content.service import UploadedContent
+from app.modules.content.schemas import SourceMetadataResponse
+from app.modules.content.service import ContentService, UploadedContent
 from app.modules.telegram_integration.schemas import TelegramIngestPayload
 from app.modules.telegram_integration.service import TelegramIngestService
 from tests.test_content import TELEGRAM_BOT_TOKEN, _auth_headers
@@ -111,6 +112,43 @@ def test_telegram_batch_text_deduplicates_caption_parts() -> None:
     ]
 
     assert TelegramIngestService._batch_text(payloads) == "Shared caption\n\nSecond text"
+
+
+def test_telegram_source_metadata_merges_custom_emoji_assets_from_later_sources() -> None:
+    first = SourceMetadataResponse(
+        provider="telegram",
+        provider_label="Telegram",
+        external_id="801627037:51",
+        metadata={"telegram_message_id": "51"},
+    )
+    second = SourceMetadataResponse(
+        provider="telegram",
+        provider_label="Telegram",
+        external_id="801627037:52",
+        custom_emoji_ids=["5280586677532774817"],
+        metadata={
+            "telegram_message_id": "52",
+            "custom_emoji_assets": {
+                "5280586677532774817": {
+                    "data_url": "data:image/webp;base64,emoji",
+                    "fallback": "⚡️",
+                }
+            },
+        },
+    )
+
+    merged = ContentService._merge_source_metadata(first, [first, second])
+
+    assert merged.external_id == "801627037:51"
+    assert merged.custom_emoji_ids == ["5280586677532774817"]
+    assert merged.metadata["telegram_message_id"] == "51"
+    assert merged.metadata["custom_emoji_assets"] == {
+        "5280586677532774817": {
+            "data_url": "data:image/webp;base64,emoji",
+            "fallback": "⚡️",
+        }
+    }
+    assert "custom_emoji_assets" not in first.metadata
 
 
 def test_telegram_ingest_requires_internal_token(content_client: TestClient) -> None:

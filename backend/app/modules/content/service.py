@@ -2237,12 +2237,20 @@ class ContentService:
         records = list(await self.session.scalars(query))
         object_source = None
         asset_sources: dict[str, SourceMetadataResponse] = {}
+        source_responses: list[SourceMetadataResponse] = []
         for record in records:
             response = self._source_response(record)
+            source_responses.append(response)
             if record.content_asset_id:
                 asset_sources.setdefault(record.content_asset_id, response)
             elif record.content_object_id == content_object.id and object_source is None:
                 object_source = response
+        if object_source is not None:
+            object_source = self._merge_source_metadata(object_source, source_responses)
+        asset_sources = {
+            asset_id: self._merge_source_metadata(source, source_responses)
+            for asset_id, source in asset_sources.items()
+        }
         return object_source, asset_sources
 
     @staticmethod
@@ -2261,6 +2269,39 @@ class ContentService:
             custom_emoji_ids=record.custom_emoji_ids or [],
             raw_payload=record.raw_payload,
             metadata=record.source_metadata or {},
+        )
+
+    @staticmethod
+    def _merge_source_metadata(
+        base: SourceMetadataResponse,
+        sources: list[SourceMetadataResponse],
+    ) -> SourceMetadataResponse:
+        custom_emoji_ids = list(dict.fromkeys(base.custom_emoji_ids))
+        custom_emoji_assets: dict[str, Any] = {}
+        for source in sources:
+            for custom_emoji_id in source.custom_emoji_ids:
+                if custom_emoji_id not in custom_emoji_ids:
+                    custom_emoji_ids.append(custom_emoji_id)
+            assets = source.metadata.get("custom_emoji_assets")
+            if not isinstance(assets, dict):
+                continue
+            for custom_emoji_id, asset in assets.items():
+                if isinstance(custom_emoji_id, str):
+                    custom_emoji_assets.setdefault(custom_emoji_id, asset)
+
+        metadata = dict(base.metadata)
+        if custom_emoji_assets:
+            existing_assets = metadata.get("custom_emoji_assets")
+            merged_assets = dict(existing_assets) if isinstance(existing_assets, dict) else {}
+            for custom_emoji_id, asset in custom_emoji_assets.items():
+                merged_assets.setdefault(custom_emoji_id, asset)
+            metadata["custom_emoji_assets"] = merged_assets
+
+        return base.model_copy(
+            update={
+                "custom_emoji_ids": custom_emoji_ids,
+                "metadata": metadata,
+            }
         )
 
     @staticmethod
