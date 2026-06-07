@@ -1,4 +1,3 @@
-вот так:?
 resolver 127.0.0.11 valid=30s ipv6=off;
 
 map $http_upgrade $connection_upgrade {
