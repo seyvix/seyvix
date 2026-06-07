@@ -132,7 +132,8 @@ server {
     client_max_body_size ${CLIENT_MAX_BODY_SIZE};
 
     location ~* ^/assets/.+\.(?:css|js|mjs|map|woff2?|ttf|otf|png|jpe?g|gif|webp|avif|svg)$ {
-        proxy_pass http://${WEB_UPSTREAM};
+        set $web http://${WEB_UPSTREAM};
+        proxy_pass $web;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -143,7 +144,8 @@ server {
     }
 
     location ~* ^/(?:favicon(?:-96x96)?\.(?:ico|png|svg)|apple-touch-icon\.png|web-app-manifest-\d+x\d+\.png|telegramLogo\.svg)$ {
-        proxy_pass http://${WEB_UPSTREAM};
+        set $web http://${WEB_UPSTREAM};
+        proxy_pass $web;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -154,7 +156,8 @@ server {
     }
 
     location = /site.webmanifest {
-        proxy_pass http://${WEB_UPSTREAM};
+        set $web http://${WEB_UPSTREAM};
+        proxy_pass $web;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -165,7 +168,8 @@ server {
     }
 
     location = /mockServiceWorker.js {
-        proxy_pass http://${WEB_UPSTREAM};
+        set $web http://${WEB_UPSTREAM};
+        proxy_pass $web;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -177,7 +181,8 @@ server {
     }
 
     location = /health {
-        proxy_pass http://${WEB_UPSTREAM};
+        set $web http://${WEB_UPSTREAM};
+        proxy_pass $web;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -188,7 +193,8 @@ server {
     }
 
     location / {
-        proxy_pass http://${WEB_UPSTREAM};
+        set $web http://${WEB_UPSTREAM};
+        proxy_pass $web;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -218,7 +224,8 @@ server {
     client_max_body_size ${CLIENT_MAX_BODY_SIZE};
 
     location / {
-        proxy_pass http://${API_UPSTREAM};
+        set $api http://${API_UPSTREAM};
+        proxy_pass $api;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
