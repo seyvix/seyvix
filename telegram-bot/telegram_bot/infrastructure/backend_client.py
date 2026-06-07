@@ -114,6 +114,82 @@ class HttpSeyvixBackend:
         )
         return payload
 
+    async def ingest_many(
+        self,
+        materials: list[InboundMaterial],
+        *,
+        target_collection_id: str | None = None,
+    ) -> dict[str, object]:
+        if not materials:
+            raise ValueError("No Telegram materials to ingest.")
+        if len(materials) == 1:
+            return await self.ingest(materials[0], target_collection_id=target_collection_id)
+
+        first = materials[0]
+        logger.info(
+            "Sending Telegram material batch to backend user=%s chat=%s messages=%s target=%s",
+            first.telegram_user_id,
+            first.telegram_chat_id,
+            [material.telegram_message_id for material in materials],
+            target_collection_id,
+        )
+        parts: list[dict[str, object]] = []
+        files: list[tuple[str, tuple[str, bytes, str | None]]] = []
+        for material in materials:
+            part: dict[str, object] = {
+                "telegram_message_id": material.telegram_message_id,
+                "message_date": datetime.fromtimestamp(material.message_date, UTC).isoformat(),
+                "material_type": material.material_type.value,
+            }
+            if material.text is not None:
+                part["text"] = material.text
+            if material.caption is not None:
+                part["caption"] = material.caption
+            if material.source is not None:
+                part["source"] = material.source.to_payload()
+            if material.attachment is not None:
+                part["filename"] = material.attachment.filename
+                if material.attachment.mime_type is not None:
+                    part["mime_type"] = material.attachment.mime_type
+                if material.attachment.data is not None:
+                    part["file_index"] = len(files)
+                    files.append(
+                        (
+                            "files",
+                            (
+                                material.attachment.filename,
+                                material.attachment.data,
+                                material.attachment.mime_type,
+                            ),
+                        )
+                    )
+            parts.append(part)
+
+        data = {
+            "telegram_user_id": first.telegram_user_id,
+            "telegram_chat_id": first.telegram_chat_id,
+            "parts": json.dumps(parts, ensure_ascii=False),
+        }
+        if target_collection_id is not None:
+            data["target_collection_id"] = target_collection_id
+
+        response = await self.client.post(
+            f"{self.base_url}/integrations/telegram/ingest/batch",
+            headers=self._headers(),
+            data=data,
+            files=files or None,
+        )
+        response.raise_for_status()
+        payload = dict(response.json())
+        logger.info(
+            "Telegram material batch backend response user=%s chat=%s count=%s status=%s",
+            first.telegram_user_id,
+            first.telegram_chat_id,
+            len(materials),
+            payload.get("status"),
+        )
+        return payload
+
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.internal_token}"}
 

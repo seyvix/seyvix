@@ -242,8 +242,11 @@ class TelegramIngestService:
             state.active_collection_id if state.mode == BotMode.MANUAL_COLLECTION else None
         )
         saved: SavedMaterial | None = None
-        for material in materials:
-            payload = await self.backend.ingest(material, target_collection_id=target_collection_id)
+        for group in _logical_message_groups(materials):
+            payload = await self.backend.ingest_many(
+                group,
+                target_collection_id=target_collection_id,
+            )
             saved = _saved_from_payload(payload)
             if saved.id is not None:
                 target_collection_id = saved.id
@@ -316,6 +319,31 @@ def _deduplicate_repeated_captions(materials: list[InboundMaterial]) -> list[Inb
             seen.add(caption)
         result.append(material)
     return result
+
+
+def _logical_message_groups(materials: list[InboundMaterial]) -> list[list[InboundMaterial]]:
+    groups: dict[str, list[InboundMaterial]] = {}
+    order: list[str] = []
+    for material in materials:
+        key = _logical_message_key(material)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(material)
+    return [groups[key] for key in order]
+
+
+def _logical_message_key(material: InboundMaterial) -> str:
+    if material.source is not None and material.source.group_id:
+        return ":".join(
+            [
+                "group",
+                material.source.provider,
+                material.telegram_chat_id,
+                material.source.group_id,
+            ]
+        )
+    return ":".join(["message", material.telegram_chat_id, material.telegram_message_id])
 
 
 def _saved_from_payload(payload: Mapping[str, object]) -> SavedMaterial:

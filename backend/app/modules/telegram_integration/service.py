@@ -7,6 +7,7 @@ from app.modules.content.schemas import FileUploadResponse, NoteCardResponse
 from app.modules.content.service import ContentService, UploadedContent
 from app.modules.telegram_integration.infrastructure.repositories import TelegramIngestRepository
 from app.modules.telegram_integration.schemas import (
+    TelegramBatchIngestPart,
     TelegramIngestMode,
     TelegramIngestPayload,
     TelegramIngestResponse,
@@ -70,6 +71,66 @@ class TelegramIngestService:
         )
         return self._response(status="saved", mode="default", card=card)
 
+    async def ingest_batch(
+        self,
+        *,
+        telegram_user_id: str,
+        telegram_chat_id: str,
+        parts: list[TelegramBatchIngestPart],
+        uploaded: list[UploadedContent],
+        target_collection_id: str | None = None,
+    ) -> TelegramIngestResponse:
+        user = await self.repo.get_user_by_telegram_id(telegram_user_id)
+        if user is None:
+            raise TelegramUserNotLinkedError
+        if not parts:
+            raise TelegramCollectionNotFoundError
+
+        payloads = [
+            TelegramIngestPayload(
+                telegram_user_id=telegram_user_id,
+                telegram_chat_id=telegram_chat_id,
+                telegram_message_id=part.telegram_message_id,
+                material_type=part.material_type,
+                message_date=part.message_date,
+                text=part.text,
+                caption=part.caption,
+                filename=part.filename,
+                mime_type=part.mime_type,
+                source=part.source,
+            )
+            for part in parts
+        ]
+        uploads_by_part = [
+            (
+                uploaded[part.file_index]
+                if part.file_index is not None and part.file_index < len(uploaded)
+                else None
+            )
+            for part in parts
+        ]
+        if len(payloads) == 1:
+            card = await self._create_standalone(
+                owner_user_id=user.id,
+                payload=payloads[0],
+                uploaded=uploads_by_part[0],
+            )
+        else:
+            card = await self._create_batch_standalone(
+                owner_user_id=user.id,
+                payloads=payloads,
+                uploaded=uploads_by_part,
+            )
+
+        if target_collection_id is not None:
+            card = await self._append_existing_to_collection(
+                owner_user_id=user.id,
+                target_id=target_collection_id,
+                child=card,
+            )
+            return self._response(status="collection_updated", mode="default", card=card)
+        return self._response(status="saved", mode="default", card=card)
+
     async def _append_to_collection(
         self,
         *,
@@ -89,12 +150,56 @@ class TelegramIngestService:
             payload=payload,
             uploaded=uploaded,
         )
+        return await self._append_existing_to_collection(
+            owner_user_id=owner_user_id,
+            target_id=target_id,
+            child=child,
+        )
+
+    async def _append_existing_to_collection(
+        self,
+        *,
+        owner_user_id: str,
+        target_id: str,
+        child: NoteCardResponse,
+    ) -> NoteCardResponse:
+        target = await self.content.content.get_by_id(
+            owner_user_id=owner_user_id,
+            object_id=target_id,
+        )
+        if target is None:
+            raise TelegramCollectionNotFoundError
         return await self.content.merge_notes(
             owner_user_id=owner_user_id,
             target_slug=target.slug,
             source_slugs=[child.slug],
             title=target.title,
         )
+
+    async def _create_batch_standalone(
+        self,
+        *,
+        owner_user_id: str,
+        payloads: list[TelegramIngestPayload],
+        uploaded: list[UploadedContent | None],
+    ) -> NoteCardResponse:
+        text = self._batch_text(payloads)
+        files = [item for item in uploaded if item is not None]
+        card = await self.content.create_composite_note_from_uploads(
+            owner_user_id=owner_user_id,
+            files=files,
+            text=text,
+            title=self._batch_title(payloads=payloads, uploaded=files, text=text),
+            folder_path=None,
+            tag_names=[],
+        )
+        for payload in payloads:
+            await self._attach_source_and_reload(
+                owner_user_id=owner_user_id,
+                card=card,
+                payload=payload,
+            )
+        return await self.content.get_note(owner_user_id=owner_user_id, slug=card.slug)
 
     async def _create_standalone(
         self,
@@ -188,6 +293,34 @@ class TelegramIngestService:
             return None
         stripped = value.strip()
         return stripped or None
+
+    @staticmethod
+    def _batch_text(payloads: list[TelegramIngestPayload]) -> str | None:
+        seen: set[str] = set()
+        chunks: list[str] = []
+        for payload in payloads:
+            value = TelegramIngestService._message_text(payload)
+            if value is None or value in seen:
+                continue
+            seen.add(value)
+            chunks.append(value)
+        return "\n\n".join(chunks) if chunks else None
+
+    @staticmethod
+    def _batch_title(
+        *,
+        payloads: list[TelegramIngestPayload],
+        uploaded: list[UploadedContent],
+        text: str | None,
+    ) -> str | None:
+        if text:
+            return None
+        if uploaded:
+            return ""
+        first_payload = payloads[0] if payloads else None
+        if first_payload is not None and first_payload.material_type == "link":
+            return None
+        return "Telegram message"
 
     @staticmethod
     def _title(

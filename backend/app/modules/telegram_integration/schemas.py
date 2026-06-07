@@ -57,6 +57,18 @@ class TelegramIngestPayload(BaseModel):
     source: UniversalSourcePayload | None = None
 
 
+class TelegramBatchIngestPart(BaseModel):
+    telegram_message_id: str = Field(min_length=1, max_length=64)
+    material_type: TelegramMaterialType
+    message_date: datetime | None = None
+    text: str | None = None
+    caption: str | None = None
+    filename: str | None = Field(default=None, max_length=512)
+    mime_type: str | None = Field(default=None, max_length=255)
+    file_index: int | None = Field(default=None, ge=0)
+    source: UniversalSourcePayload | None = None
+
+
 class TelegramIngestResponse(BaseModel):
     status: TelegramIngestStatus
     mode: TelegramIngestMode

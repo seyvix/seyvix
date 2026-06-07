@@ -14,6 +14,7 @@ from app.core.config import get_settings
 from app.modules.content.presentation.rest.router import get_content_service
 from app.modules.content.service import ContentService, UploadedContent
 from app.modules.telegram_integration.schemas import (
+    TelegramBatchIngestPart,
     TelegramIngestPayload,
     TelegramIngestResponse,
     TelegramMaterialType,
@@ -80,6 +81,25 @@ def _parse_source_payload(raw: str | None) -> UniversalSourcePayload | None:
         ) from exc
 
 
+def _parse_batch_parts(raw: str) -> list[TelegramBatchIngestPart]:
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise AppError(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            code="invalid_telegram_batch_payload",
+            message="Telegram batch payload is invalid.",
+        ) from exc
+    try:
+        return [TelegramBatchIngestPart.model_validate(item) for item in payload]
+    except (TypeError, ValidationError) as exc:
+        raise AppError(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            code="invalid_telegram_batch_payload",
+            message="Telegram batch payload is invalid.",
+        ) from exc
+
+
 @router.post(
     "/ingest",
     response_model=TelegramIngestResponse,
@@ -131,6 +151,48 @@ async def ingest_telegram_message(
     )
     try:
         return await service.ingest(payload=payload, uploaded=upload)
+    except (TelegramUserNotLinkedError, TelegramCollectionNotFoundError) as exc:
+        _raise_integration_error(exc)
+        raise
+
+
+@router.post(
+    "/ingest/batch",
+    response_model=TelegramIngestResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Ingest Telegram logical message",
+    description=(
+        "Internal endpoint used by the Telegram bot service after it groups Telegram updates "
+        "that represent one logical Telegram message. The endpoint creates one Seyvix note "
+        "with all message text and attachments."
+    ),
+)
+async def ingest_telegram_message_batch(
+    service: Annotated[TelegramIngestService, Depends(get_telegram_ingest_service)],
+    authorization: Annotated[str | None, Header()] = None,
+    telegram_user_id: Annotated[str, Form(max_length=64)] = "",
+    telegram_chat_id: Annotated[str, Form(max_length=64)] = "",
+    target_collection_id: Annotated[str | None, Form(max_length=64)] = None,
+    parts: Annotated[str, Form()] = "[]",
+    files: Annotated[list[UploadFile] | None, File()] = None,
+) -> TelegramIngestResponse:
+    _verify_internal_token(authorization)
+    uploads = [
+        UploadedContent(
+            filename=file.filename or "telegram-file",
+            content_type=file.content_type,
+            data=await file.read(),
+        )
+        for file in files or []
+    ]
+    try:
+        return await service.ingest_batch(
+            telegram_user_id=telegram_user_id,
+            telegram_chat_id=telegram_chat_id,
+            target_collection_id=target_collection_id,
+            parts=_parse_batch_parts(parts),
+            uploaded=uploads,
+        )
     except (TelegramUserNotLinkedError, TelegramCollectionNotFoundError) as exc:
         _raise_integration_error(exc)
         raise

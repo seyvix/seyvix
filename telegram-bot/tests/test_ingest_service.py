@@ -16,7 +16,7 @@ from telegram_bot.services.ingest import TelegramIngestService
 
 class FakeBackend:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, str | None]] = []
+        self.calls: list[tuple[list[str], str | None]] = []
 
     async def ingest(
         self,
@@ -24,7 +24,22 @@ class FakeBackend:
         *,
         target_collection_id: str | None = None,
     ) -> dict[str, object]:
-        self.calls.append((material.telegram_message_id, target_collection_id))
+        self.calls.append(([material.telegram_message_id], target_collection_id))
+        note_id = f"saved-{len(self.calls)}"
+        return {
+            "status": "collection_updated" if target_collection_id else "saved",
+            "note": {"id": note_id, "title": note_id},
+        }
+
+    async def ingest_many(
+        self,
+        materials: list[InboundMaterial],
+        *,
+        target_collection_id: str | None = None,
+    ) -> dict[str, object]:
+        self.calls.append(
+            ([material.telegram_message_id for material in materials], target_collection_id)
+        )
         note_id = f"saved-{len(self.calls)}"
         return {
             "status": "collection_updated" if target_collection_id else "saved",
@@ -114,7 +129,7 @@ def test_auto_mode_keeps_media_group_and_nearby_text_in_one_bucket() -> None:
         await asyncio.sleep(0.03)
 
         assert loading_statuses == [("status-1", "10")]
-        assert backend.calls == [("10", None), ("11", "saved-1")]
+        assert backend.calls == [(["10"], None), (["11"], "saved-1")]
         assert saved_statuses == [("status-1", "saved-2")]
 
     asyncio.run(scenario())
@@ -213,8 +228,8 @@ def test_auto_mode_waits_for_pending_bucket_items_before_flush() -> None:
         await asyncio.gather(first, second)
         await asyncio.sleep(0.04)
 
-        assert backend.calls == [("10", None), ("11", "saved-1")]
-        assert saved_statuses == [("status-1", "saved-2")]
+        assert backend.calls == [(["10", "11"], None)]
+        assert saved_statuses == [("status-1", "saved-1")]
 
     asyncio.run(scenario())
 
@@ -277,6 +292,6 @@ def test_auto_mode_sends_one_loading_when_bucket_items_arrive_concurrently() -> 
         await asyncio.sleep(0.03)
 
         assert loading_statuses == [("status-1", "10")]
-        assert backend.calls == [("10", None), ("11", "saved-1"), ("12", "saved-2")]
+        assert backend.calls == [(["10", "11", "12"], None)]
 
     asyncio.run(scenario())

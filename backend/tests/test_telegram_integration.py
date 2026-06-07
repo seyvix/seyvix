@@ -59,6 +59,60 @@ def test_telegram_media_only_title_ignores_transport_filename() -> None:
     assert title == ""
 
 
+def test_telegram_batch_media_only_title_ignores_transport_filename() -> None:
+    payloads = [
+        TelegramIngestPayload(
+            telegram_user_id="100500",
+            telegram_chat_id="801627037",
+            telegram_message_id="42",
+            material_type="video",
+            filename="telegram-video-42.mp4",
+            mime_type="video/mp4",
+        ),
+    ]
+    title = TelegramIngestService._batch_title(
+        payloads=payloads,
+        uploaded=[
+            UploadedContent(
+                filename="telegram-video-42.mp4",
+                content_type="video/mp4",
+                data=b"fake-video",
+            )
+        ],
+        text=TelegramIngestService._batch_text(payloads),
+    )
+
+    assert title == ""
+
+
+def test_telegram_batch_text_deduplicates_caption_parts() -> None:
+    payloads = [
+        TelegramIngestPayload(
+            telegram_user_id="100500",
+            telegram_chat_id="801627037",
+            telegram_message_id="42",
+            material_type="video",
+            caption="Shared caption",
+        ),
+        TelegramIngestPayload(
+            telegram_user_id="100500",
+            telegram_chat_id="801627037",
+            telegram_message_id="43",
+            material_type="photo",
+            caption="Shared caption",
+        ),
+        TelegramIngestPayload(
+            telegram_user_id="100500",
+            telegram_chat_id="801627037",
+            telegram_message_id="44",
+            material_type="text",
+            text="Second text",
+        ),
+    ]
+
+    assert TelegramIngestService._batch_text(payloads) == "Shared caption\n\nSecond text"
+
+
 def test_telegram_ingest_requires_internal_token(content_client: TestClient) -> None:
     _auth_headers(content_client)
 
@@ -254,6 +308,71 @@ def test_telegram_media_group_appends_to_explicit_collection_with_item_sources(
         if (source := obj.get("source")) is not None
     ]
     assert source_urls == ["https://t.me/whackdoor/28306"]
+
+
+def test_telegram_batch_ingest_creates_single_composite_note_with_shared_text(
+    content_client: TestClient,
+) -> None:
+    _auth_headers(content_client)
+
+    shared_caption = "Caption belongs to the whole Telegram message"
+    parts = [
+        {
+            "telegram_message_id": "51",
+            "material_type": "photo",
+            "message_date": datetime.now(UTC).isoformat(),
+            "caption": shared_caption,
+            "filename": "first.jpg",
+            "mime_type": "image/jpeg",
+            "file_index": 0,
+            "source": {
+                "provider": "telegram",
+                "provider_label": "Telegram",
+                "external_id": "801627037:51:0",
+                "group_id": "album-51",
+                "raw_payload": {"message_id": 51, "media_group_id": "album-51"},
+            },
+        },
+        {
+            "telegram_message_id": "52",
+            "material_type": "video",
+            "message_date": datetime.now(UTC).isoformat(),
+            "filename": "second.mp4",
+            "mime_type": "video/mp4",
+            "file_index": 1,
+            "source": {
+                "provider": "telegram",
+                "provider_label": "Telegram",
+                "external_id": "801627037:52:1",
+                "group_id": "album-51",
+                "raw_payload": {"message_id": 52, "media_group_id": "album-51"},
+            },
+        },
+    ]
+
+    response = content_client.post(
+        "/api/v1/integrations/telegram/ingest/batch",
+        headers=_internal_headers(),
+        data={
+            "telegram_user_id": "100500",
+            "telegram_chat_id": "801627037",
+            "parts": json.dumps(parts),
+        },
+        files=[
+            ("files", ("first.jpg", b"\xff\xd8\xff\xe0telegram-image\xff\xd9", "image/jpeg")),
+            ("files", ("second.mp4", b"fake-video", "video/mp4")),
+        ],
+    )
+
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    assert payload["status"] == "saved"
+    assert payload["note"]["type"] == "composite"
+    objects = payload["note"]["objects"]
+    assert [obj["type"] for obj in objects] == ["text", "image", "video"]
+    assert objects[0]["content"] == shared_caption
+    assert objects[1]["caption"] is None
+    assert objects[2]["caption"] is None
 
 
 def test_telegram_photo_without_caption_does_not_use_filename_as_title(

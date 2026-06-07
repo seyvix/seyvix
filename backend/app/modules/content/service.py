@@ -1299,27 +1299,46 @@ class ContentService:
         folder_path: str | None,
         tag_names: list[str],
     ) -> NoteCardResponse:
-        file_media_type = self._media_type(uploaded.filename, uploaded.content_type)
-        first_line = next(iter(text.strip().splitlines()), "")
-        normalized_title = _strip_title_markdown(title or first_line)[:80] or uploaded.filename
+        return await self.create_composite_note_from_uploads(
+            owner_user_id=owner_user_id,
+            files=[uploaded],
+            text=text,
+            title=title,
+            folder_path=folder_path,
+            tag_names=tag_names,
+        )
+
+    async def create_composite_note_from_uploads(
+        self,
+        *,
+        owner_user_id: str,
+        files: list[UploadedContent],
+        text: str | None,
+        title: str | None,
+        folder_path: str | None,
+        tag_names: list[str],
+    ) -> NoteCardResponse:
+        if not files and text is not None:
+            return await self._create_text_note(
+                owner_user_id=owner_user_id,
+                text=text,
+                title=title,
+                folder_path=folder_path,
+                tag_names=tag_names,
+            )
+        if not files:
+            raise NoteNotFoundError
+
+        first_file = files[0]
+        file_media_type = self._media_type(first_file.filename, first_file.content_type)
+        first_line = next(iter((text or "").strip().splitlines()), "")
+        title_source = title if title is not None else first_line
+        normalized_title = _strip_title_markdown(title_source)[:80]
+        if not normalized_title and title is None:
+            normalized_title = Path(first_file.filename).stem or "Telegram message"
         slug = await self._unique_slug(owner_user_id, normalized_title)
         sort_order = await self._next_root_sort_order(owner_user_id=owner_user_id)
         content_object_id = str(uuid4())
-        file_asset_id = str(uuid4())
-        text_asset_id = str(uuid4())
-        stored_file = self.storage.write_binary_object(
-            content_object_id=content_object_id,
-            asset_id=file_asset_id,
-            filename=uploaded.filename,
-            data=uploaded.data,
-            content_type=uploaded.content_type,
-        )
-        stored_text = self.storage.write_text_object(
-            content_object_id=content_object_id,
-            asset_id=text_asset_id,
-            title=normalized_title,
-            text=text,
-        )
         content_object = ContentObject(
             id=content_object_id,
             owner_user_id=owner_user_id,
@@ -1327,57 +1346,82 @@ class ContentService:
             title=normalized_title,
             kind="complex",
             media_type=file_media_type,
-            source_filename=stored_file.filename,
-            mime_type=uploaded.content_type,
-            size_bytes=stored_file.size_bytes,
+            source_filename=first_file.filename,
+            mime_type=first_file.content_type,
+            size_bytes=len(first_file.data),
             storage_path=f"content-assets/{content_object_id}",
             sort_order=sort_order,
         )
-        self.storage_objects.add(
-            self._stored_object_from_file(stored_file),
-            owner_entity_type="content_asset",
-            owner_entity_id=file_asset_id,
-            metadata={"role": "original", "source_filename": uploaded.filename},
-        )
-        self.storage_objects.add(
-            self._stored_object_from_file(stored_text),
-            owner_entity_type="content_asset",
-            owner_entity_id=text_asset_id,
-            metadata={"role": "text", "source_filename": stored_text.filename},
-        )
-        content_object.assets.append(
-            ContentAsset(
-                id=file_asset_id,
-                role="original",
-                media_type=file_media_type,
-                filename=stored_file.filename,
-                mime_type=uploaded.content_type,
-                size_bytes=stored_file.size_bytes,
-                storage_path=stored_file.relative_path,
-                storage_backend=stored_file.storage_backend,
-                bucket=stored_file.bucket,
-                storage_key=stored_file.storage_key,
-                storage_ref=stored_file.storage_ref,
-                checksum=stored_file.checksum,
-            ),
-        )
-        content_object.assets.append(
-            ContentAsset(
-                id=text_asset_id,
-                role="text",
-                media_type="text",
-                filename=stored_text.filename,
-                mime_type="text/markdown",
-                size_bytes=stored_text.size_bytes,
-                storage_path=stored_text.relative_path,
-                storage_backend=stored_text.storage_backend,
-                bucket=stored_text.bucket,
-                storage_key=stored_text.storage_key,
-                storage_ref=stored_text.storage_ref,
-                checksum=stored_text.checksum,
-                text_content=text,
-            ),
-        )
+
+        if text:
+            text_asset_id = str(uuid4())
+            stored_text = self.storage.write_text_object(
+                content_object_id=content_object_id,
+                asset_id=text_asset_id,
+                title=normalized_title,
+                text=text,
+            )
+            self.storage_objects.add(
+                self._stored_object_from_file(stored_text),
+                owner_entity_type="content_asset",
+                owner_entity_id=text_asset_id,
+                metadata={"role": "text", "source_filename": stored_text.filename},
+            )
+            content_object.assets.append(
+                ContentAsset(
+                    id=text_asset_id,
+                    role="text",
+                    media_type="text",
+                    filename=stored_text.filename,
+                    mime_type="text/markdown",
+                    size_bytes=stored_text.size_bytes,
+                    storage_path=stored_text.relative_path,
+                    storage_backend=stored_text.storage_backend,
+                    bucket=stored_text.bucket,
+                    storage_key=stored_text.storage_key,
+                    storage_ref=stored_text.storage_ref,
+                    checksum=stored_text.checksum,
+                    text_content=text,
+                ),
+            )
+
+        for uploaded in files:
+            file_asset_id = str(uuid4())
+            stored_file = self.storage.write_binary_object(
+                content_object_id=content_object_id,
+                asset_id=file_asset_id,
+                filename=uploaded.filename,
+                data=uploaded.data,
+                content_type=uploaded.content_type,
+            )
+            media_type = self._media_type(uploaded.filename, uploaded.content_type)
+            image_width, image_height = (
+                self._image_dimensions(uploaded) if media_type == "image" else (None, None)
+            )
+            self.storage_objects.add(
+                self._stored_object_from_file(stored_file),
+                owner_entity_type="content_asset",
+                owner_entity_id=file_asset_id,
+                metadata={"role": "original", "source_filename": uploaded.filename},
+            )
+            content_object.assets.append(
+                ContentAsset(
+                    id=file_asset_id,
+                    role="original",
+                    media_type=media_type,
+                    filename=stored_file.filename,
+                    mime_type=uploaded.content_type,
+                    size_bytes=stored_file.size_bytes,
+                    storage_path=stored_file.relative_path,
+                    storage_backend=stored_file.storage_backend,
+                    bucket=stored_file.bucket,
+                    storage_key=stored_file.storage_key,
+                    storage_ref=stored_file.storage_ref,
+                    checksum=stored_file.checksum,
+                    image_width=image_width,
+                    image_height=image_height,
+                ),
+            )
         self.content.add(content_object)
         await self.session.flush()
         await self.tag_service.replace_manual_tags_for_content(
