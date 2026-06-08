@@ -16,6 +16,7 @@ class SearchFilters(BaseModel):
     content_types: list[str] = Field(default_factory=list, max_length=20)
     content_source: str | None = Field(default=None, min_length=1, max_length=64)
     source_provider: str | None = Field(default=None, min_length=1, max_length=64)
+    source_providers: list[str] = Field(default_factory=list, max_length=20)
     source_kind: str | None = Field(default=None, min_length=1, max_length=64)
     telegram_chat_id: str | None = Field(default=None, min_length=1, max_length=255)
     telegram_chat_type: str | None = Field(default=None, min_length=1, max_length=64)

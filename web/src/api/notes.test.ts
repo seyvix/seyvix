@@ -34,6 +34,34 @@ test('fetchNotes forwards abort signal to the request', async () => {
   assert.equal(capturedSignal, controller.signal)
 })
 
+test('fetchNotes serializes extended note filters', async () => {
+  let capturedUrl = ''
+  globalThis.fetch = async (input) => {
+    capturedUrl = String(input)
+    return jsonResponse({ items: [] })
+  }
+
+  await fetchNotes({
+    search: 'new game',
+    searchMode: 'hybrid',
+    tags: ['games'],
+    folders: ['Games/Strategy'],
+    contentTypes: ['video', 'pdf'],
+    sources: ['telegram'],
+    favorite: true,
+    createdAfter: '2026-05-01',
+    createdBefore: '2026-06-01',
+  })
+
+  const url = new URL(capturedUrl)
+  assert.equal(url.searchParams.get('search'), 'new game')
+  assert.deepEqual(url.searchParams.getAll('types'), ['video', 'pdf'])
+  assert.deepEqual(url.searchParams.getAll('sources'), ['telegram'])
+  assert.equal(url.searchParams.get('favorite'), 'true')
+  assert.equal(url.searchParams.get('created_after'), '2026-05-01')
+  assert.equal(url.searchParams.get('created_before'), '2026-06-01')
+})
+
 test('reorderNotes reports backend failures', async () => {
   globalThis.fetch = async () => new Response(null, { status: 500 })
 

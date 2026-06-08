@@ -12,10 +12,19 @@ test('notesQueryKey is derived from scalar search params', () => {
       sort: 'custom',
       tags: [],
       folders: [],
+      contentTypes: [],
+      sources: [],
+      favorite: null,
+      createdAfter: null,
+      createdBefore: null,
     },
   ])
   assert.notDeepEqual(
     notesQueryKey({ search: 'Valheim', searchMode: 'hybrid' }),
     notesQueryKey({ search: 'Stronghold', searchMode: 'hybrid' }),
+  )
+  assert.notDeepEqual(
+    notesQueryKey({ search: 'Valheim', contentTypes: ['video'] }),
+    notesQueryKey({ search: 'Valheim', contentTypes: ['image'] }),
   )
 })

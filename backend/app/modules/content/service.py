@@ -404,6 +404,11 @@ class ContentService:
         tag_slugs: list[str],
         folder_path: str | None,
         sort: str,
+        content_types: list[str] | None = None,
+        source_providers: list[str] | None = None,
+        is_favorite: bool | None = None,
+        created_at_from: datetime | None = None,
+        created_at_to: datetime | None = None,
     ) -> NoteListResponse:
         objects = await self.content.list_all(owner_user_id=owner_user_id)
         normalized_search = search.casefold().strip() if search else None
@@ -413,10 +418,24 @@ class ContentService:
             else None
         )
         normalized_tags = {slugify(tag) for tag in tag_slugs}
+        normalized_content_types = {
+            value.strip().casefold() for value in (content_types or []) if value.strip()
+        }
+        normalized_source_providers = {
+            value.strip().casefold() for value in (source_providers or []) if value.strip()
+        }
         assignment_by_object_id = await self._current_assignment_map(owner_user_id)
         tags_by_object_id = await self.tag_service.list_active_tags_for_contents(
             owner_user_id=owner_user_id,
             content_object_ids=[content_object.id for content_object in objects],
+        )
+        source_providers_by_object_id = (
+            await self._source_provider_map(
+                owner_user_id=owner_user_id,
+                content_object_ids=[content_object.id for content_object in objects],
+            )
+            if normalized_source_providers
+            else {}
         )
         items: list[ContentObject] = []
         seen_item_ids: set[str] = set()
@@ -442,16 +461,18 @@ class ContentService:
                 and (not include_local_search_matches or local_search_score <= 0)
             ):
                 continue
-            if folder_path and (
-                assignment is None
-                or not self._path_matches_or_descends(
-                    assignment.category_path_snapshot,
-                    folder_path,
-                )
-            ):
-                continue
-            if normalized_tags and not normalized_tags.issubset(
-                {tag.slug for tag in tags_by_object_id.get(content_object.id, [])},
+            if not self._matches_note_filters(
+                content_object,
+                assignment=assignment,
+                active_tags=tags_by_object_id.get(content_object.id, []),
+                source_providers=source_providers_by_object_id.get(content_object.id, set()),
+                normalized_tags=normalized_tags,
+                folder_path=folder_path,
+                normalized_content_types=normalized_content_types,
+                normalized_source_providers=normalized_source_providers,
+                is_favorite=is_favorite,
+                created_at_from=created_at_from,
+                created_at_to=created_at_to,
             ):
                 continue
             if normalized_search and search_rank is None:
@@ -459,6 +480,23 @@ class ContentService:
                     for item in await self.content.list_collection_items(content_object.id):
                         child = item.content_object
                         if child.id in seen_item_ids:
+                            continue
+                        if not self._matches_note_filters(
+                            child,
+                            assignment=assignment_by_object_id.get(child.id),
+                            active_tags=tags_by_object_id.get(child.id, []),
+                            source_providers=source_providers_by_object_id.get(
+                                child.id,
+                                set(),
+                            ),
+                            normalized_tags=normalized_tags,
+                            folder_path=folder_path,
+                            normalized_content_types=normalized_content_types,
+                            normalized_source_providers=normalized_source_providers,
+                            is_favorite=is_favorite,
+                            created_at_from=created_at_from,
+                            created_at_to=created_at_to,
+                        ):
                             continue
                         child_score = self._local_search_score(
                             child,
@@ -525,6 +563,98 @@ class ContentService:
                 for item in items
             ]
         )
+
+    async def _source_provider_map(
+        self,
+        *,
+        owner_user_id: str,
+        content_object_ids: list[str],
+    ) -> dict[str, set[str]]:
+        if not content_object_ids:
+            return {}
+        records = list(
+            await self.session.scalars(
+                select(ContentSource).where(
+                    ContentSource.owner_user_id == owner_user_id,
+                    ContentSource.content_object_id.in_(content_object_ids),
+                )
+            )
+        )
+        providers: dict[str, set[str]] = {}
+        for record in records:
+            providers.setdefault(record.content_object_id, set()).add(record.provider.casefold())
+        return providers
+
+    def _matches_note_filters(
+        self,
+        content_object: ContentObject,
+        *,
+        assignment: TaxonomyContentAssignment | None,
+        active_tags: list[Tag],
+        source_providers: set[str],
+        normalized_tags: set[str],
+        folder_path: str | None,
+        normalized_content_types: set[str],
+        normalized_source_providers: set[str],
+        is_favorite: bool | None,
+        created_at_from: datetime | None,
+        created_at_to: datetime | None,
+    ) -> bool:
+        if folder_path and (
+            assignment is None
+            or not self._path_matches_or_descends(
+                assignment.category_path_snapshot,
+                folder_path,
+            )
+        ):
+            return False
+        if normalized_tags and not normalized_tags.issubset({tag.slug for tag in active_tags}):
+            return False
+        if normalized_content_types and not self._content_type_matches(
+            content_object,
+            normalized_content_types,
+        ):
+            return False
+        if normalized_source_providers and not (source_providers & normalized_source_providers):
+            return False
+        if is_favorite is not None and content_object.is_favorite is not is_favorite:
+            return False
+        if created_at_from is not None and content_object.created_at < self._aware_datetime(
+            created_at_from
+        ):
+            return False
+        if created_at_to is not None and content_object.created_at > self._aware_datetime(
+            created_at_to
+        ):
+            return False
+        return True
+
+    @staticmethod
+    def _content_type_matches(
+        content_object: ContentObject,
+        normalized_content_types: set[str],
+    ) -> bool:
+        media_type = (content_object.media_type or "").casefold()
+        mime_type = (content_object.mime_type or "").casefold()
+        source_filename = (content_object.source_filename or "").casefold()
+        for value in normalized_content_types:
+            if value in {"note", "notes", "text"} and media_type in {"", "text"}:
+                return True
+            if value == "collection" and content_object.kind == "collection":
+                return True
+            if (
+                value == "pdf"
+                and media_type == "document"
+                and (mime_type == "application/pdf" or source_filename.endswith(".pdf"))
+            ):
+                return True
+            if media_type == value:
+                return True
+        return False
+
+    @staticmethod
+    def _aware_datetime(value: datetime) -> datetime:
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
     async def get_note(self, *, owner_user_id: str, slug: str) -> NoteCardResponse:
         return await self._to_card(await self._load_note(owner_user_id=owner_user_id, slug=slug))

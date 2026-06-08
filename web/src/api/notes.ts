@@ -50,6 +50,13 @@ export async function fetchNotes(
   if (params.sort) url.searchParams.set('sort', params.sort)
   params.tags?.forEach(t => url.searchParams.append('tags', t))
   params.folders?.forEach(f => url.searchParams.append('folders', f))
+  params.contentTypes?.forEach(type => url.searchParams.append('types', type))
+  params.sources?.forEach(source => url.searchParams.append('sources', source))
+  if (params.favorite !== undefined && params.favorite !== null) {
+    url.searchParams.set('favorite', String(params.favorite))
+  }
+  if (params.createdAfter) url.searchParams.set('created_after', params.createdAfter)
+  if (params.createdBefore) url.searchParams.set('created_before', params.createdBefore)
 
   const res = await apiFetch(url.toString(), { signal })
   if (!res.ok) throw new Error('Failed to fetch notes')

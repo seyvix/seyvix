@@ -431,7 +431,7 @@ def test_meilisearch_filter_builder_scopes_owner_and_useful_metadata() -> None:
         owner_user_id="user-1",
         filters=SearchFilters(
             content_types=["link", "pdf"],
-            content_source="telegram",
+            source_providers=["telegram", "web"],
             telegram_chat_type="group",
             telegram_chat_id="chat-42",
             telegram_author_id="author-7",
@@ -448,7 +448,8 @@ def test_meilisearch_filter_builder_scopes_owner_and_useful_metadata() -> None:
     assert expression == (
         'owner_user_id = "user-1" AND source = "content" AND '
         'source_type = "content_object" AND (content_type = "link" OR content_type = "pdf") '
-        'AND source_provider = "telegram" AND telegram_chat_type = "group" '
+        'AND (source_provider = "telegram" OR source_provider = "web") '
+        'AND telegram_chat_type = "group" '
         'AND telegram_chat_id = "chat-42" AND telegram_author_id = "author-7" '
         'AND tags = "ai" AND tags = "research" AND folder_path = "work/research" '
         "AND content_created_ts >= 1777593600 AND content_created_ts <= 1780271940"
