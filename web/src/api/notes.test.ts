@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { fetchNotes, reorderNotes } from './notes.ts'
+import { fetchNotes, reorderNotes, updateNote } from './notes.ts'
 
 function jsonResponse(body: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(body), {
@@ -69,4 +69,27 @@ test('reorderNotes reports backend failures', async () => {
     () => reorderNotes([{ slug: 'first', position: 10 }]),
     /Failed to reorder notes/,
   )
+})
+
+test('updateNote serializes edited text objects for the backend patch contract', async () => {
+  let capturedBody = ''
+  globalThis.fetch = async (_input, init) => {
+    capturedBody = String(init?.body ?? '')
+    return jsonResponse({ id: 'note-1', slug: 'note-1', title: 'Renamed', objects: [] })
+  }
+
+  await updateNote('note-1', {
+    title: 'Renamed',
+    objects: [{
+      id: 'text-1',
+      type: 'text',
+      content: 'Updated **markdown**',
+      createdAt: '2026-06-09T00:00:00Z',
+    }],
+  })
+
+  assert.deepEqual(JSON.parse(capturedBody), {
+    title: 'Renamed',
+    text: 'Updated **markdown**',
+  })
 })

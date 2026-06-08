@@ -889,6 +889,7 @@ class ContentService:
         owner_user_id: str,
         slug: str,
         title: str | None,
+        text: str | None,
         tag_names: list[str] | None,
     ) -> NoteCardResponse:
         content_object = await self._load_note(owner_user_id=owner_user_id, slug=slug)
@@ -896,6 +897,8 @@ class ContentService:
             cleaned_title = _normalize_title(title)
             if cleaned_title:
                 content_object.title = cleaned_title
+        if text is not None:
+            await self._update_text_asset(content_object, text)
         if tag_names is not None:
             await self.tag_service.replace_manual_tags_for_content(
                 owner_user_id=owner_user_id,
@@ -909,10 +912,46 @@ class ContentService:
                 content_object=content_object,
                 tag_names=tag_names,
             )
+        await self._write_object_manifest(content_object)
         self._enqueue_content_changed_event(content_object, event_name="content.object.updated")
         await self.session.commit()
         loaded = await self._load_note(owner_user_id=owner_user_id, slug=slug)
         return await self._to_card(loaded)
+
+    async def _update_text_asset(self, content_object: ContentObject, text: str) -> None:
+        text_asset = next(
+            (asset for asset in content_object.assets if asset.media_type == "text"),
+            None,
+        )
+        if text_asset is None:
+            return
+        stored_file = self.storage.write_text_object(
+            content_object_id=content_object.id,
+            asset_id=text_asset.id,
+            title=content_object.title,
+            text=text,
+        )
+        text_asset.filename = stored_file.filename
+        text_asset.mime_type = "text/markdown"
+        text_asset.size_bytes = stored_file.size_bytes
+        text_asset.storage_path = stored_file.relative_path
+        text_asset.storage_backend = stored_file.storage_backend
+        text_asset.bucket = stored_file.bucket
+        text_asset.storage_key = stored_file.storage_key
+        text_asset.storage_ref = stored_file.storage_ref
+        text_asset.checksum = stored_file.checksum
+        text_asset.text_content = text
+        if content_object.media_type == "text":
+            content_object.source_filename = stored_file.filename
+            content_object.mime_type = "text/markdown"
+            content_object.size_bytes = stored_file.size_bytes
+        content_object.updated_at = datetime.now(UTC)
+        await self.storage_objects.upsert(
+            self._stored_object_from_file(stored_file),
+            owner_entity_type="content_asset",
+            owner_entity_id=text_asset.id,
+            metadata={"role": text_asset.role, "source_filename": stored_file.filename},
+        )
 
     async def set_favorite(
         self,

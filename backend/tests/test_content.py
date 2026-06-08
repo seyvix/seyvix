@@ -174,6 +174,44 @@ def test_create_text_note_persists_manifest_and_downloads_archive(
     assert len(download_response.content) > 100
 
 
+def test_update_text_note_persists_markdown_content(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client)
+    payload = _create_text_note(
+        content_client,
+        headers,
+        title="Manual title",
+        text="Original body",
+    )
+
+    response = content_client.patch(
+        f"/api/v1/notes/{payload['id']}",
+        headers=headers,
+        json={"title": "Renamed note", "text": "Updated **markdown**"},
+    )
+
+    assert response.status_code == 200
+    updated = response.json()
+    assert updated["title"] == "Renamed note"
+    assert updated["objects"][0]["content"] == "Updated **markdown**"
+
+    fresh_response = content_client.get(
+        f"/api/v1/notes/{payload['id']}",
+        headers=headers,
+    )
+    assert fresh_response.status_code == 200
+    fresh_payload = fresh_response.json()
+    assert fresh_payload["objects"][0]["content"] == "Updated **markdown**"
+
+    asset_response = content_client.get(
+        f"/api/v1/notes/{payload['slug']}/asset/{updated['objects'][0]['id']}",
+        headers=headers,
+    )
+    assert asset_response.status_code == 200
+    assert asset_response.text == "# Renamed note\n\nUpdated **markdown**\n"
+
+
 def test_create_text_note_uses_first_clean_markdown_line_as_title(
     content_client: TestClient,
 ) -> None:

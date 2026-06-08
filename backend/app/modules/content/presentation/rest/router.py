@@ -506,7 +506,7 @@ async def restore_note(
     "/notes/{note_slug}",
     response_model=AppNote,
     summary="Update note",
-    description="Updates mutable fields of a note: title and/or tags.",
+    description="Updates mutable fields of a note: title, text and/or tags.",
     responses={
         200: {"description": "Updated note returned."},
         401: {
@@ -528,6 +528,7 @@ async def update_note(
                 owner_user_id=context.user.id,
                 slug=note_slug,
                 title=payload.title,
+                text=payload.text,
                 tag_names=payload.tag_names,
             )
         )

@@ -151,6 +151,7 @@ class FileUploadResponse(BaseModel):
 
 class UpdateNoteRequest(BaseModel):
     title: str | None = Field(default=None, max_length=512)
+    text: str | None = None
     tag_names: list[str] | None = None
 
 

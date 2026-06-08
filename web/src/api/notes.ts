@@ -24,6 +24,16 @@ type RecommendedNoteResponse = {
   updated_at: string
 }
 
+type UpdateNotePayload = Partial<Note> & {
+  text?: string | null
+}
+
+type UpdateNoteBackendPayload = {
+  title?: string | null
+  text?: string | null
+  tag_names?: string[]
+}
+
 export function mapRecommendedNote(item: RecommendedNoteResponse): RecommendedNote {
   return {
     id: item.id,
@@ -232,11 +242,23 @@ export async function cleanupTrash(): Promise<{ deletedCount: number }> {
   return { deletedCount: data.deleted_count ?? 0 }
 }
 
-export async function updateNote(noteRef: string, data: Partial<Note>): Promise<Note> {
+export async function updateNote(noteRef: string, data: UpdateNotePayload): Promise<Note> {
+  const textObj = data.objects?.find(o => o.type === 'text')
+  const backendPayload: UpdateNoteBackendPayload = {}
+  if (data.title !== undefined) backendPayload.title = data.title
+  if ((data as UpdateNotePayload).text !== undefined) {
+    backendPayload.text = (data as UpdateNotePayload).text ?? ''
+  } else if (textObj) {
+    backendPayload.text = textObj.content
+  }
+  if (data.tags !== undefined) {
+    backendPayload.tag_names = data.tags.map(tag => tag.name)
+  }
+
   const res = await apiFetch(`${BASE}/${encodeURIComponent(noteRef)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
+    body: JSON.stringify(backendPayload),
   })
   if (!res.ok) throw new Error('Failed to update note')
   return (await res.json()) as Note
