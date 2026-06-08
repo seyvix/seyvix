@@ -54,11 +54,24 @@ test('calculateMasonryGridMetrics honors dense column selections when cards rema
   })
 })
 
-test('calculateMasonryGridMetrics uses a single comfortable column on phones', () => {
+test('calculateMasonryGridMetrics allows two readable columns on phones', () => {
   assert.deepEqual(calculateMasonryGridMetrics(390, 5), {
+    cols: 2,
+    itemWidth: 179,
+    contentWidth: 366,
+  })
+  assert.deepEqual(calculateMasonryGridMetrics(390, 1), {
     cols: 1,
     itemWidth: 366,
     contentWidth: 366,
+  })
+})
+
+test('calculateMasonryGridMetrics falls back to one column on narrow phones', () => {
+  assert.deepEqual(calculateMasonryGridMetrics(320, 2), {
+    cols: 1,
+    itemWidth: 296,
+    contentWidth: 296,
   })
 })
 

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { NavLink } from 'react-router'
 import { Tags, Trash2 } from 'lucide-react'
 import { useLocalStorage } from '../../hooks/useLocalStorage'
@@ -7,6 +7,9 @@ import { useAuth } from '../../contexts/AuthContext'
 import styles from './AsideHeader.module.css'
 
 const STORAGE_KEY = 'seyvix:sidebar-expanded'
+const DESKTOP_COLUMN_OPTIONS = [1, 2, 3, 4, 5, 6, 7]
+const MOBILE_COLUMN_OPTIONS = [1, 2]
+const MOBILE_COLUMNS_QUERY = '(max-width: 760px), (pointer: coarse)'
 
 function IconNotes() {
   return (
@@ -67,13 +70,26 @@ function IconChevronLeft() {
 export default function AsideHeader() {
   const [expanded, setExpanded] = useLocalStorage(STORAGE_KEY, false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [isMobileColumns, setIsMobileColumns] = useState(false)
   const { cols, setCols } = useSettings()
   const { user, logout } = useAuth()
 
   const sidebarClass = [styles.sidebar, expanded ? styles.expanded : ''].filter(Boolean).join(' ')
+  const columnOptions = isMobileColumns ? MOBILE_COLUMN_OPTIONS : DESKTOP_COLUMN_OPTIONS
+  const activeCols = isMobileColumns ? Math.min(cols, 2) : cols
   const initials = user?.display_name
     ? user.display_name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
     : 'U'
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia === 'undefined') return
+    const media = window.matchMedia(MOBILE_COLUMNS_QUERY)
+    const handleChange = () => setIsMobileColumns(media.matches)
+
+    handleChange()
+    media.addEventListener?.('change', handleChange)
+    return () => media.removeEventListener?.('change', handleChange)
+  }, [])
 
   return (
     <aside className={sidebarClass}>
@@ -167,12 +183,13 @@ export default function AsideHeader() {
             <div className={styles.settingsRow}>
               <span className={styles.settingsLabel}>Колонки</span>
               <div className={styles.colsPicker}>
-                {[1, 2, 3, 4, 5, 6, 7].map(n => (
+                {columnOptions.map(n => (
                   <button
                     type="button"
                     key={n}
-                    className={[styles.colsBtn, cols === n ? styles.colsBtnActive : ''].filter(Boolean).join(' ')}
+                    className={[styles.colsBtn, activeCols === n ? styles.colsBtnActive : ''].filter(Boolean).join(' ')}
                     onClick={() => setCols(n)}
+                    aria-pressed={activeCols === n}
                   >
                     {n}
                   </button>
