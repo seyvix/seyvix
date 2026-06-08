@@ -99,7 +99,7 @@ export default function AsideHeader() {
           {user?.telegram_photo_url && (
             <img
               className={styles.avatarImage}
-              src={user.avatar_url ?? user.telegram_photo_url}
+              src={ user.telegram_photo_url ?? user.avatar_url}
               alt=""
               referrerPolicy="no-referrer"
               onError={event => { event.currentTarget.hidden = true }}
