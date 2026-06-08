@@ -675,48 +675,15 @@ class SnapshotArtifactGenerator:
         finally:
             frame_doc.close()
 
-        doc = fitz.open()
-        try:
-            page = doc.new_page(width=frame_pix.width, height=frame_pix.height)
-            rect = fitz.Rect(0, 0, frame_pix.width, frame_pix.height)
-            page.insert_image(rect, stream=frame_pix.tobytes("jpeg"))
-            center = fitz.Point(frame_pix.width / 2, frame_pix.height / 2)
-            radius = max(18, min(frame_pix.width, frame_pix.height) * 0.13)
-            page.draw_circle(
-                center,
-                radius,
-                color=(1, 1, 1),
-                fill=(0, 0, 0),
-                width=2,
-                stroke_opacity=0.9,
-                fill_opacity=0.42,
-            )
-            triangle = [
-                fitz.Point(center.x - radius * 0.28, center.y - radius * 0.46),
-                fitz.Point(center.x - radius * 0.28, center.y + radius * 0.46),
-                fitz.Point(center.x + radius * 0.5, center.y),
-            ]
-            page.draw_polyline(
-                triangle,
-                color=(1, 1, 1),
-                fill=(1, 1, 1),
-                width=1,
-                closePath=True,
-                stroke_opacity=0.96,
-                fill_opacity=0.96,
-            )
-            pix = page.get_pixmap(alpha=False)
-            path = output_dir / filename
-            pix.save(str(path))
-            return GeneratedArtifact(
-                filename=filename,
-                mime_type="image/jpeg",
-                path=path,
-                width=pix.width,
-                height=pix.height,
-            )
-        finally:
-            doc.close()
+        path = output_dir / filename
+        frame_pix.save(str(path))
+        return GeneratedArtifact(
+            filename=filename,
+            mime_type="image/jpeg",
+            path=path,
+            width=frame_pix.width,
+            height=frame_pix.height,
+        )
 
     @staticmethod
     def _thumbnail_zoom(*, width: float, height: float) -> float:

@@ -5,6 +5,10 @@ export function getObjectPreviewSource(obj: NoteObject): string {
   return obj.thumbnailUrl || obj.cover || obj.content
 }
 
+export function shouldShowVideoPreviewOverlay(obj: NoteObject): boolean {
+  return obj.type === 'video'
+}
+
 export function getObjectDisplayText(obj: NoteObject, maxLength = 180): string {
   const text = stripTelegramEmojiMarkers(obj.thumbnailText || obj.content)
   if (text.length <= maxLength) return text

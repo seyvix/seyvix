@@ -290,6 +290,49 @@
     linear-gradient(145deg, rgba(34, 41, 58, 0.95), rgba(11, 13, 20, 0.95));
 }
 
+.videoPreviewFrame {
+  position: relative;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.videoPreviewImage {
+  width: 100%;
+  height: 100%;
+  object-fit: inherit;
+  display: block;
+  border-radius: inherit;
+}
+
+.videoPreviewOverlay {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 2;
+  width: clamp(42px, 20%, 68px);
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  opacity: 0.65;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+
+.videoPreviewGradientDefs {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+.videoPreviewIcon {
+  width: 100%;
+  height: 100%;
+  filter:
+    drop-shadow(0 1px 5px rgba(0, 0, 0, 0.46))
+    drop-shadow(0 0 10px rgba(24, 194, 229, 0.24));
+}
+
 .filePlaceholder {
   background:
     linear-gradient(145deg, rgba(37, 41, 49, 0.98), rgba(15, 17, 22, 0.98)),

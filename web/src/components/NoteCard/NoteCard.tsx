@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useCallback, type CSSProperties, type ReactNode } from 'react'
+import { useRef, useState, useEffect, useCallback, useId, type CSSProperties, type ReactNode } from 'react'
 import { Link } from 'react-router'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -51,7 +51,7 @@ import { useUpdateNote } from '../../hooks/useUpdateNote'
 import { useDragContext } from '../../contexts/DragContext'
 import { useUploadContext } from '../../contexts/UploadContext'
 import { partitionUploadFiles } from '../../utils/uploadGuard'
-import { getObjectDisplayMarkdown, getObjectDisplayText, getObjectPreviewSource } from '../../utils/notePreview'
+import { getObjectDisplayMarkdown, getObjectDisplayText, getObjectPreviewSource, shouldShowVideoPreviewOverlay } from '../../utils/notePreview'
 import {
   chooseCardRatioObject,
   chooseCompositeCardVisualObject,
@@ -181,13 +181,39 @@ function MediaPlaceholder({ type, className, label }: { type: 'audio' | 'video' 
   )
 }
 
+function VideoPreviewOverlay() {
+  const gradientId = `video-preview-gradient-${useId().replace(/:/g, '')}`
+
+  return (
+    <span className={styles.videoPreviewOverlay} aria-hidden="true">
+      <svg className={styles.videoPreviewGradientDefs} width="0" height="0" focusable="false">
+        <linearGradient id={gradientId} x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#5539e2" />
+          <stop offset="54%" stopColor="#388ce3" />
+          <stop offset="100%" stopColor="#18c2e5" />
+        </linearGradient>
+      </svg>
+      <Video className={styles.videoPreviewIcon} size={34} stroke={`url(#${gradientId})`} strokeWidth={2.25} />
+    </span>
+  )
+}
+
+function VideoPreviewFrame({ src, className, style }: { src: string; className: string; style?: CSSProperties }) {
+  return (
+    <span className={`${styles.videoPreviewFrame} ${className}`} style={style}>
+      <AuthImage className={styles.videoPreviewImage} src={src} alt="" />
+      <VideoPreviewOverlay />
+    </span>
+  )
+}
+
 function SimpleVisual({ obj }: { obj: NoteObject }) {
   if (obj.type === 'image') {
     return <AuthImage className={styles.simpleImageMedia} src={getObjectPreviewSource(obj)} alt="" />
   }
   if (obj.type === 'video') {
     return obj.thumbnailUrl
-      ? <AuthImage className={styles.simpleImageMedia} src={obj.thumbnailUrl} alt="" />
+      ? <VideoPreviewFrame className={styles.simpleImageMedia} src={obj.thumbnailUrl} />
       : <MediaPlaceholder type="video" className={styles.simpleImageMedia} />
   }
   if (obj.type === 'document') {
@@ -392,7 +418,7 @@ function LayerContent({ obj, fallback }: { obj: NoteObject | undefined; fallback
   }
   if (obj.type === 'video') {
     const thumb = obj.thumbnailUrl ?? null
-    if (thumb) return <AuthImage src={thumb} alt="" className={styles.collectionLayerImg} />
+    if (thumb) return <VideoPreviewFrame src={thumb} className={styles.collectionLayerImg} />
     return <MediaPlaceholder type="video" className={styles.collectionLayerBg} />
   }
   if (obj.type === 'audio') {
@@ -453,8 +479,8 @@ function MultiObjectPreview({ visualObjs, fallback }: { visualObjs: NoteObject[]
     const obj = visualObjs[0]
     if (obj.type === 'image') {
       return <AuthImage src={getObjectPreviewSource(obj)} alt="" className={styles.collectionSingle} />
-    } else if (obj.type === 'video' && obj.thumbnailUrl) {
-      return <AuthImage src={obj.thumbnailUrl} alt="" className={styles.collectionSingle} />
+    } else if (shouldShowVideoPreviewOverlay(obj) && obj.thumbnailUrl) {
+      return <VideoPreviewFrame src={obj.thumbnailUrl} className={styles.collectionSingle} />
     } else if (obj.type === 'audio') {
       return (
         <div className={styles.collectionSingleNonImage}>
@@ -484,8 +510,8 @@ function MultiObjectPreview({ visualObjs, fallback }: { visualObjs: NoteObject[]
         {visualObjs.map(obj => (
           obj.type === 'image'
             ? <AuthImage key={obj.id} src={getObjectPreviewSource(obj)} alt="" className={styles.collectionPairImg} />
-            : obj.type === 'video' && obj.thumbnailUrl
-              ? <AuthImage key={obj.id} src={obj.thumbnailUrl} alt="" className={styles.collectionPairImg} />
+            : shouldShowVideoPreviewOverlay(obj) && obj.thumbnailUrl
+              ? <VideoPreviewFrame key={obj.id} src={obj.thumbnailUrl} className={styles.collectionPairImg} />
             : obj.type === 'audio'
               ? <div key={obj.id} className={styles.collectionPairSlot}>
                   <MediaPlaceholder type="audio" className={styles.collectionLayerBg} />
@@ -633,7 +659,7 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
           ? <AuthImage src={getObjectPreviewSource(imageObj)} alt="" className={styles.compositeCoverImg} />
           : videoObj
             ? videoThumb
-              ? <AuthImage src={videoThumb} alt="" className={styles.compositeCoverImg} />
+              ? <VideoPreviewFrame src={videoThumb} className={styles.compositeCoverImg} />
               : <MediaPlaceholder type="video" className={styles.compositeCoverEmpty} />
           : audioObj
             ? <MediaPlaceholder type="audio" className={styles.compositeCoverEmpty} />

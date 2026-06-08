@@ -343,6 +343,15 @@ def test_snapshot_generator_creates_video_thumbnail_from_first_frame(
     assert thumbnail.mime_type == "image/jpeg"
     assert thumbnail.path.read_bytes().startswith(b"\xff\xd8\xff")
 
+    import fitz
+
+    pixmap = fitz.Pixmap(str(thumbnail.path))
+    center = ((pixmap.height // 2) * pixmap.width + (pixmap.width // 2)) * pixmap.n
+    red, green, blue = pixmap.samples[center:center + 3]
+    assert abs(red - 60) < 12
+    assert abs(green - 100) < 12
+    assert abs(blue - 180) < 12
+
 
 def test_snapshot_generator_creates_jpeg_thumbnail_for_csv_preview(tmp_path: Path) -> None:
     storage_root = tmp_path / "storage"
