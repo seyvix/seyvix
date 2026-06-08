@@ -30,6 +30,7 @@ import {
   suggestCategoryProfile,
   updateCategory,
   updateCategoryProfile,
+  updateTaxonomySettings,
 } from '../api/folders'
 import { useFolder } from '../hooks/useFolder'
 import { useFolders } from '../hooks/useFolders'
@@ -88,6 +89,27 @@ function formToProfile(form: ReturnType<typeof profileFormFrom>) {
     keywords: textToList(form.keywords),
     positiveExamples: textToList(form.positiveExamples),
     negativeExamples: textToList(form.negativeExamples),
+  }
+}
+
+type CategoryProfileForm = ReturnType<typeof profileFormFrom>
+type CreateProfileMode = 'manual' | 'ai'
+
+function hasProfileFormContent(form: CategoryProfileForm): boolean {
+  return Boolean(
+    form.summary.trim()
+    || form.keywords.trim()
+    || form.positiveExamples.trim()
+    || form.negativeExamples.trim(),
+  )
+}
+
+function profileFromDraft(draft: CategoryProfileDraft) {
+  return {
+    summary: draft.summary,
+    keywords: draft.keywords,
+    positiveExamples: draft.positiveExamples,
+    negativeExamples: draft.negativeExamples,
   }
 }
 
@@ -190,6 +212,24 @@ function CategoryCard({ category }: { category: Folder }) {
   )
 }
 
+function formatFolderNoteDate(note: FolderNoteSummary): string {
+  const rawDate = note.updatedAt || note.createdAt
+  if (!rawDate) return 'Дата неизвестна'
+
+  const date = new Date(rawDate)
+  if (Number.isNaN(date.getTime())) return 'Дата неизвестна'
+
+  return date.toLocaleDateString('ru-RU', {
+    day: 'numeric',
+    month: 'short',
+    year: date.getFullYear() === new Date().getFullYear() ? undefined : 'numeric',
+  })
+}
+
+function getFolderNoteTitle(note: FolderNoteSummary): string {
+  return note.title.trim() || 'Без заголовка'
+}
+
 function NoteRow({ note, selectedPath }: { note: FolderNoteSummary; selectedPath: string }) {
   const notePath = note.taxonomyCategory?.path
   const isNested = Boolean(notePath && notePath !== selectedPath)
@@ -198,8 +238,8 @@ function NoteRow({ note, selectedPath }: { note: FolderNoteSummary; selectedPath
     <Link to={`/notes/${note.slug}`} className={styles.noteRow}>
       <span className={styles.noteIcon}><FileText size={15} strokeWidth={1.8} /></span>
       <span className={styles.noteBody}>
-        <strong>{note.title}</strong>
-        <small>{new Date(note.updatedAt).toLocaleDateString('ru-RU')}</small>
+        <strong className={note.title.trim() ? undefined : styles.noteTitleMuted}>{getFolderNoteTitle(note)}</strong>
+        <small>{formatFolderNoteDate(note)}</small>
       </span>
       {isNested && <span className={styles.noteCategory}>{notePath}</span>}
       <ArrowRight size={14} strokeWidth={1.8} />
@@ -222,6 +262,146 @@ function ProfileList({ title, values }: { title: string; values: string[] }) {
   )
 }
 
+function CategoryCreateForm({
+  title,
+  name,
+  description,
+  profileMode,
+  profileForm,
+  aiGuidance,
+  profileEditingEnabled,
+  isPending,
+  onNameChange,
+  onDescriptionChange,
+  onProfileModeChange,
+  onProfileFormChange,
+  onAiGuidanceChange,
+  onSubmit,
+}: {
+  title: string
+  name: string
+  description: string
+  profileMode: CreateProfileMode
+  profileForm: CategoryProfileForm
+  aiGuidance: string
+  profileEditingEnabled: boolean
+  isPending: boolean
+  onNameChange: (value: string) => void
+  onDescriptionChange: (value: string) => void
+  onProfileModeChange: (value: CreateProfileMode) => void
+  onProfileFormChange: (field: keyof CategoryProfileForm, value: string) => void
+  onAiGuidanceChange: (value: string) => void
+  onSubmit: () => void
+}) {
+  const canSubmit = Boolean(name.trim()) && !isPending
+
+  return (
+    <div className={styles.createPanel}>
+      <div className={styles.createPanelHeader}>
+        <div>
+          <strong>{title}</strong>
+          <span>{profileEditingEnabled ? 'Можно сразу задать LLM-профиль.' : 'Профили будут включены при создании с ручным или ИИ-заполнением.'}</span>
+        </div>
+        <div className={styles.segmentedControl} aria-label="Способ заполнения профиля">
+          <button
+            type="button"
+            className={profileMode === 'manual' ? styles.segmentActive : ''}
+            onClick={() => onProfileModeChange('manual')}
+          >
+            Вручную
+          </button>
+          <button
+            type="button"
+            className={profileMode === 'ai' ? styles.segmentActive : ''}
+            onClick={() => onProfileModeChange('ai')}
+          >
+            <Sparkles size={13} strokeWidth={1.8} />
+            ИИ
+          </button>
+        </div>
+      </div>
+
+      <div className={styles.createBaseGrid}>
+        <label>
+          <span>Название</span>
+          <input
+            value={name}
+            onChange={event => onNameChange(event.target.value)}
+            placeholder="Например: ML-инференс"
+          />
+        </label>
+        <label>
+          <span>Короткое описание</span>
+          <input
+            value={description}
+            onChange={event => onDescriptionChange(event.target.value)}
+            placeholder="Для дерева и контекста"
+          />
+        </label>
+      </div>
+
+      {profileMode === 'manual' && (
+        <div className={styles.createProfileGrid}>
+          <label className={styles.createProfileSummary}>
+            <span>Summary</span>
+            <textarea
+              value={profileForm.summary}
+              onChange={event => onProfileFormChange('summary', event.target.value)}
+              placeholder="Что должно попадать в эту категорию и где её границы."
+            />
+          </label>
+          <label>
+            <span>Keywords</span>
+            <textarea
+              value={profileForm.keywords}
+              onChange={event => onProfileFormChange('keywords', event.target.value)}
+              placeholder="По одному на строку или через запятую"
+            />
+          </label>
+          <label>
+            <span>Positive examples</span>
+            <textarea
+              value={profileForm.positiveExamples}
+              onChange={event => onProfileFormChange('positiveExamples', event.target.value)}
+              placeholder="Что точно подходит"
+            />
+          </label>
+          <label>
+            <span>Negative examples</span>
+            <textarea
+              value={profileForm.negativeExamples}
+              onChange={event => onProfileFormChange('negativeExamples', event.target.value)}
+              placeholder="Что не должно попадать"
+            />
+          </label>
+        </div>
+      )}
+
+      {profileMode === 'ai' && (
+        <label className={styles.aiCreateBox}>
+          <span>Инструкция для ИИ</span>
+          <textarea
+            value={aiGuidance}
+            onChange={event => onAiGuidanceChange(event.target.value)}
+            placeholder="Опишите назначение категории, похожие материалы и что нужно отсекать. После создания профиль будет заполнен ИИ."
+          />
+        </label>
+      )}
+
+      <div className={styles.createActions}>
+        <button
+          className={styles.primaryAction}
+          disabled={!canSubmit}
+          onClick={onSubmit}
+        >
+          {profileMode === 'ai' ? <Sparkles size={15} strokeWidth={1.8} /> : <Check size={15} strokeWidth={1.8} />}
+          {isPending ? 'Создаю...' : profileMode === 'ai' ? 'Создать с ИИ' : 'Создать'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export default function FoldersPage() {
   const { '*': selectedPath = '' } = useParams()
   const navigate = useNavigate()
@@ -234,6 +414,10 @@ export default function FoldersPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [createName, setCreateName] = useState('')
   const [createDescription, setCreateDescription] = useState('')
+  const [createProfileMode, setCreateProfileMode] = useState<CreateProfileMode>('manual')
+  const [createProfileForm, setCreateProfileForm] = useState<CategoryProfileForm>(() => profileFormFrom(undefined))
+  const [createAiGuidance, setCreateAiGuidance] = useState('')
+  const [createProfileWarning, setCreateProfileWarning] = useState<string | null>(null)
   const [renameOpen, setRenameOpen] = useState(false)
   const [renameName, setRenameName] = useState('')
   const [moreOpen, setMoreOpen] = useState(false)
@@ -281,16 +465,57 @@ export default function FoldersPage() {
     onSuccess: (draft) => setProfileDraft(draft),
   })
   const createCategoryMutation = useMutation({
-    mutationFn: () => createCategory({
-      name: createName,
-      parentId: selectedCategory?.id ?? null,
-      description: createDescription,
-    }),
-    onSuccess: async (category) => {
+    onMutate: () => {
+      setCreateProfileWarning(null)
+    },
+    mutationFn: async () => {
+      const category = await createCategory({
+        name: createName,
+        parentId: selectedCategory?.id ?? null,
+        description: createDescription,
+      })
+
+      const wantsManualProfile = createProfileMode === 'manual' && hasProfileFormContent(createProfileForm)
+      const wantsAiProfile = createProfileMode === 'ai'
+      if (!wantsManualProfile && !wantsAiProfile) return { category, profileWarning: null }
+
+      try {
+        if (!profileEditingAllowed) {
+          const settings = await updateTaxonomySettings({ categoryProfileEditingEnabled: true })
+          queryClient.setQueryData(['taxonomy-settings'], settings)
+        }
+
+        if (wantsManualProfile) {
+          await updateCategoryProfile(category.id, formToProfile(createProfileForm))
+        }
+        if (wantsAiProfile) {
+          const guidance = createAiGuidance.trim() || createDescription.trim() || createName.trim()
+          const draft = await suggestCategoryProfile(category.id, guidance)
+          await updateCategoryProfile(category.id, profileFromDraft(draft))
+        }
+      } catch {
+        return {
+          category,
+          profileWarning: createProfileMode === 'ai'
+            ? 'Категория создана, но ИИ-профиль не удалось заполнить.'
+            : 'Категория создана, но профиль не удалось сохранить.',
+        }
+      }
+
+      return { category, profileWarning: null }
+    },
+    onSuccess: async ({ category, profileWarning }) => {
       setCreateOpen(false)
       setCreateName('')
       setCreateDescription('')
+      setCreateProfileMode('manual')
+      setCreateProfileForm(profileFormFrom(undefined))
+      setCreateAiGuidance('')
+      setCreateProfileWarning(profileWarning)
       await queryClient.invalidateQueries({ queryKey: ['folders'] })
+      if (!profileWarning) {
+        await queryClient.invalidateQueries({ queryKey: ['category-profile', category.id] })
+      }
       navigate(categoryUrl(category.path))
     },
   })
@@ -353,6 +578,9 @@ export default function FoldersPage() {
     setCreateOpen(false)
     setCreateName('')
     setCreateDescription('')
+    setCreateProfileMode('manual')
+    setCreateProfileForm(profileFormFrom(undefined))
+    setCreateAiGuidance('')
   }, [profile, selectedCategory?.id])
 
   useEffect(() => {
@@ -373,6 +601,10 @@ export default function FoldersPage() {
 
   function updateProfileForm(field: keyof ReturnType<typeof profileFormFrom>, value: string) {
     setProfileForm(prev => ({ ...prev, [field]: value }))
+  }
+
+  function updateCreateProfileForm(field: keyof CategoryProfileForm, value: string) {
+    setCreateProfileForm(prev => ({ ...prev, [field]: value }))
   }
 
   return (
@@ -446,28 +678,25 @@ export default function FoldersPage() {
                   </button>
                 </div>
                 {createOpen && (
-                  <div className={styles.categoryForm}>
-                    <input
-                      value={createName}
-                      onChange={event => setCreateName(event.target.value)}
-                      placeholder="Название"
-                    />
-                    <input
-                      value={createDescription}
-                      onChange={event => setCreateDescription(event.target.value)}
-                      placeholder="Описание"
-                    />
-                    <button
-                      className={styles.primaryAction}
-                      disabled={!createName.trim() || createCategoryMutation.isPending}
-                      onClick={() => createCategoryMutation.mutate()}
-                    >
-                      <Check size={15} strokeWidth={1.8} />
-                      Сохранить
-                    </button>
-                  </div>
+                  <CategoryCreateForm
+                    title="Создание корневой категории"
+                    name={createName}
+                    description={createDescription}
+                    profileMode={createProfileMode}
+                    profileForm={createProfileForm}
+                    aiGuidance={createAiGuidance}
+                    profileEditingEnabled={profileEditingAllowed}
+                    isPending={createCategoryMutation.isPending}
+                    onNameChange={setCreateName}
+                    onDescriptionChange={setCreateDescription}
+                    onProfileModeChange={setCreateProfileMode}
+                    onProfileFormChange={updateCreateProfileForm}
+                    onAiGuidanceChange={setCreateAiGuidance}
+                    onSubmit={() => createCategoryMutation.mutate()}
+                  />
                 )}
                 {createCategoryMutation.isError && <div className={styles.stateError}>Не удалось создать категорию.</div>}
+                {createProfileWarning && <div className={styles.stateError}>{createProfileWarning}</div>}
               </div>
 
               <div className={styles.sectionHeader}>
@@ -487,7 +716,19 @@ export default function FoldersPage() {
               <div className={styles.detailHeader}>
                 <div>
                   <Breadcrumbs category={selectedCategory} />
-                  <h2>{selectedCategory.name}</h2>
+                  <div className={styles.detailTitleRow}>
+                    <h2>{selectedCategory.name}</h2>
+                    {selectedCategory.path === 'inbox' && (
+                      <button
+                        className={[styles.secondaryAction, styles.reclassifyAction].join(' ')}
+                        disabled={reclassify.isPending}
+                        onClick={() => reclassify.mutate()}
+                      >
+                        <Layers3 size={15} strokeWidth={1.8} />
+                        {reclassify.isPending ? 'Запускаю...' : 'Перераспределить'}
+                      </button>
+                    )}
+                  </div>
                   <p>{selectedCategory.path}</p>
                 </div>
                 <div className={styles.detailHeaderActions}>
@@ -502,16 +743,52 @@ export default function FoldersPage() {
                     <FileText size={16} strokeWidth={1.8} />
                     Заметки
                   </Link>
-                  {selectedCategory.path === 'inbox' && (
-                  <button
-                    className={styles.secondaryAction}
-                    disabled={reclassify.isPending}
-                    onClick={() => reclassify.mutate()}
-                  >
-                    <Layers3 size={16} strokeWidth={1.8} />
-                    {reclassify.isPending ? 'Запускаю...' : 'Перераспределить'}
-                  </button>
-                  )}
+                  <div className={styles.moreMenuWrap}>
+                    <button className={styles.secondaryAction} onClick={() => setMoreOpen(value => !value)}>
+                      <MoreHorizontal size={15} strokeWidth={1.8} />
+                      Ещё
+                    </button>
+                    {moreOpen && (
+                      <div className={styles.moreMenu}>
+                        <button
+                          onClick={() => {
+                            setCreateOpen(value => !value)
+                            setMoreOpen(false)
+                          }}
+                        >
+                          <Plus size={15} strokeWidth={1.8} />
+                          Подкатегория
+                        </button>
+                        <button
+                          onClick={() => {
+                            setRenameOpen(value => !value)
+                            setMoreOpen(false)
+                          }}
+                        >
+                          <Edit3 size={15} strokeWidth={1.8} />
+                          Переименовать
+                        </button>
+                        <button
+                          disabled={selectedCategory.path === 'inbox' || archiveCategoryMutation.isPending}
+                          onClick={() => archiveCategoryMutation.mutate()}
+                        >
+                          <Archive size={15} strokeWidth={1.8} />
+                          Архивировать
+                        </button>
+                        <button
+                          className={styles.moreDanger}
+                          disabled={selectedCategory.path === 'inbox' || deleteCategoryMutation.isPending}
+                          onClick={() => {
+                            setDeleteOpen(value => !value)
+                            setMoreOpen(false)
+                          }}
+                        >
+                          <X size={15} strokeWidth={1.8} />
+                          Удалить
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -536,67 +813,25 @@ export default function FoldersPage() {
               )}
 
               <div className={styles.managementPanel}>
-                <div className={styles.managementActions}>
-                  <button className={styles.secondaryAction} onClick={() => setCreateOpen(value => !value)}>
-                    <Plus size={15} strokeWidth={1.8} />
-                    Подкатегория
-                  </button>
-                  <button className={styles.secondaryAction} onClick={() => setRenameOpen(value => !value)}>
-                    <Edit3 size={15} strokeWidth={1.8} />
-                    Переименовать
-                  </button>
-                  <div className={styles.moreMenuWrap}>
-                    <button className={styles.secondaryAction} onClick={() => setMoreOpen(value => !value)}>
-                      <MoreHorizontal size={15} strokeWidth={1.8} />
-                      Ещё
-                    </button>
-                    {moreOpen && (
-                      <div className={styles.moreMenu}>
-                        <button
-                          disabled={selectedCategory.path === 'inbox' || archiveCategoryMutation.isPending}
-                          onClick={() => archiveCategoryMutation.mutate()}
-                        >
-                          <Archive size={15} strokeWidth={1.8} />
-                          Архивировать
-                        </button>
-                        <button
-                          className={styles.moreDanger}
-                          disabled={selectedCategory.path === 'inbox' || deleteCategoryMutation.isPending}
-                          onClick={() => {
-                            setDeleteOpen(value => !value)
-                            setMoreOpen(false)
-                          }}
-                        >
-                          <X size={15} strokeWidth={1.8} />
-                          Удалить
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
                 {createOpen && (
-                  <div className={styles.categoryForm}>
-                    <input
-                      value={createName}
-                      onChange={event => setCreateName(event.target.value)}
-                      placeholder="Название подкатегории"
-                    />
-                    <input
-                      value={createDescription}
-                      onChange={event => setCreateDescription(event.target.value)}
-                      placeholder="Описание"
-                    />
-                    <button
-                      className={styles.primaryAction}
-                      disabled={!createName.trim() || createCategoryMutation.isPending}
-                      onClick={() => createCategoryMutation.mutate()}
-                    >
-                      <Check size={15} strokeWidth={1.8} />
-                      Создать
-                    </button>
-                  </div>
+                  <CategoryCreateForm
+                    title={`Подкатегория внутри ${selectedCategory.name}`}
+                    name={createName}
+                    description={createDescription}
+                    profileMode={createProfileMode}
+                    profileForm={createProfileForm}
+                    aiGuidance={createAiGuidance}
+                    profileEditingEnabled={profileEditingAllowed}
+                    isPending={createCategoryMutation.isPending}
+                    onNameChange={setCreateName}
+                    onDescriptionChange={setCreateDescription}
+                    onProfileModeChange={setCreateProfileMode}
+                    onProfileFormChange={updateCreateProfileForm}
+                    onAiGuidanceChange={setCreateAiGuidance}
+                    onSubmit={() => createCategoryMutation.mutate()}
+                  />
                 )}
+                {createProfileWarning && <div className={styles.stateError}>{createProfileWarning}</div>}
 
                 {renameOpen && (
                   <div className={styles.categoryForm}>
