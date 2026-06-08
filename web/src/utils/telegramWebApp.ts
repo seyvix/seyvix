@@ -66,6 +66,7 @@ export interface TelegramWebApp {
 const TELEGRAM_SURFACE_COLOR = '#0f0f0f'
 const TELEGRAM_FULLSCREEN_RETRY_MS = 220
 const TELEGRAM_FULLSCREEN_MAX_ATTEMPTS = 4
+const TELEGRAM_FULLSCREEN_CONTROLS_TOP = 64
 const CSS_VAR_NAMES = [
   '--telegram-safe-area-top',
   '--telegram-safe-area-bottom',
@@ -256,6 +257,7 @@ function syncTelegramCssVariables(webApp: TelegramWebApp, root: HTMLElement | nu
     root,
     '--tg-content-safe-area-inset',
   )
+  const contentSafeAreaTop = resolveContentSafeAreaTop(webApp, safeArea.top, contentSafeArea.top)
   const viewportHeight =
     getPositiveNumber(webApp.viewportHeight) ??
     readCssPixel(root, '--tg-viewport-height') ??
@@ -269,7 +271,7 @@ function syncTelegramCssVariables(webApp: TelegramWebApp, root: HTMLElement | nu
   setCssPx(root, '--telegram-safe-area-bottom', safeArea.bottom)
   setCssPx(root, '--telegram-safe-area-left', safeArea.left)
   setCssPx(root, '--telegram-safe-area-right', safeArea.right)
-  setCssPx(root, '--telegram-content-safe-area-top', Math.max(safeArea.top, contentSafeArea.top))
+  setCssPx(root, '--telegram-content-safe-area-top', contentSafeAreaTop)
   setCssPx(
     root,
     '--telegram-content-safe-area-bottom',
@@ -287,6 +289,17 @@ function syncTelegramCssVariables(webApp: TelegramWebApp, root: HTMLElement | nu
   )
   setOptionalCssPx(root, '--telegram-viewport-height', viewportHeight)
   setOptionalCssPx(root, '--telegram-viewport-stable-height', viewportStableHeight)
+}
+
+function resolveContentSafeAreaTop(
+  webApp: TelegramWebApp,
+  safeAreaTop: number,
+  contentSafeAreaTop: number,
+): number {
+  const reportedTop = Math.max(safeAreaTop, contentSafeAreaTop)
+  if (!webApp.isFullscreen) return reportedTop
+
+  return Math.max(reportedTop, safeAreaTop + TELEGRAM_FULLSCREEN_CONTROLS_TOP)
 }
 
 export function resetTelegramCssVariables(root: HTMLElement): void {

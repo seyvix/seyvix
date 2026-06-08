@@ -79,7 +79,7 @@
   html[data-telegram-mini-app='true'][data-telegram-fullscreen='true'] .seyvixTelegramSafeAreaLogo {
     display: block;
     position: fixed;
-    top: max(6px, calc(var(--app-safe-area-top) / 2 - 13px));
+    top: max(6px, calc(var(--telegram-safe-area-top) / 2 - 13px));
     left: 50%;
     z-index: 90;
     width: 26px;
