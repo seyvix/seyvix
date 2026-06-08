@@ -44,7 +44,7 @@ import {
   type NoteDetailObjectModel,
   type NoteDetailSourceModel,
 } from '../utils/noteCardPresentation'
-import { parseMarkdownBlocks, type MarkdownBlock } from '../utils/markdownBlocks'
+import { parseMarkdownBlocks, toggleMarkdownTask, type MarkdownBlock } from '../utils/markdownBlocks'
 import AuthImage from '../components/AuthImage/AuthImage'
 import HtmlSnapshotViewer from '../components/HtmlSnapshotViewer/HtmlSnapshotViewer'
 import { LoaderSpinner } from '../components/LoaderSpinner'
@@ -681,7 +681,19 @@ function renderInlineMarkdown(text: string, source: NoteObject['source'] | null 
   return parts
 }
 
-function MarkdownBlockView({ block, source, index }: { block: MarkdownBlock; source?: NoteObject['source'] | null; index: number }) {
+function MarkdownBlockView({
+  block,
+  source,
+  index,
+  taskStartIndex = 0,
+  onTaskToggle,
+}: {
+  block: MarkdownBlock
+  source?: NoteObject['source'] | null
+  index: number
+  taskStartIndex?: number
+  onTaskToggle?: (taskIndex: number, checked: boolean) => void
+}) {
   const keyPrefix = `md-${index}`
   if (block.type === 'heading') {
     const Tag = `h${block.level}` as 'h1' | 'h2' | 'h3'
@@ -716,7 +728,13 @@ function MarkdownBlockView({ block, source, index }: { block: MarkdownBlock; sou
       <ul className={styles.markdownTaskList}>
         {block.items.map((item, itemIndex) => (
           <li key={itemIndex}>
-            <input type="checkbox" checked={item.checked} readOnly />
+            <input
+              type="checkbox"
+              checked={item.checked}
+              readOnly={!onTaskToggle}
+              onClick={event => event.stopPropagation()}
+              onChange={event => onTaskToggle?.(taskStartIndex + itemIndex, event.currentTarget.checked)}
+            />
             <span>{renderInlineMarkdown(item.text, source, `${keyPrefix}-task-${itemIndex}`)}</span>
           </li>
         ))}
@@ -733,11 +751,35 @@ function MarkdownBlockView({ block, source, index }: { block: MarkdownBlock; sou
   return <hr />
 }
 
-function MarkdownText({ text, source, className }: { text: string; source?: NoteObject['source'] | null; className?: string }) {
+function MarkdownText({
+  text,
+  source,
+  className,
+  onTaskToggle,
+}: {
+  text: string
+  source?: NoteObject['source'] | null
+  className?: string
+  onTaskToggle?: (taskIndex: number, checked: boolean) => void
+}) {
   const blocks = parseMarkdownBlocks(text)
+  let taskStartIndex = 0
   return (
     <div className={`${styles.markdownText}${className ? ` ${className}` : ''}`}>
-      {blocks.map((block, index) => <MarkdownBlockView key={index} block={block} source={source} index={index} />)}
+      {blocks.map((block, index) => {
+        const currentTaskStartIndex = taskStartIndex
+        if (block.type === 'taskList') taskStartIndex += block.items.length
+        return (
+          <MarkdownBlockView
+            key={index}
+            block={block}
+            source={source}
+            index={index}
+            taskStartIndex={currentTaskStartIndex}
+            onTaskToggle={onTaskToggle}
+          />
+        )
+      })}
     </div>
   )
 }
@@ -1103,10 +1145,11 @@ function ImageObj({
 // ─── Text ──────────────────────────────────────────────────────────────────────
 
 function TextObj({
-  obj, isEditing, editValue, onChangeEdit, onDelete,
+  obj, isEditing, editValue, onChangeEdit, onDelete, onToggleTask,
 }: {
   obj: NoteObject; isEditing: boolean; editValue: string
   onChangeEdit: (v: string) => void; onDelete: () => void
+  onToggleTask?: (taskIndex: number, checked: boolean) => void
 }) {
   if (isEditing) {
     return (
@@ -1122,7 +1165,12 @@ function TextObj({
   }
   return (
     <div className={styles.objWrapper}>
-      <MarkdownText className={styles.objText} text={obj.content} source={obj.source} />
+      <MarkdownText
+        className={styles.objText}
+        text={obj.content}
+        source={obj.source}
+        onTaskToggle={onToggleTask}
+      />
     </div>
   )
 }
@@ -1778,6 +1826,7 @@ function DetailStream({
   openViewerId,
   onOpenViewer,
   onTextChange,
+  onToggleTextTask,
   onRemove,
 }: {
   items: NoteDetailObjectModel[]
@@ -1787,6 +1836,7 @@ function DetailStream({
   openViewerId: string | null
   onOpenViewer: (id: string) => void
   onTextChange: (id: string, value: string) => void
+  onToggleTextTask: (obj: NoteObject, taskIndex: number, checked: boolean) => void
   onRemove: (id: string, slug?: string) => void
 }) {
   return (
@@ -1804,6 +1854,7 @@ function DetailStream({
                   editValue={editTexts[item.object.id] ?? item.object.content}
                   onChangeEdit={value => onTextChange(item.object.id, value)}
                   onDelete={() => onRemove(item.object.id, item.object.slug)}
+                  onToggleTask={(taskIndex, checked) => onToggleTextTask(item.object, taskIndex, checked)}
                 />
                 {isEditing && !canEditText && (
                   <button className={styles.objDeleteBtn} onClick={() => onRemove(item.object.id, item.object.slug)}>
@@ -1914,6 +1965,32 @@ export default function NotePage() {
     setIsEditing(false)
   }
 
+  function toggleTextTask(obj: NoteObject, taskIndex: number, checked: boolean) {
+    if (!note) return
+    const nextContent = toggleMarkdownTask(obj.content, taskIndex, checked)
+    if (nextContent === obj.content) return
+    const nextObject = { ...obj, content: nextContent }
+    const nextNote = {
+      ...note,
+      objects: note.objects.map(item => (item.id === obj.id ? nextObject : item)),
+    }
+    queryClient.setQueryData(['note', routeNoteId], nextNote)
+    updateNote(
+      {
+        noteRef: obj.noteId ?? obj.slug ?? note.id,
+        data: { objects: [nextObject] },
+      },
+      {
+        onError: () => {
+          queryClient.invalidateQueries({ queryKey: ['note'] })
+        },
+        onSettled: () => {
+          queryClient.invalidateQueries({ queryKey: ['note'] })
+        },
+      },
+    )
+  }
+
   if (isLoading) return null
 
   if (!note) {
@@ -2017,6 +2094,7 @@ export default function NotePage() {
               openViewerId={openViewerId}
               onOpenViewer={setOpenViewerId}
               onTextChange={(id, value) => setEditTexts(p => ({ ...p, [id]: value }))}
+              onToggleTextTask={toggleTextTask}
               onRemove={(id, slug) => {
                 setDeletedObjs(p => new Set([...p, id]))
                 if (slug) setRemovedSlugs(p => new Set([...p, slug]))

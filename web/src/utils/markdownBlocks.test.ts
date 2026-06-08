@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { parseMarkdownBlocks } from './markdownBlocks.ts'
+import { parseMarkdownBlocks, toggleMarkdownTask } from './markdownBlocks.ts'
 
 test('markdown blocks parse headings, paragraphs and lists', () => {
   assert.deepEqual(parseMarkdownBlocks('# Title\n\nText **bold**\n\n- One\n- Two'), [
@@ -18,4 +18,18 @@ test('markdown blocks parse tasks, quotes, dividers and fenced code', () => {
     { type: 'divider' },
     { type: 'code', language: 'ts', text: 'const a = 1' },
   ])
+})
+
+test('toggleMarkdownTask updates only the requested task line', () => {
+  assert.equal(
+    toggleMarkdownTask('Intro\n\n- [ ] First\n- [x] Second\n\nDone', 1, false),
+    'Intro\n\n- [ ] First\n- [ ] Second\n\nDone',
+  )
+})
+
+test('toggleMarkdownTask preserves task marker spacing and bullet style', () => {
+  assert.equal(
+    toggleMarkdownTask('  * [ ] Nested-ish task', 0, true),
+    '  * [x] Nested-ish task',
+  )
 })

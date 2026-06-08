@@ -125,3 +125,17 @@ export function parseMarkdownBlocks(markdown: string): MarkdownBlock[] {
 
   return blocks
 }
+
+export function toggleMarkdownTask(markdown: string, taskIndex: number, checked: boolean): string {
+  let currentTaskIndex = 0
+  return markdown.replace(/\r\n/g, '\n').split('\n').map(line => {
+    const match = /^(\s*[-*]\s+\[)([ xX])(\]\s+.+)$/.exec(line)
+    if (!match) return line
+    if (currentTaskIndex !== taskIndex) {
+      currentTaskIndex += 1
+      return line
+    }
+    currentTaskIndex += 1
+    return `${match[1]}${checked ? 'x' : ' '}${match[3]}`
+  }).join('\n')
+}
