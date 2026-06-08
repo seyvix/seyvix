@@ -35,7 +35,6 @@ CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
 
 FROM dependencies AS build
 
-ENV NODE_OPTIONS=--max-old-space-size=384
 ENV VITE_BUILD_MINIFY=false
 
 COPY web/ ./
