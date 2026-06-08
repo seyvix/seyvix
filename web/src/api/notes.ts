@@ -1,4 +1,5 @@
 import { apiFetch } from '../lib/apiClient.ts'
+import { makeMarkdownTitle } from '../utils/markdownPaste.ts'
 import type { Note, NotesParams, RecommendedNote, UploadJob } from '../types'
 
 const BASE = '/api/v1/notes'
@@ -150,7 +151,7 @@ export async function startUploadJob(
     const uploadResult = await uploadRes.json()
     const fileIds: string[] = (uploadResult.files ?? []).map((f: { id: string }) => f.id)
 
-    const title = text.split('\n')[0].slice(0, 60) || files[0]?.name || ''
+    const title = makeMarkdownTitle(text) || files[0]?.name || ''
     const createRes = await apiFetch(BASE, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

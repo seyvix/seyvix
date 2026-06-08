@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { startUploadJob, fetchNote } from '../api/notes'
 import { useLocalNotes } from '../contexts/LocalNotesContext'
+import { makeMarkdownTitle } from '../utils/markdownPaste'
 import type { Note, NoteObject, NoteObjectType } from '../types'
 
 function makeTempId() {
@@ -37,7 +38,7 @@ export function useUploadFiles() {
         slug: stableKey,
         stableKey,
         type,
-        title: text?.split('\n')[0].slice(0, 60) || files[0]?.name || '',
+        title: text ? makeMarkdownTitle(text) : files[0]?.name || '',
         cover: fileObjects.find(o => o.type === 'image')?.content ?? null,
         tags: [],
         taxonomyCategory: null,

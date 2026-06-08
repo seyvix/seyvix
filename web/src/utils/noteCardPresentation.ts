@@ -101,7 +101,7 @@ export function stripTelegramEmojiMarkers(text: string): string {
 
 const TITLE_LINK_RE = /\[([^\]]+)\]\([^)]+\)/g
 const TITLE_INLINE_TAG_RE = /<\/?(?:u|b|i|s|em|strong|code|tg-spoiler)\b[^>]*>/gi
-const TITLE_CUSTOM_EMOJI_RE = /\{\{tg_emoji:[0-9]+\|[^}]+\}\}\s*/g
+const TITLE_CUSTOM_EMOJI_RE = /\{\{tg_emoji:[0-9]+\|([^}]+)\}\}/g
 const TITLE_MARKERS: Array<[RegExp, string]> = [
   [/^\s{0,3}#{1,6}\s+/g, ''],
   [/^\s{0,3}>\s+/g, ''],
@@ -115,7 +115,7 @@ const TITLE_MARKERS: Array<[RegExp, string]> = [
 
 export function cleanDisplayTitle(value: string): string {
   let text = value.replace(/\r|\n/g, ' ')
-  text = text.replace(TITLE_CUSTOM_EMOJI_RE, '')
+  text = text.replace(TITLE_CUSTOM_EMOJI_RE, '$1')
   text = text.replace(TITLE_LINK_RE, '$1')
   text = text.replace(TITLE_INLINE_TAG_RE, '')
   for (const [pattern, replacement] of TITLE_MARKERS) {

@@ -174,7 +174,7 @@ test('saved date label uses relative labels for recent notes', () => {
 test('display titles strip markdown and telegram custom emoji markers', () => {
   assert.equal(
     cleanDisplayTitle('{{tg_emoji:5296452815005185363|⚡}} **За слово «обезьяна»**'),
-    'За слово «обезьяна»',
+    '⚡ За слово «обезьяна»',
   )
   assert.equal(cleanDisplayTitle('**Последнее время я всё больше углубляюсь в музыку.**'), 'Последнее время я всё больше углубляюсь в музыку.')
 })

@@ -91,12 +91,16 @@ def _optional_string(value: Any) -> str | None:
 
 
 _TITLE_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
+_TITLE_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\([^)]+\)")
+_TITLE_CUSTOM_EMOJI_RE = re.compile(r"\{\{tg_emoji:[0-9]+\|([^}]+)\}\}")
 _TITLE_INLINE_TAG_RE = re.compile(
     r"</?(?:u|b|i|s|em|strong|code|tg-spoiler)\b[^>]*>",
     re.IGNORECASE,
 )
 _TITLE_HEADING_PREFIX_RE = re.compile(r"^\s{0,3}#{1,6}\s+")
 _TITLE_BLOCKQUOTE_PREFIX_RE = re.compile(r"^\s{0,3}>\s+")
+_TITLE_TASK_PREFIX_RE = re.compile(r"^\s{0,3}[-*+]\s+\[[ xX]\]\s+")
+_TITLE_LIST_PREFIX_RE = re.compile(r"^\s{0,3}[-*+]\s+")
 _TITLE_BOLD_STAR_RE = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
 _TITLE_BOLD_UNDERSCORE_RE = re.compile(r"__(.+?)__", re.DOTALL)
 _TITLE_STRIKE_RE = re.compile(r"~~(.+?)~~", re.DOTALL)
@@ -110,12 +114,17 @@ _TITLE_INLINE_CODE_RE = re.compile(r"`+([^`]+?)`+")
 def _strip_title_markdown(value: str) -> str:
     """Remove common Markdown / Telegram entity markers from a single-line title.
 
-    Bold/italic/strike/code/link/heading/blockquote markers are unwrapped while
-    the textual content is preserved. Whitespace is collapsed.
+    Telegram custom emoji markers are replaced with their fallback emoji.
+    Bold/italic/strike/code/link/heading/blockquote/list markers are unwrapped
+    while the textual content is preserved. Whitespace is collapsed.
     """
     text = value.replace("\r", " ").replace("\n", " ")
+    text = _TITLE_CUSTOM_EMOJI_RE.sub(r"\1", text)
     text = _TITLE_HEADING_PREFIX_RE.sub("", text)
     text = _TITLE_BLOCKQUOTE_PREFIX_RE.sub("", text)
+    text = _TITLE_TASK_PREFIX_RE.sub("", text)
+    text = _TITLE_LIST_PREFIX_RE.sub("", text)
+    text = _TITLE_IMAGE_RE.sub(r"\1", text)
     text = _TITLE_LINK_RE.sub(r"\1", text)
     text = _TITLE_INLINE_TAG_RE.sub("", text)
     text = _TITLE_BOLD_STAR_RE.sub(r"\1", text)
@@ -128,14 +137,14 @@ def _strip_title_markdown(value: str) -> str:
 
 
 def _normalize_title(*candidates: str | None, max_length: int = 80) -> str:
-    """Pick the first non-empty candidate, strip Markdown markers, truncate."""
+    """Pick the first clean non-empty line from candidates and truncate."""
     for candidate in candidates:
         if not candidate:
             continue
-        cleaned = _strip_title_markdown(candidate)
-        if not cleaned:
-            continue
-        return cleaned[:max_length]
+        for line in str(candidate).splitlines():
+            cleaned = _strip_title_markdown(line)
+            if cleaned:
+                return cleaned[:max_length]
     return ""
 
 
@@ -741,7 +750,7 @@ class ContentService:
     ) -> NoteCardResponse:
         content_object = await self._load_note(owner_user_id=owner_user_id, slug=slug)
         if title is not None:
-            cleaned_title = _strip_title_markdown(title)[:80]
+            cleaned_title = _normalize_title(title)
             if cleaned_title:
                 content_object.title = cleaned_title
         if tag_names is not None:
@@ -1032,7 +1041,7 @@ class ContentService:
         folder_path: str | None,
         tag_names: list[str],
     ) -> NoteCardResponse:
-        normalized_title = _strip_title_markdown(title or text.strip().splitlines()[0])[:80]
+        normalized_title = _normalize_title(title, text) or "Новая заметка"
         slug = await self._unique_slug(owner_user_id, normalized_title)
         sort_order = await self._next_root_sort_order(owner_user_id=owner_user_id)
         content_object_id = str(uuid4())
@@ -1351,9 +1360,7 @@ class ContentService:
 
         first_file = files[0]
         file_media_type = self._media_type(first_file.filename, first_file.content_type)
-        first_line = next(iter((text or "").strip().splitlines()), "")
-        title_source = title if title is not None else first_line
-        normalized_title = _strip_title_markdown(title_source)[:80]
+        normalized_title = _normalize_title(title) if title is not None else _normalize_title(text)
         if not normalized_title and title is None:
             normalized_title = Path(first_file.filename).stem or "Telegram message"
         slug = await self._unique_slug(owner_user_id, normalized_title)
@@ -1562,7 +1569,7 @@ class ContentService:
 
         collection = await self._create_collection(
             owner_user_id=owner_user_id,
-            title=title or "Imported collection",
+            title=_normalize_title(title) or "Imported collection",
             folder_path=folder_path,
             tag_names=tag_names,
             object_id=object_id,
@@ -1599,9 +1606,7 @@ class ContentService:
     ) -> ContentObject:
         media_type = self._media_type(uploaded.filename, uploaded.content_type)
         kind = "complex" if media_type == "document" else "simple"
-        normalized_title = (
-            _strip_title_markdown(title)[:80] if title is not None else uploaded.filename
-        )
+        normalized_title = _normalize_title(title) if title is not None else uploaded.filename
         slug = await self._unique_slug(
             owner_user_id,
             Path(uploaded.filename).stem or normalized_title or "uploaded-file",
@@ -1806,14 +1811,15 @@ class ContentService:
         object_id: str | None = None,
         slug: str | None = None,
     ) -> ContentObject:
-        normalized_slug = slug or await self._unique_slug(owner_user_id, title)
+        normalized_title = _normalize_title(title) or "Imported collection"
+        normalized_slug = slug or await self._unique_slug(owner_user_id, normalized_title)
         sort_order = await self._next_root_sort_order(owner_user_id=owner_user_id)
         content_object_id = object_id or str(uuid4())
         collection = ContentObject(
             id=content_object_id,
             owner_user_id=owner_user_id,
             slug=normalized_slug,
-            title=title,
+            title=normalized_title,
             kind="collection",
             media_type=None,
             storage_path=f"content-assets/{content_object_id}",
@@ -1850,7 +1856,7 @@ class ContentService:
     ) -> ContentObject:
         if content_object.kind == "collection":
             if title:
-                content_object.title = title
+                content_object.title = _normalize_title(title) or content_object.title
             return content_object
 
         child_slug = await self._unique_slug(
