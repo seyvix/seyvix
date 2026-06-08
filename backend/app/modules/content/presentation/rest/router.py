@@ -28,6 +28,7 @@ from app.modules.content.schemas import (
     CreateNoteRequest,
     FavoriteNoteRequest,
     FolderTreeResponse,
+    LinkSnapshotDecisionRequest,
     MergeNotesRequest,
     NoteSort,
     RemoveCollectionItemsRequest,
@@ -459,6 +460,41 @@ async def update_note(
                 slug=note_slug,
                 title=payload.title,
                 tag_names=payload.tag_names,
+            )
+        )
+    except NoteNotFoundError as exc:
+        raise _not_found(exc) from exc
+
+
+@router.post(
+    "/notes/{note_slug}/link-snapshots/decision",
+    response_model=AppNote,
+    summary="Confirm deferred link snapshot processing",
+    description=(
+        "Accepts or rejects snapshot processing for links that were left only in the "
+        "text body after the automatic three-link limit."
+    ),
+    responses={
+        200: {"description": "Updated note returned."},
+        401: {
+            "model": ErrorResponse,
+            "description": "Missing or invalid access token.",
+        },
+        404: {"model": ErrorResponse, "description": "Note not found."},
+    },
+)
+async def decide_link_snapshots(
+    note_slug: str,
+    payload: LinkSnapshotDecisionRequest,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[ContentService, Depends(get_content_service)],
+) -> AppNote:
+    try:
+        return note_card_to_app_note(
+            await service.decide_deferred_link_snapshots(
+                owner_user_id=context.user.id,
+                slug=note_slug,
+                decision=payload.decision,
             )
         )
     except NoteNotFoundError as exc:

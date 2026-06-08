@@ -47,6 +47,19 @@ export async function fetchNote(noteRef: string): Promise<Note> {
   return (await res.json()) as Note
 }
 
+export async function decideDeferredLinkSnapshots(
+  noteRef: string,
+  decision: 'accept' | 'reject',
+): Promise<Note> {
+  const res = await apiFetch(`${BASE}/${encodeURIComponent(noteRef)}/link-snapshots/decision`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ decision }),
+  })
+  if (!res.ok) throw new Error('Failed to update link snapshot decision')
+  return (await res.json()) as Note
+}
+
 export async function createNote(data: Partial<Note>): Promise<Note> {
   const textObj = data.objects?.find(o => o.type === 'text')
   const backendPayload = {

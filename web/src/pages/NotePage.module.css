@@ -295,6 +295,7 @@
 }
 
 .overviewPanel,
+.deferredLinksPanel,
 .enrichmentPanel {
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: var(--radius-md);
@@ -306,6 +307,87 @@
 
 .overviewPanel {
   padding: 14px;
+}
+
+.deferredLinksPanel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.deferredLinksHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text-primary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+}
+
+.deferredLinksHeader svg {
+  color: #fbbf24;
+}
+
+.deferredLinksPanel p {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
+}
+
+.deferredLinksActions {
+  display: flex;
+  gap: 8px;
+}
+
+.deferredLinksAccept,
+.deferredLinksReject {
+  all: unset;
+  align-items: center;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 1 1 0;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  gap: 5px;
+  justify-content: center;
+  min-height: 32px;
+  padding: 0 10px;
+  transition: background var(--duration-fast), border-color var(--duration-fast), color var(--duration-fast), opacity var(--duration-fast);
+}
+
+.deferredLinksAccept {
+  background: rgba(34, 197, 94, 0.12);
+  border: 1px solid rgba(34, 197, 94, 0.28);
+  color: #bbf7d0;
+}
+
+.deferredLinksReject {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+}
+
+.deferredLinksAccept:hover:not(:disabled) {
+  background: rgba(34, 197, 94, 0.18);
+  border-color: rgba(34, 197, 94, 0.42);
+}
+
+.deferredLinksReject:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.deferredLinksAccept:disabled,
+.deferredLinksReject:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.deferredLinksError {
+  color: #fca5a5;
+  font-size: var(--font-size-xs);
 }
 
 .overviewHeader {
@@ -1888,6 +1970,7 @@
   }
 
   .overviewPanel,
+  .deferredLinksPanel,
   .enrichmentPanel,
   .assetFrame,
   .mediaBox,

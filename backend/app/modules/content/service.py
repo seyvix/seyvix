@@ -30,6 +30,7 @@ from app.modules.content.models import (
     ContentAsset,
     ContentCollectionItem,
     ContentFileUpload,
+    ContentLinkSnapshotDecision,
     ContentObject,
     ContentObjectTag,
     ContentSource,
@@ -38,6 +39,7 @@ from app.modules.content.models import ContentTag as LegacyContentTag
 from app.modules.content.schemas import (
     CollectionParentResponse,
     ContentTaxonomyCategoryResponse,
+    DeferredLinkSnapshotsResponse,
     FileUploadResponse,
     FolderDetailResponse,
     FolderResponse,
@@ -75,6 +77,8 @@ def _note_path_ref_as_uuid(ref: str) -> str | None:
 logger = get_logger(__name__)
 LINK_TITLE_FETCH_TIMEOUT_SECONDS = 2.5
 LINK_TITLE_FETCH_MAX_CHARS = 200_000
+AUTO_LINK_SNAPSHOT_LIMIT = 3
+DEFERRED_LINK_SNAPSHOT_TTL = timedelta(hours=12)
 
 
 def _optional_string(value: Any) -> str | None:
@@ -1197,37 +1201,12 @@ class ContentService:
             sort_order=sort_order,
         )
 
-        for i, url in enumerate(links, start=1):
-            asset_id = str(uuid4())
-            filename = f"link-{i}.url"
-            stored_file = self.storage.write_binary_object(
-                content_object_id=content_object_id,
-                asset_id=asset_id,
-                filename=filename,
-                data=f"{url}\n".encode(),
-                content_type="text/uri-list",
-            )
-            self.storage_objects.add(
-                self._stored_object_from_file(stored_file),
-                owner_entity_type="content_asset",
-                owner_entity_id=asset_id,
-                metadata={"role": "original", "source_url": url},
-            )
+        for i, url in enumerate(links[:AUTO_LINK_SNAPSHOT_LIMIT], start=1):
             content_object.assets.append(
-                ContentAsset(
-                    id=asset_id,
-                    role="original",
-                    media_type="link",
-                    filename=filename,
-                    mime_type="text/uri-list",
-                    size_bytes=stored_file.size_bytes,
-                    storage_path=stored_file.relative_path,
-                    storage_backend=stored_file.storage_backend,
-                    bucket=stored_file.bucket,
-                    storage_key=stored_file.storage_key,
-                    storage_ref=stored_file.storage_ref,
-                    checksum=stored_file.checksum,
-                    text_content=url,
+                self._create_link_asset(
+                    content_object_id=content_object_id,
+                    url=url,
+                    index=i,
                 ),
             )
 
@@ -1450,6 +1429,38 @@ class ContentService:
         )
         await self.session.commit()
         return await self._reload_write_manifest_and_card(owner_user_id=owner_user_id, slug=slug)
+
+    def _create_link_asset(self, *, content_object_id: str, url: str, index: int) -> ContentAsset:
+        asset_id = str(uuid4())
+        filename = f"link-{index}.url"
+        stored_file = self.storage.write_binary_object(
+            content_object_id=content_object_id,
+            asset_id=asset_id,
+            filename=filename,
+            data=f"{url}\n".encode(),
+            content_type="text/uri-list",
+        )
+        self.storage_objects.add(
+            self._stored_object_from_file(stored_file),
+            owner_entity_type="content_asset",
+            owner_entity_id=asset_id,
+            metadata={"role": "original", "source_url": url},
+        )
+        return ContentAsset(
+            id=asset_id,
+            role="original",
+            media_type="link",
+            filename=filename,
+            mime_type="text/uri-list",
+            size_bytes=stored_file.size_bytes,
+            storage_path=stored_file.relative_path,
+            storage_backend=stored_file.storage_backend,
+            bucket=stored_file.bucket,
+            storage_key=stored_file.storage_key,
+            storage_ref=stored_file.storage_ref,
+            checksum=stored_file.checksum,
+            text_content=url,
+        )
 
     async def _create_from_uploaded_files(
         self,
@@ -1948,6 +1959,64 @@ class ContentService:
         await self.session.commit()
         return await self._to_card(loaded)
 
+    async def decide_deferred_link_snapshots(
+        self,
+        *,
+        owner_user_id: str,
+        slug: str,
+        decision: str,
+    ) -> NoteCardResponse:
+        content_object = await self._load_note(owner_user_id=owner_user_id, slug=slug)
+        if decision == "reject":
+            await self._set_link_snapshot_decision(
+                content_object=content_object,
+                status="rejected",
+            )
+            await self.session.commit()
+            return await self._to_card(content_object)
+
+        remaining = self._remaining_text_link_urls(content_object)
+        existing_link_count = len(self._link_asset_urls(content_object))
+        for index, url in enumerate(remaining, start=existing_link_count + 1):
+            content_object.assets.append(
+                self._create_link_asset(
+                    content_object_id=content_object.id,
+                    url=url,
+                    index=index,
+                ),
+            )
+        content_object.updated_at = datetime.now(UTC)
+        await self.session.flush()
+        await self._set_link_snapshot_decision(
+            content_object=content_object,
+            status="accepted",
+        )
+        await self._write_object_manifest(content_object)
+        if remaining:
+            envelope = self._enqueue_content_changed_event(
+                content_object,
+                event_name="content.object.updated",
+            )
+            await self._enqueue_automatic_processing(content_object, envelope=envelope)
+        await self.session.commit()
+        return await self._to_card(content_object)
+
+    async def _write_object_manifest(self, content_object: ContentObject) -> None:
+        assignment_by_object_id = await self._current_assignment_map(content_object.owner_user_id)
+        tags_by_object_id = await self.tag_service.list_active_tags_for_contents(
+            owner_user_id=content_object.owner_user_id,
+            content_object_ids=[content_object.id],
+        )
+        self.storage.write_manifest(
+            content_object_id=content_object.id,
+            manifest=self._manifest(
+                content_object,
+                items=[],
+                assignment=assignment_by_object_id.get(content_object.id),
+                tags=tags_by_object_id.get(content_object.id, []),
+            ),
+        )
+
     async def get_asset_thumbnail(
         self, *, owner_user_id: str, slug: str, asset_id: str
     ) -> tuple[Path, str]:
@@ -2121,6 +2190,7 @@ class ContentService:
                     content_object_ids=[content_object.id],
                 )
             ).get(content_object.id, [])
+        deferred_link_snapshots = await self._deferred_link_snapshots_for_object(content_object)
         current_assignment = await self.taxonomy.get_current_assignment(
             owner_user_id=content_object.owner_user_id,
             content_object_id=content_object.id,
@@ -2218,10 +2288,108 @@ class ContentService:
             download_url=f"{self.api_prefix}/notes/{content_object.slug}/download",
             collection=collection_parent,
             source=object_source,
+            deferred_link_snapshots=deferred_link_snapshots,
             search_matches=search_matches or [],
             assets=asset_responses,
             items=items,
         )
+
+    async def _deferred_link_snapshots_for_object(
+        self,
+        content_object: ContentObject,
+    ) -> DeferredLinkSnapshotsResponse | None:
+        if content_object.media_type != "link":
+            return None
+        decision = await self._get_link_snapshot_decision(content_object.id)
+        if decision is not None:
+            return None
+
+        expires_at = content_object.created_at + DEFERRED_LINK_SNAPSHOT_TTL
+        if datetime.now(UTC) >= expires_at:
+            return None
+
+        text_links = self._text_link_urls(content_object)
+        if len(text_links) <= AUTO_LINK_SNAPSHOT_LIMIT:
+            return None
+
+        remaining = self._remaining_text_link_urls(content_object)
+        if not remaining:
+            return None
+
+        processed_links = len(
+            [url for url in text_links if url in set(self._link_asset_urls(content_object))]
+        )
+        return DeferredLinkSnapshotsResponse(
+            total_links=len(text_links),
+            processed_links=processed_links,
+            remaining_links=len(remaining),
+            expires_at=expires_at,
+            status="pending",
+        )
+
+    async def _get_link_snapshot_decision(
+        self,
+        content_object_id: str,
+    ) -> ContentLinkSnapshotDecision | None:
+        return await self.session.scalar(
+            select(ContentLinkSnapshotDecision).where(
+                ContentLinkSnapshotDecision.content_object_id == content_object_id
+            )
+        )
+
+    async def _set_link_snapshot_decision(
+        self,
+        *,
+        content_object: ContentObject,
+        status: str,
+    ) -> None:
+        decision = await self._get_link_snapshot_decision(content_object.id)
+        if decision is None:
+            self.session.add(
+                ContentLinkSnapshotDecision(
+                    content_object_id=content_object.id,
+                    owner_user_id=content_object.owner_user_id,
+                    status=status,
+                )
+            )
+            return
+        decision.status = status
+        decision.updated_at = datetime.now(UTC)
+
+    def _text_link_urls(self, content_object: ContentObject) -> list[str]:
+        urls: list[str] = []
+        seen: set[str] = set()
+        for asset in content_object.assets:
+            if asset.media_type != "text":
+                continue
+            text_body = self._read_text_asset_user_body(asset) or asset.text_content or ""
+            links, _ = self._extract_links_from_text(text_body)
+            for url in links:
+                if self._is_generated_favicon_url(url):
+                    continue
+                if url in seen:
+                    continue
+                seen.add(url)
+                urls.append(url)
+        return urls
+
+    @staticmethod
+    def _link_asset_urls(content_object: ContentObject) -> list[str]:
+        urls: list[str] = []
+        for asset in content_object.assets:
+            if asset.media_type != "link" or not asset.text_content:
+                continue
+            urls.append(asset.text_content.strip())
+        return urls
+
+    def _remaining_text_link_urls(self, content_object: ContentObject) -> list[str]:
+        existing = set(self._link_asset_urls(content_object))
+        return [url for url in self._text_link_urls(content_object) if url not in existing]
+
+    @staticmethod
+    def _is_generated_favicon_url(url: str) -> bool:
+        parsed = urlparse(url)
+        return parsed.hostname == "favicon.yandex.net"
 
     async def _source_metadata_for_object(
         self,

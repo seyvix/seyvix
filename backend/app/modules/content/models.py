@@ -4,9 +4,19 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from app.core.database import Base
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.core.database import Base
 
 
 def utcnow() -> datetime:
@@ -16,10 +26,14 @@ def utcnow() -> datetime:
 class ContentCategory(Base):
     __tablename__ = "content_categories"
     __table_args__ = (
-        UniqueConstraint("owner_user_id", "path", name="uq_content_categories_owner_user_id_path"),
+        UniqueConstraint(
+            "owner_user_id", "path", name="uq_content_categories_owner_user_id_path"
+        ),
     )
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
     owner_user_id: Mapped[str] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
@@ -31,7 +45,9 @@ class ContentCategory(Base):
     name: Mapped[str] = mapped_column(String(255))
     slug: Mapped[str] = mapped_column(String(255))
     path: Mapped[str] = mapped_column(String(1024))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
 
     parent: Mapped[ContentCategory | None] = relationship(
         remote_side=[id], back_populates="children"
@@ -43,17 +59,23 @@ class ContentCategory(Base):
 class ContentTag(Base):
     __tablename__ = "content_tags"
     __table_args__ = (
-        UniqueConstraint("owner_user_id", "slug", name="uq_content_tags_owner_user_id_slug"),
+        UniqueConstraint(
+            "owner_user_id", "slug", name="uq_content_tags_owner_user_id_slug"
+        ),
     )
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
     owner_user_id: Mapped[str] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
     name: Mapped[str] = mapped_column(String(255))
     slug: Mapped[str] = mapped_column(String(255))
     tag_type: Mapped[str] = mapped_column(String(64), default="label")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
 
     objects: Mapped[list[ContentObject]] = relationship(
         secondary="content_object_tags",
@@ -64,7 +86,9 @@ class ContentTag(Base):
 class ContentObjectTag(Base):
     __tablename__ = "content_object_tags"
     __table_args__ = (
-        UniqueConstraint("content_object_id", "tag_id", name="uq_content_object_tags_object_tag"),
+        UniqueConstraint(
+            "content_object_id", "tag_id", name="uq_content_object_tags_object_tag"
+        ),
     )
 
     content_object_id: Mapped[str] = mapped_column(
@@ -80,10 +104,14 @@ class ContentObjectTag(Base):
 class ContentObject(Base):
     __tablename__ = "content_objects"
     __table_args__ = (
-        UniqueConstraint("owner_user_id", "slug", name="uq_content_objects_owner_user_id_slug"),
+        UniqueConstraint(
+            "owner_user_id", "slug", name="uq_content_objects_owner_user_id_slug"
+        ),
     )
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
     owner_user_id: Mapped[str] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
@@ -95,7 +123,9 @@ class ContentObject(Base):
     slug: Mapped[str] = mapped_column(String(255))
     title: Mapped[str] = mapped_column(String(512))
     kind: Mapped[str] = mapped_column(String(32), index=True)
-    media_type: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    media_type: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, index=True
+    )
     source_filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
     mime_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
     size_bytes: Mapped[int | None] = mapped_column(Integer(), nullable=True)
@@ -106,7 +136,9 @@ class ContentObject(Base):
         nullable=True,
         index=True,
     )
-    delete_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delete_after: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     sort_order: Mapped[int] = mapped_column(Integer(), default=0, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, index=True
@@ -141,7 +173,9 @@ class ContentObject(Base):
 class ContentAsset(Base):
     __tablename__ = "content_assets"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
     content_object_id: Mapped[str] = mapped_column(
         ForeignKey("content_objects.id", ondelete="CASCADE"),
         index=True,
@@ -160,9 +194,33 @@ class ContentAsset(Base):
     text_content: Mapped[str | None] = mapped_column(Text(), nullable=True)
     image_width: Mapped[int | None] = mapped_column(Integer(), nullable=True)
     image_height: Mapped[int | None] = mapped_column(Integer(), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
 
     content_object: Mapped[ContentObject] = relationship(back_populates="assets")
+
+
+class ContentLinkSnapshotDecision(Base):
+    __tablename__ = "content_link_snapshot_decisions"
+
+    content_object_id: Mapped[str] = mapped_column(
+        ForeignKey("content_objects.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    owner_user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )
 
 
 class ContentSource(Base):
@@ -176,7 +234,9 @@ class ContentSource(Base):
         ),
     )
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
     owner_user_id: Mapped[str] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"),
         index=True,
@@ -209,7 +269,9 @@ class ContentSource(Base):
     source_metadata: Mapped[dict[str, Any] | None] = mapped_column(
         "metadata", JSON(), nullable=True
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
 
 
 class ContentCollectionItem(Base):
@@ -221,7 +283,9 @@ class ContentCollectionItem(Base):
         ),
     )
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
     collection_id: Mapped[str] = mapped_column(
         ForeignKey("content_objects.id", ondelete="CASCADE"),
         index=True,
@@ -231,7 +295,9 @@ class ContentCollectionItem(Base):
         index=True,
     )
     position: Mapped[int] = mapped_column(Integer(), default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
 
     collection: Mapped[ContentObject] = relationship(
         foreign_keys=[collection_id],
@@ -246,7 +312,9 @@ class ContentCollectionItem(Base):
 class ContentFileUpload(Base):
     __tablename__ = "content_file_uploads"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
     owner_user_id: Mapped[str] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
@@ -261,5 +329,9 @@ class ContentFileUpload(Base):
     storage_ref: Mapped[str | None] = mapped_column(String(2300), nullable=True)
     checksum: Mapped[str | None] = mapped_column(String(128), nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    consumed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )

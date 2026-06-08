@@ -56,6 +56,14 @@ class SnapshotViewResponse(BaseModel):
     url: str
 
 
+class DeferredLinkSnapshotsResponse(BaseModel):
+    total_links: int
+    processed_links: int
+    remaining_links: int
+    expires_at: datetime
+    status: Literal["pending"]
+
+
 class SourceMetadataResponse(BaseModel):
     provider: str
     provider_label: str
@@ -108,6 +116,7 @@ class NoteCardResponse(BaseModel):
     download_url: str
     collection: CollectionParentResponse | None = None
     source: SourceMetadataResponse | None = None
+    deferred_link_snapshots: DeferredLinkSnapshotsResponse | None = None
     search_matches: list[SearchContentMatch] = Field(default_factory=list)
     assets: list[NoteAssetResponse] = Field(default_factory=list)
     items: list[NoteCardResponse] = Field(default_factory=list)
@@ -170,6 +179,10 @@ class MergeNotesRequest(BaseModel):
     target_slug: str
     source_slugs: list[str] = Field(min_length=1)
     title: str | None = Field(default=None, max_length=512)
+
+
+class LinkSnapshotDecisionRequest(BaseModel):
+    decision: Literal["accept", "reject"]
 
 
 class FolderDetailResponse(BaseModel):
