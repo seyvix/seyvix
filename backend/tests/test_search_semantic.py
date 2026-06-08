@@ -1392,7 +1392,7 @@ def test_list_notes_passes_extended_filter_params_to_search_service(
     assert len(captured_filters) == 1
     filters = captured_filters[0]
     assert filters.content_types == ["video", "pdf"]
-    assert filters.source_provider == "telegram"
+    assert filters.source_providers == ["telegram"]
     assert filters.is_favorite is True
     assert filters.created_at_from == datetime(2026, 5, 1, tzinfo=UTC)
     assert filters.created_at_to == datetime(2026, 6, 1, tzinfo=UTC)
