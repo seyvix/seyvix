@@ -1,10 +1,15 @@
 import inspect
 
 import aio_pika
+from fastapi import APIRouter, Request
+from redis.asyncio import Redis
+from sqlalchemy import text
+
 from app.api.schemas import HealthResponse
 from app.core.config import get_settings
 from app.modules.auth.presentation.rest.router import router as auth_router
 from app.modules.content.presentation.rest.router import router as content_router
+from app.modules.recommendations.presentation.rest.router import router as recommendations_router
 from app.modules.registry import list_modules
 from app.modules.search.presentation.rest.router import router as search_router
 from app.modules.snapshots.presentation.rest.router import router as snapshots_router
@@ -13,13 +18,11 @@ from app.modules.taxonomy.presentation.rest.router import router as taxonomy_rou
 from app.modules.telegram_integration.presentation.rest.router import router as telegram_router
 from app.modules.vectorization.presentation.rest.router import router as vectorization_router
 from app.shared.module_definitions import ModuleDefinition
-from fastapi import APIRouter, Request
-from redis.asyncio import Redis
-from sqlalchemy import text
 
 api_router = APIRouter()
 api_router.include_router(auth_router)
 api_router.include_router(content_router)
+api_router.include_router(recommendations_router)
 api_router.include_router(snapshots_router)
 api_router.include_router(taxonomy_router)
 api_router.include_router(tags_router)

@@ -182,6 +182,19 @@ export interface Note {
   isLoading?: boolean  // запрос в процессе
 }
 
+export interface RecommendedNote {
+  id: string
+  slug: string
+  type: NoteType
+  mediaType: NoteObjectType | null
+  title: string
+  score: number
+  matchedText: string
+  tags: Tag[]
+  createdAt: string
+  updatedAt: string
+}
+
 export interface NotesParams {
   search?: string
   searchMode?: 'full_text' | 'semantic' | 'hybrid'
