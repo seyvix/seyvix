@@ -5,6 +5,7 @@ import type {
   Folder,
   FolderDetail,
   FolderNoteSummary,
+  NoteObject,
   Tag,
   TaxonomySettings,
 } from '../types'
@@ -32,8 +33,17 @@ interface BackendFolderNote {
     slug: string
     path: string
   } | null
-  created_at: string
-  updated_at: string
+  taxonomyCategory?: {
+    id: string
+    name: string
+    slug: string
+    path: string
+  } | null
+  objects?: NoteObject[]
+  created_at?: string
+  updated_at?: string
+  createdAt?: string
+  updatedAt?: string
 }
 
 interface BackendFolderDetail {
@@ -168,9 +178,10 @@ function mapBackendNoteSummary(note: BackendFolderNote): FolderNoteSummary {
     id: note.id,
     slug: note.slug,
     title: note.title,
-    taxonomyCategory: note.taxonomy_category ?? null,
-    createdAt: note.created_at,
-    updatedAt: note.updated_at,
+    taxonomyCategory: note.taxonomyCategory ?? note.taxonomy_category ?? null,
+    objects: note.objects ?? [],
+    createdAt: note.createdAt ?? note.created_at ?? '',
+    updatedAt: note.updatedAt ?? note.updated_at ?? '',
   }
 }
 

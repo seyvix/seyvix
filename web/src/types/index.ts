@@ -70,6 +70,7 @@ export interface FolderNoteSummary {
   slug: string
   title: string
   taxonomyCategory?: TaxonomyCategory | null
+  objects: NoteObject[]
   createdAt: string
   updatedAt: string
 }

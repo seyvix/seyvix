@@ -11,6 +11,7 @@ import {
   FileText,
   Hash,
   Layers3,
+  Link2,
   ListTree,
   MoreHorizontal,
   PanelRightOpen,
@@ -32,9 +33,12 @@ import {
   updateCategoryProfile,
   updateTaxonomySettings,
 } from '../api/folders'
+import AuthImage from '../components/AuthImage/AuthImage'
 import { useFolder } from '../hooks/useFolder'
 import { useFolders } from '../hooks/useFolders'
-import type { CategoryProfile, CategoryProfileDraft, Folder, FolderNoteSummary } from '../types'
+import type { CategoryProfile, CategoryProfileDraft, Folder, FolderNoteSummary, NoteObject } from '../types'
+import { cleanDisplayTitle } from '../utils/noteCardPresentation'
+import { getObjectPreviewSource } from '../utils/notePreview'
 import styles from './FoldersPage.module.css'
 
 function categoryUrl(path: string): string {
@@ -226,20 +230,80 @@ function formatFolderNoteDate(note: FolderNoteSummary): string {
   })
 }
 
-function getFolderNoteTitle(note: FolderNoteSummary): string {
-  return note.title.trim() || 'Без заголовка'
+function cleanFolderPreviewText(value: string): string {
+  const withoutImageMarkdown = value.replace(/!\[([^\]]*)\]\([^)]+\)/g, (_match, alt: string) => {
+    return alt.trim().toLowerCase() === 'favicon' ? '' : alt
+  })
+  return cleanDisplayTitle(withoutImageMarkdown)
+    .replace(/\\(\S)/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function getFolderNoteTextPreview(note: FolderNoteSummary): string | null {
+  const object = note.objects.find(obj => obj.type === 'text' || obj.thumbnailText || obj.caption)
+  if (!object) return null
+
+  const rawText = object.thumbnailText || object.caption || object.content
+  const text = cleanFolderPreviewText(rawText)
+  if (!text) return null
+  return text.length <= 110 ? text : `${text.slice(0, 110).trim()}...`
+}
+
+function getFolderNoteVisualObject(note: FolderNoteSummary): NoteObject | null {
+  return note.objects.find(obj => (
+    (obj.type === 'image' && getObjectPreviewSource(obj)) ||
+    (obj.type === 'video' && obj.thumbnailUrl) ||
+    (obj.type === 'document' && (obj.thumbnailUrl || obj.cover)) ||
+    (obj.type === 'link' && obj.thumbnailUrl)
+  )) ?? null
+}
+
+function NotePreview({ note }: { note: FolderNoteSummary }) {
+  const visual = getFolderNoteVisualObject(note)
+  if (visual) {
+    return (
+      <span className={styles.notePreview} aria-hidden>
+        <AuthImage src={getObjectPreviewSource(visual)} alt="" className={styles.notePreviewImage} />
+      </span>
+    )
+  }
+
+  const textPreview = getFolderNoteTextPreview(note)
+  if (textPreview) {
+    return (
+      <span className={`${styles.notePreview} ${styles.notePreviewText}`} aria-hidden>
+        {textPreview}
+      </span>
+    )
+  }
+
+  const hasLink = note.objects.some(obj => obj.type === 'link')
+  return (
+    <span className={styles.noteIcon} aria-hidden>
+      {hasLink ? <Link2 size={15} strokeWidth={1.8} /> : <FileText size={15} strokeWidth={1.8} />}
+    </span>
+  )
 }
 
 function NoteRow({ note, selectedPath }: { note: FolderNoteSummary; selectedPath: string }) {
   const notePath = note.taxonomyCategory?.path
   const isNested = Boolean(notePath && notePath !== selectedPath)
+  const rawTitle = cleanFolderPreviewText(note.title)
+  const preview = getFolderNoteTextPreview(note)
+  const title = rawTitle || preview || 'Без заголовка'
+  const hasInformativeTitle = Boolean(rawTitle || preview)
+  const hasDistinctPreview = Boolean(rawTitle && preview && rawTitle !== preview)
 
   return (
     <Link to={`/notes/${note.slug}`} className={styles.noteRow}>
-      <span className={styles.noteIcon}><FileText size={15} strokeWidth={1.8} /></span>
+      <NotePreview note={note} />
       <span className={styles.noteBody}>
-        <strong className={note.title.trim() ? undefined : styles.noteTitleMuted}>{getFolderNoteTitle(note)}</strong>
-        <small>{formatFolderNoteDate(note)}</small>
+        <strong className={hasInformativeTitle ? undefined : styles.noteTitleMuted}>{title}</strong>
+        <span className={styles.noteMeta}>
+          <small>{formatFolderNoteDate(note)}</small>
+          {hasDistinctPreview && <small>{preview}</small>}
+        </span>
       </span>
       {isNested && <span className={styles.noteCategory}>{notePath}</span>}
       <ArrowRight size={14} strokeWidth={1.8} />
@@ -720,7 +784,12 @@ export default function FoldersPage() {
                     <h2>{selectedCategory.name}</h2>
                     {selectedCategory.path === 'inbox' && (
                       <button
-                        className={[styles.secondaryAction, styles.reclassifyAction].join(' ')}
+                        type="button"
+                        className={[
+                          styles.secondaryAction,
+                          styles.reclassifyAction,
+                          styles.mobileReclassifyAction,
+                        ].join(' ')}
                         disabled={reclassify.isPending}
                         onClick={() => reclassify.mutate()}
                       >
@@ -743,6 +812,21 @@ export default function FoldersPage() {
                     <FileText size={16} strokeWidth={1.8} />
                     Заметки
                   </Link>
+                  {selectedCategory.path === 'inbox' && (
+                    <button
+                      type="button"
+                      className={[
+                        styles.secondaryAction,
+                        styles.reclassifyAction,
+                        styles.desktopReclassifyAction,
+                      ].join(' ')}
+                      disabled={reclassify.isPending}
+                      onClick={() => reclassify.mutate()}
+                    >
+                      <Layers3 size={15} strokeWidth={1.8} />
+                      {reclassify.isPending ? 'Запускаю...' : 'Перераспределить'}
+                    </button>
+                  )}
                   <div className={styles.moreMenuWrap}>
                     <button className={styles.secondaryAction} onClick={() => setMoreOpen(value => !value)}>
                       <MoreHorizontal size={15} strokeWidth={1.8} />

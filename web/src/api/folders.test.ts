@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   fetchCategoryProfile,
+  mapBackendFolderDetail,
   suggestCategoryProfile,
   updateCategoryProfile,
 } from './folders.ts'
@@ -45,4 +46,42 @@ test('category profile operations report backend rejections', async () => {
     () => suggestCategoryProfile('cat-1', 'Добавить LLM и инференс.'),
     /Failed to suggest category profile/,
   )
+})
+
+test('folder detail maps app-note dates and preview objects', () => {
+  const detail = mapBackendFolderDetail({
+    folder: {
+      id: 'cat-1',
+      name: 'Inbox',
+      slug: 'inbox',
+      path: 'inbox',
+      direct_count: 1,
+      total_count: 1,
+    },
+    tags: [],
+    notes: [{
+      id: 'note-1',
+      slug: 'note-1',
+      title: '',
+      taxonomyCategory: {
+        id: 'cat-1',
+        name: 'Inbox',
+        slug: 'inbox',
+        path: 'inbox',
+      },
+      objects: [{
+        id: 'obj-1',
+        type: 'text',
+        content: 'Preview text',
+        createdAt: '2026-06-08T10:00:00Z',
+      }],
+      createdAt: '2026-06-08T10:00:00Z',
+      updatedAt: '2026-06-08T11:00:00Z',
+    }],
+  })
+
+  assert.equal(detail.notes[0].createdAt, '2026-06-08T10:00:00Z')
+  assert.equal(detail.notes[0].updatedAt, '2026-06-08T11:00:00Z')
+  assert.equal(detail.notes[0].taxonomyCategory?.path, 'inbox')
+  assert.equal(detail.notes[0].objects[0].content, 'Preview text')
 })

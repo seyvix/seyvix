@@ -361,6 +361,14 @@
   min-height: 34px;
 }
 
+.secondaryAction.mobileReclassifyAction {
+  display: none;
+}
+
+.secondaryAction.desktopReclassifyAction {
+  display: inline-flex;
+}
+
 .breadcrumbs {
   align-items: center;
   color: var(--color-text-secondary);
@@ -998,9 +1006,60 @@
   color: #fbbf24;
 }
 
+.notePreview {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  display: flex;
+  flex-shrink: 0;
+  font-size: 10px;
+  height: 40px;
+  justify-content: center;
+  line-height: 1.2;
+  overflow: hidden;
+  width: 44px;
+}
+
+.notePreviewImage {
+  border-radius: inherit;
+  object-fit: cover;
+}
+
+.notePreviewText {
+  align-items: flex-start;
+  color: var(--color-text-primary);
+  display: -webkit-box;
+  padding: 5px 6px;
+  text-align: left;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
 .noteTitleMuted {
   color: var(--color-text-secondary);
   font-style: italic;
+}
+
+.noteMeta {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.noteMeta small + small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.noteMeta small + small::before {
+  color: var(--color-text-muted);
+  content: "·";
+  margin-right: 6px;
 }
 
 .noteCategory {
@@ -1182,6 +1241,14 @@
     white-space: nowrap;
   }
 
+  .secondaryAction.mobileReclassifyAction {
+    display: inline-flex;
+  }
+
+  .secondaryAction.desktopReclassifyAction {
+    display: none;
+  }
+
   .detailHeaderActions {
     display: grid;
     gap: 6px;
@@ -1251,8 +1318,19 @@
   .noteRow {
     align-items: flex-start;
     display: grid;
-    grid-template-columns: 32px minmax(0, 1fr) 18px;
+    grid-template-columns: 44px minmax(0, 1fr) 18px;
     padding: 11px;
+  }
+
+  .noteMeta {
+    align-items: flex-start;
+    display: grid;
+    gap: 2px;
+  }
+
+  .noteMeta small + small::before {
+    content: "";
+    margin: 0;
   }
 
   .noteCategory {
