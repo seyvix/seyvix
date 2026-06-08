@@ -137,6 +137,7 @@ export function prepareTelegramSurface(webApp: TelegramWebApp): () => void {
   const requestFullscreen = () => {
     if (disposed) return
     lockVerticalSwipes()
+    webApp.expand?.()
     if (canUseFullscreen(webApp) && !fullscreenUnsupported) {
       if (webApp.isFullscreen || fullscreenAttemptCount >= TELEGRAM_FULLSCREEN_MAX_ATTEMPTS) return
       fullscreenRequested = true
@@ -148,7 +149,6 @@ export function prepareTelegramSurface(webApp: TelegramWebApp): () => void {
       }
       return
     }
-    webApp.expand?.()
   }
 
   const scheduleFullscreenRetry = () => {

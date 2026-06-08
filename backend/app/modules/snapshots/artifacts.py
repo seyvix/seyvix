@@ -124,6 +124,12 @@ class SnapshotArtifactGenerator:
                 output_dir=output_dir,
                 filename="thumbnail.jpg",
             )
+        if asset.media_type == "audio":
+            return self._render_audio_thumbnail(
+                asset=asset,
+                output_dir=output_dir,
+                filename="thumbnail.jpg",
+            )
         if asset.media_type == "video":
             return self._render_video_thumbnail(
                 source_path=source_path,
@@ -645,6 +651,20 @@ class SnapshotArtifactGenerator:
             frame_path=frame_path,
             output_dir=output_dir,
             filename=filename,
+        )
+
+    def _render_audio_thumbnail(
+        self,
+        *,
+        asset: ContentAsset,
+        output_dir: Path,
+        filename: str,
+    ) -> GeneratedArtifact:
+        return self._render_text_thumbnail(
+            output_dir=output_dir,
+            filename=filename,
+            title=asset.filename,
+            body="Audio file\n\nSaved voice or audio attachment.",
         )
 
     def _render_video_frame_thumbnail(

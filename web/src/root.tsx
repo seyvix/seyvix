@@ -44,7 +44,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
     <html lang="ru">
       <head>
         <meta charSet="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <meta
+          name="viewport"
+          content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+        />
         <title>Seyvix</title>
 
         <link rel="icon" type="image/png" href="/favicon-96x96.png" sizes="96x96" />
@@ -53,7 +56,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
         <meta name="apple-mobile-web-app-title" content="Seyvix" />
 
-        <script src="https://telegram.org/js/telegram-web-app.js" />
+        <script src="https://telegram.org/js/telegram-web-app.js?62" />
         <Meta />
         <Links />
       </head>

@@ -79,6 +79,19 @@ LINK_TITLE_FETCH_TIMEOUT_SECONDS = 2.5
 LINK_TITLE_FETCH_MAX_CHARS = 200_000
 AUTO_LINK_SNAPSHOT_LIMIT = 3
 DEFERRED_LINK_SNAPSHOT_TTL = timedelta(hours=12)
+AUDIO_SUFFIXES = {
+    ".aac",
+    ".amr",
+    ".flac",
+    ".m4a",
+    ".mp3",
+    ".oga",
+    ".ogg",
+    ".opus",
+    ".wav",
+    ".weba",
+}
+VIDEO_SUFFIXES = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm"}
 
 
 def _optional_string(value: Any) -> str | None:
@@ -2996,6 +3009,7 @@ class ContentService:
 
     @staticmethod
     def _media_type(filename: str, content_type: str | None) -> str:
+        suffix = Path(filename).suffix.lower()
         if content_type:
             if content_type.startswith("image/"):
                 return "image"
@@ -3005,14 +3019,15 @@ class ContentService:
                 return "video"
             if content_type.startswith("text/"):
                 return "text"
-        suffix = Path(filename).suffix.lower()
+            if content_type == "application/ogg" and suffix not in VIDEO_SUFFIXES:
+                return "audio"
         if suffix in {".txt", ".md", ".markdown"}:
             return "text"
         if suffix in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
             return "image"
-        if suffix in {".mp3", ".wav", ".ogg"}:
+        if suffix in AUDIO_SUFFIXES:
             return "audio"
-        if suffix in {".mp4", ".mov", ".webm"}:
+        if suffix in VIDEO_SUFFIXES:
             return "video"
         return "document"
 
