@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from enum import Enum
 from typing import Any
 
 from aiogram.types import Message
@@ -505,10 +506,16 @@ def _iso_datetime(value: object) -> str | None:
 
 
 def _json_safe(value: object) -> Any:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
     if isinstance(value, datetime):
         return _iso_datetime(value)
+    if isinstance(value, Enum):
+        return _json_safe(value.value)
     if isinstance(value, Mapping):
         return {str(key): _json_safe(item) for key, item in value.items()}
     if isinstance(value, list):
         return [_json_safe(item) for item in value]
-    return value
+    if isinstance(value, tuple | set):
+        return [_json_safe(item) for item in value]
+    return str(value)

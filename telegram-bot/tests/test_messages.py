@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from aiogram.types import Message
 
 from telegram_bot.domain.models import MaterialType
@@ -27,6 +29,8 @@ def test_material_from_aiogram_message_uses_telegram_from_alias() -> None:
     assert material.telegram_chat_id == "700"
     assert material.material_type == MaterialType.TEXT
     assert material.text == "Plain note from aiogram"
+    assert material.source is not None
+    json.dumps(material.source.to_payload(), ensure_ascii=False)
 
 
 def test_parse_message_extracts_plain_text_payload() -> None:
