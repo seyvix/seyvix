@@ -67,6 +67,7 @@ import {
 import { normalizedHighlightRanges } from '../../utils/searchHighlight'
 import { htmlToMarkdown, makeMarkdownTitle, replaceBlobImageSources } from '../../utils/markdownPaste'
 import { useFavicon } from '../../hooks/useFavicon'
+import { LoaderSpinner } from '../LoaderSpinner'
 import styles from './NoteCard.module.css'
 
 const FILE_HOVER_THRESHOLD_MS = 750
@@ -843,6 +844,11 @@ export function NoteCard({ note, isNew, isDragging, onTagClick }: { note: Note; 
       ) : (
         <SimpleCard note={note} onTagClick={onTagClick} />
       )}
+      {note.isLoading && (
+        <div className={styles.cardLoadingOverlay} aria-hidden>
+          <LoaderSpinner className={styles.cardLoadingSpinner} />
+        </div>
+      )}
       {isBulk && (
         <div
           className={styles.bulkOverlay}
@@ -855,11 +861,11 @@ export function NoteCard({ note, isNew, isDragging, onTagClick }: { note: Note; 
       )}
       {note.isLocal && (
         <button
-          className={`${styles.syncBtn}${isSyncing ? ` ${styles.syncing}` : ''}`}
+          className={styles.syncBtn}
           title="Синхронизировать с сервером"
           onClick={e => { e.preventDefault(); e.stopPropagation(); syncLocal(note) }}
         >
-          <RefreshCw size={14} />
+          {isSyncing ? <LoaderSpinner size="xs" /> : <RefreshCw size={14} />}
         </button>
       )}
     </div>
@@ -1244,5 +1250,9 @@ export function AddNoteCard({ onClick }: { onClick?: () => void }) {
 // ─── Skeleton ─────────────────────────────────────────────────────────────────
 
 export function SkeletonCard() {
-  return <div className={styles.skeletonCard} />
+  return (
+    <div className={styles.skeletonCard} aria-hidden>
+      <LoaderSpinner />
+    </div>
+  )
 }

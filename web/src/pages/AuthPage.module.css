@@ -127,8 +127,8 @@
   box-shadow: inset 0 0 0 1px rgba(53, 174, 226, 0.22);
 }
 
-.loadingMark svg {
-  animation: auth-spin 0.9s linear infinite;
+.authLoader {
+  width: 156px;
 }
 
 .actions {
@@ -213,11 +213,6 @@
   max-width: 280px;
 }
 
-@keyframes auth-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
 
 @media (max-width: 520px) {
   .page {

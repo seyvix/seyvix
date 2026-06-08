@@ -1381,33 +1381,28 @@
   flex-shrink: 0;
 }
 
-/* === Skeleton card === */
-@keyframes shimmer {
-  0%   { background-position: -200% 0; }
-  100% { background-position:  200% 0; }
-}
-
 .skeletonCard {
+  display: grid;
+  place-items: center;
   border-radius: var(--radius-md);
   aspect-ratio: 3 / 4;
-  background: linear-gradient(
-    90deg,
-    #1a1a1a 25%,
-    #242424 50%,
-    #1a1a1a 75%
-  );
-  background-size: 200% 100%;
-  animation: shimmer 1.4s infinite;
+  background: #1a1a1a;
+  border: 1px solid var(--color-border);
 }
 
-/* === Loading (syncing with server) === */
-@keyframes loadingPulse {
-  0%, 100% { border-color: var(--color-border); box-shadow: none; }
-  50%       { border-color: rgba(99, 102, 241, 0.45); box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.12); }
+.cardLoadingOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 12;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-md);
+  background: rgba(10, 10, 10, 0.52);
+  pointer-events: none;
 }
 
-.isLoading .card {
-  animation: loadingPulse 1.6s ease-in-out infinite;
+.cardLoadingSpinner {
+  width: 88px;
 }
 
 /* === Bulk selection === */
@@ -1473,13 +1468,6 @@
 .syncBtn:hover {
   background: rgba(255, 200, 60, 0.28);
 }
-.syncBtn.syncing {
-  animation: spin 0.9s linear infinite;
-}
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
 .linkCoverInner {
   display: flex;
   flex-direction: column;

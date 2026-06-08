@@ -1,26 +1,20 @@
 /* Shared loading UI — import once in main.tsx */
 
-@keyframes app-loader-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 .appLoaderSpinner {
-  width: 48px;
-  height: 48px;
-  box-sizing: border-box;
+  width: 120px;
+  height: auto;
+  display: block;
   flex-shrink: 0;
-  border: 3px solid rgba(255, 255, 255, 0.1);
-  border-top-color: var(--color-accent);
-  border-radius: 50%;
-  animation: app-loader-spin 0.85s linear infinite;
+  max-width: 100%;
+  object-fit: contain;
 }
 
-.appLoaderSpinner--sm {
-  width: 26px;
-  height: 26px;
-  border-width: 2.5px;
+.appLoaderSpinner--md {
+  width: 56px;
+}
+
+.appLoaderSpinner--xs {
+  width: 32px;
 }
 
 .appLoaderHost {
