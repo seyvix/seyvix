@@ -29,9 +29,9 @@ test('notesQueryKey is derived from scalar search params', () => {
   )
 })
 
-test('notesRefetchInterval pauses active searches and polls idle notes lightly', () => {
+test('notesRefetchInterval pauses active searches and polls compact idle notes frequently', () => {
   assert.equal(notesRefetchInterval({ search: 'Valheim' }, 'visible'), false)
   assert.equal(notesRefetchInterval({ tags: ['games'] }, 'visible'), false)
   assert.equal(notesRefetchInterval({}, 'hidden'), false)
-  assert.equal(notesRefetchInterval({}, 'visible'), 10_000)
+  assert.equal(notesRefetchInterval({}, 'visible'), 5_000)
 })

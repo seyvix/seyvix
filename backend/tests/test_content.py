@@ -894,6 +894,100 @@ def test_card_note_list_truncates_large_text_but_detail_stays_full(
     assert detail_response.json()["objects"][0]["content"] == long_text
 
 
+def test_card_note_list_omits_source_raw_payload_from_http_response(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client)
+    note = _create_text_note(
+        content_client,
+        headers,
+        title="Heavy source note",
+        text="Readable card text. " * 200,
+    )
+
+    async def attach_heavy_source() -> None:
+        async with content_client.app.state.session_factory() as session:
+            content_object = await session.scalar(
+                select(ContentObject).where(ContentObject.id == note["id"])
+            )
+            assert content_object is not None
+            await ContentService(session).attach_source_metadata(
+                owner_user_id=content_object.owner_user_id,
+                content_object_id=content_object.id,
+                source={
+                    "provider": "telegram",
+                    "provider_label": "Telegram",
+                    "external_id": "message-1",
+                    "raw_payload": {"body": "x" * 200_000},
+                    "metadata": {
+                        "custom_emoji_assets": {
+                            "1": {"data_url": "data:image/png;base64," + "a" * 100_000}
+                        }
+                    },
+                },
+            )
+            await session.commit()
+
+    content_client.portal.call(attach_heavy_source)
+
+    list_response = content_client.get("/api/v1/notes?view=card", headers=headers)
+    detail_response = content_client.get(f"/api/v1/notes/{note['slug']}", headers=headers)
+
+    assert list_response.status_code == 200
+    list_payload = list_response.json()
+    serialized_list = list_response.content.decode("utf-8")
+    assert len(list_response.content) < 20_000
+    assert "rawPayload" not in serialized_list
+    assert "custom_emoji_assets" not in serialized_list
+    assert "source" not in list_payload["items"][0]
+
+    assert detail_response.status_code == 200
+    detail_source = detail_response.json()["source"]
+    assert detail_source["rawPayload"]["body"].startswith("x")
+
+
+def test_card_note_list_supports_limit_offset_pagination(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client)
+    first = _create_text_note(content_client, headers, title="First", text="First body")
+    second = _create_text_note(content_client, headers, title="Second", text="Second body")
+    third = _create_text_note(content_client, headers, title="Third", text="Third body")
+
+    reorder_response = content_client.patch(
+        "/api/v1/notes/order",
+        headers=headers,
+        json={
+            "items": [
+                {"slug": first["slug"], "position": 10},
+                {"slug": second["slug"], "position": 20},
+                {"slug": third["slug"], "position": 30},
+            ],
+        },
+    )
+    assert reorder_response.status_code == 204
+
+    first_page = content_client.get(
+        "/api/v1/notes?view=card&sort=custom&limit=2",
+        headers=headers,
+    )
+    second_page = content_client.get(
+        "/api/v1/notes?view=card&sort=custom&limit=2&offset=2",
+        headers=headers,
+    )
+
+    assert first_page.status_code == 200
+    assert [item["slug"] for item in first_page.json()["items"]] == [
+        first["slug"],
+        second["slug"],
+    ]
+    assert first_page.json()["nextOffset"] == 2
+
+    assert second_page.status_code == 200
+    assert [item["slug"] for item in second_page.json()["items"]] == [third["slug"]]
+    assert "nextOffset" not in second_page.json()
+
+
 def test_favorite_and_custom_order_are_exposed_in_note_list(
     content_client: TestClient,
 ) -> None:

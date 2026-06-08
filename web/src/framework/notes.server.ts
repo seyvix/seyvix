@@ -1,9 +1,10 @@
 import type { QueryClient } from '@tanstack/react-query'
 import type { SearchCapabilities } from '../api/search.ts'
-import type { Note, NotesParams } from '../types/index.ts'
+import type { Note, NotesPageResult, NotesParams } from '../types/index.ts'
 import { normalizeSearchMode } from '../utils/searchMode.ts'
 
 const SEARCH_CAPABILITIES_QUERY_KEY = ['search-capabilities'] as const
+const NOTES_PAGE_SIZE = 60
 
 const FALLBACK_CAPABILITIES: SearchCapabilities = {
   noteCount: 0,
@@ -33,9 +34,19 @@ export async function prefetchNotesRoute(
     })
     const notesParams = buildNotesParams(requestUrl, capabilities)
 
-    await queryClient.prefetchQuery({
+    await queryClient.prefetchInfiniteQuery({
       queryKey: notesQueryKey(notesParams),
-      queryFn: () => fetchNotes(apiBaseUrl, accessToken, notesParams),
+      queryFn: ({ pageParam }) => fetchNotesPage(
+        apiBaseUrl,
+        accessToken,
+        notesParams,
+        {
+          limit: NOTES_PAGE_SIZE,
+          offset: Number(pageParam) || 0,
+        },
+      ),
+      initialPageParam: 0,
+      getNextPageParam: page => page.nextOffset ?? undefined,
     })
   } catch (error) {
     console.warn('[framework-ssr] notes prefetch failed:', error)
@@ -115,13 +126,16 @@ async function fetchSearchCapabilities(
   return await response.json() as SearchCapabilities
 }
 
-async function fetchNotes(
+async function fetchNotesPage(
   apiBaseUrl: string,
   accessToken: string,
   params: NotesParams,
-): Promise<Note[]> {
+  page: { limit: number; offset: number },
+): Promise<NotesPageResult> {
   const url = new URL('/api/v1/notes', apiBaseUrl)
   url.searchParams.set('view', 'card')
+  url.searchParams.set('limit', String(page.limit))
+  if (page.offset > 0) url.searchParams.set('offset', String(page.offset))
   if (params.search) url.searchParams.set('search', params.search)
   if (params.search && params.searchMode) url.searchParams.set('search_mode', params.searchMode)
   if (params.sort) url.searchParams.set('sort', params.sort)
@@ -141,8 +155,12 @@ async function fetchNotes(
 
   if (!response.ok) throw new Error(`Failed to fetch notes for SSR: ${response.status}`)
   const data: unknown = await response.json()
-  if (Array.isArray(data)) return data as Note[]
-  return ((data as { items?: Note[] }).items ?? []) as Note[]
+  if (Array.isArray(data)) return { items: data as Note[], nextOffset: null }
+  const payload = data as { items?: Note[]; nextOffset?: number | null }
+  return {
+    items: payload.items ?? [],
+    nextOffset: payload.nextOffset ?? null,
+  }
 }
 
 function authenticatedHeaders(accessToken: string): HeadersInit {

@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { Note } from '../types'
 
-const THUMBNAIL_POLL_INTERVAL_MS = 10_000
+const THUMBNAIL_POLL_INTERVAL_MS = 5_000
 
 export function shouldPollThumbnails(notes: Note[], enabled = true): boolean {
   if (!enabled) return false

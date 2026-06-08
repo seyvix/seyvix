@@ -1,5 +1,5 @@
-import { useQuery } from '@tanstack/react-query'
-import { fetchNotes } from '../api/notes.ts'
+import { useInfiniteQuery } from '@tanstack/react-query'
+import { fetchNotesPage, NOTES_PAGE_SIZE } from '../api/notes.ts'
 import type { NotesParams } from '../types/index.ts'
 
 export function notesQueryKey(params: NotesParams = {}) {
@@ -35,16 +35,20 @@ export function notesRefetchInterval(
   visibilityState: DocumentVisibilityState = 'visible',
 ) {
   if (hasNotesSearchOrFilters(params)) return false
-  return visibilityState === 'visible' ? 10_000 : false
+  return visibilityState === 'visible' ? 5_000 : false
 }
 
 export function useNotes(params: NotesParams = {}) {
   const hasSearchOrFilters = hasNotesSearchOrFilters(params)
   const stableParams = notesQueryKey(params)[1]
-
-  return useQuery({
+  const query = useInfiniteQuery({
     queryKey: notesQueryKey(params),
-    queryFn: ({ signal }) => fetchNotes(params, signal),
+    queryFn: ({ pageParam, signal }) => fetchNotesPage(params, signal, {
+      limit: NOTES_PAGE_SIZE,
+      offset: pageParam,
+    }),
+    initialPageParam: 0,
+    getNextPageParam: page => page.nextOffset ?? undefined,
     staleTime: hasSearchOrFilters ? 5_000 : 10_000,
     placeholderData: previousData => previousData,
     refetchInterval: () => notesRefetchInterval(
@@ -53,4 +57,9 @@ export function useNotes(params: NotesParams = {}) {
     ),
     refetchOnWindowFocus: 'always',
   })
+
+  return {
+    ...query,
+    data: query.data?.pages.flatMap(page => page.items),
+  }
 }

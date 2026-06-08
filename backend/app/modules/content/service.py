@@ -78,6 +78,8 @@ LINK_TITLE_FETCH_TIMEOUT_SECONDS = 2.5
 LINK_TITLE_FETCH_MAX_CHARS = 200_000
 AUTO_LINK_SNAPSHOT_LIMIT = 3
 DEFERRED_LINK_SNAPSHOT_TTL = timedelta(hours=12)
+CARD_LIST_ASSET_LIMIT = 6
+CARD_LIST_COLLECTION_ITEM_LIMIT = 6
 AUDIO_SUFFIXES = {
     ".aac",
     ".amr",
@@ -430,6 +432,9 @@ class ContentService:
         is_favorite: bool | None = None,
         created_at_from: datetime | None = None,
         created_at_to: datetime | None = None,
+        card_view: bool = False,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> NoteListResponse:
         objects = await self.content.list_all(owner_user_id=owner_user_id)
         normalized_search = search.casefold().strip() if search else None
@@ -570,6 +575,33 @@ class ContentService:
         else:
             items.sort(key=lambda item: item.created_at, reverse=True)
 
+        page_items = items
+        next_offset: int | None = None
+        if limit is not None:
+            start = max(offset, 0)
+            end = start + limit
+            page_items = items[start:end]
+            if end < len(items):
+                next_offset = end
+
+        if card_view:
+            return NoteListResponse(
+                items=[
+                    self._to_card_summary(
+                        item,
+                        active_tags=tags_by_object_id.get(item.id, []),
+                        assignment=assignment_by_object_id.get(item.id),
+                        search_matches=(
+                            search_matches_by_object_id.get(item.id, [])
+                            if search_matches_by_object_id is not None
+                            else None
+                        ),
+                    )
+                    for item in page_items
+                ],
+                next_offset=next_offset,
+            )
+
         return NoteListResponse(
             items=[
                 await self._to_card(
@@ -581,8 +613,9 @@ class ContentService:
                         else None
                     ),
                 )
-                for item in items
-            ]
+                for item in page_items
+            ],
+            next_offset=next_offset,
         )
 
     async def _source_provider_map(
@@ -2531,6 +2564,100 @@ class ContentService:
             search_matches=search_matches or [],
             assets=asset_responses,
             items=items,
+        )
+
+    def _to_card_summary(
+        self,
+        content_object: ContentObject,
+        *,
+        active_tags: list[Tag],
+        assignment: TaxonomyContentAssignment | None,
+        search_matches: list[SearchContentMatch] | None = None,
+    ) -> NoteCardResponse:
+        collection_parent = None
+        if content_object.collection_memberships:
+            collection = content_object.collection_memberships[0].collection
+            collection_parent = CollectionParentResponse(
+                id=collection.id,
+                slug=collection.slug,
+                title=collection.title,
+            )
+
+        items: list[NoteCardResponse] = []
+        if content_object.kind == "collection":
+            collection_items = sorted(
+                (
+                    item
+                    for item in content_object.collection_items
+                    if item.content_object is not None and item.content_object.deleted_at is None
+                ),
+                key=lambda item: item.position,
+            )
+            items = [
+                self._to_card_summary(
+                    item.content_object,
+                    active_tags=[],
+                    assignment=None,
+                )
+                for item in collection_items[:CARD_LIST_COLLECTION_ITEM_LIMIT]
+            ]
+
+        return NoteCardResponse(
+            id=content_object.id,
+            slug=content_object.slug,
+            kind=content_object.kind,  # type: ignore[arg-type]
+            media_type=content_object.media_type,  # type: ignore[arg-type]
+            title=content_object.title,
+            source_filename=content_object.source_filename,
+            taxonomy_category=self._taxonomy_category_response_from_assignment(assignment),
+            tags=[self._tag_response(tag) for tag in active_tags],
+            is_favorite=content_object.is_favorite,
+            sort_order=content_object.sort_order,
+            created_at=content_object.created_at,
+            updated_at=content_object.updated_at,
+            download_url=f"{self.api_prefix}/notes/{content_object.slug}/download",
+            collection=collection_parent,
+            source=None,
+            deferred_link_snapshots=None,
+            search_matches=search_matches or [],
+            assets=[
+                self._asset_card_summary(asset, content_object)
+                for asset in self._card_preview_assets(content_object.assets)
+            ],
+            items=items,
+        )
+
+    @staticmethod
+    def _card_preview_assets(assets: list[ContentAsset]) -> list[ContentAsset]:
+        ordered = sorted(assets, key=lambda asset: asset.created_at)
+        text_assets = [asset for asset in ordered if asset.media_type == "text"][:1]
+        visual_assets = [asset for asset in ordered if asset.media_type != "text"]
+        return (text_assets + visual_assets)[:CARD_LIST_ASSET_LIMIT]
+
+    def _asset_card_summary(
+        self,
+        asset: ContentAsset,
+        content_object: ContentObject,
+    ) -> NoteAssetResponse:
+        asset_url = f"{self.api_prefix}/notes/{content_object.slug}/asset/{asset.id}"
+        return NoteAssetResponse(
+            id=asset.id,
+            role=asset.role,
+            media_type=asset.media_type,  # type: ignore[arg-type]
+            filename=asset.filename,
+            mime_type=asset.mime_type,
+            size_bytes=asset.size_bytes,
+            url=asset_url,
+            text_content=asset.text_content,
+            thumbnail_url=None,
+            thumbnail_text=None,
+            markdown_url=None,
+            pdf_url=None,
+            html_url=None,
+            snapshot_views=[],
+            image_width=asset.image_width,
+            image_height=asset.image_height,
+            source=None,
         )
 
     async def _deferred_link_snapshots_for_object(

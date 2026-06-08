@@ -38,6 +38,7 @@ test('prefetchNotesRoute requests card view notes for SSR payloads', async () =>
   assert.equal(notesUrl.pathname, '/api/v1/notes')
   assert.equal(notesUrl.searchParams.get('search'), 'pico')
   assert.equal(notesUrl.searchParams.get('view'), 'card')
+  assert.equal(notesUrl.searchParams.get('limit'), '60')
 
   if (previousApiBase === undefined) delete process.env.SSR_API_BASE_URL
   else process.env.SSR_API_BASE_URL = previousApiBase

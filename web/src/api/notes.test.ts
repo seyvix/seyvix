@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { fetchNotes, reorderNotes, updateNote } from './notes.ts'
+import { fetchNotes, fetchNotesPage, reorderNotes, updateNote } from './notes.ts'
 
 function jsonResponse(body: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(body), {
@@ -61,6 +61,27 @@ test('fetchNotes serializes extended note filters', async () => {
   assert.equal(url.searchParams.get('favorite'), 'true')
   assert.equal(url.searchParams.get('created_after'), '2026-05-01')
   assert.equal(url.searchParams.get('created_before'), '2026-06-01')
+})
+
+test('fetchNotesPage serializes pagination and returns next offset', async () => {
+  let capturedUrl = ''
+  globalThis.fetch = async (input) => {
+    capturedUrl = String(input)
+    return jsonResponse({
+      items: [{ id: 'note-2', slug: 'second', title: 'Second note' }],
+      nextOffset: 120,
+    })
+  }
+
+  const page = await fetchNotesPage({ sort: 'custom' }, undefined, { limit: 60, offset: 60 })
+
+  const url = new URL(capturedUrl)
+  assert.equal(url.searchParams.get('view'), 'card')
+  assert.equal(url.searchParams.get('sort'), 'custom')
+  assert.equal(url.searchParams.get('limit'), '60')
+  assert.equal(url.searchParams.get('offset'), '60')
+  assert.equal(page.items[0].slug, 'second')
+  assert.equal(page.nextOffset, 120)
 })
 
 test('reorderNotes reports backend failures', async () => {

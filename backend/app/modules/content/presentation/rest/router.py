@@ -20,10 +20,12 @@ from app.modules.auth.presentation.rest.router import (
 )
 from app.modules.auth.service import AuthContext
 from app.modules.content.app_note import (
+    AppCardNoteListResponse,
     AppNote,
     AppNoteListResponse,
     FileUploadAppResponse,
     FolderDetailAppResponse,
+    note_card_to_app_card_note,
     note_card_to_app_note,
     upload_result_to_json_bytes,
 )
@@ -56,7 +58,9 @@ logger = get_logger(__name__)
 
 router = APIRouter(tags=["content"])
 NoteListView = Literal["full", "card"]
-CARD_VIEW_TEXT_CONTENT_LIMIT = 720
+CARD_VIEW_TEXT_CONTENT_LIMIT = 240
+CARD_VIEW_MAX_OBJECTS = 6
+CARD_VIEW_SEARCH_MATCH_TEXT_LIMIT = 240
 
 
 class InvalidRangeHeader(Exception):
@@ -284,11 +288,13 @@ async def list_notes(
     created_after: Annotated[str | None, Query(max_length=64)] = None,
     created_before: Annotated[str | None, Query(max_length=64)] = None,
     sort: Annotated[NoteSort, Query()] = "newest",
+    limit: Annotated[int | None, Query(ge=1, le=200)] = None,
+    offset: Annotated[int, Query(ge=0)] = 0,
     view: Annotated[
         NoteListView,
         Query(description="Use 'card' to trim large text bodies for dashboard cards."),
     ] = "full",
-) -> AppNoteListResponse:
+) -> AppNoteListResponse | Response:
     search_service = SemanticSearchService(service.session)
     settings = search_service.settings
     normalized_search = search.strip() if search else None
@@ -372,10 +378,31 @@ async def list_notes(
         created_at_from=created_after_dt,
         created_at_to=created_before_dt,
         sort=sort,
+        card_view=view == "card",
+        limit=limit,
+        offset=offset,
     )
-    text_content_limit = CARD_VIEW_TEXT_CONTENT_LIMIT if view == "card" else None
+    if view == "card":
+        payload = AppCardNoteListResponse(
+            items=[
+                note_card_to_app_card_note(
+                    n,
+                    text_content_limit=CARD_VIEW_TEXT_CONTENT_LIMIT,
+                    max_objects=CARD_VIEW_MAX_OBJECTS,
+                    search_match_text_limit=CARD_VIEW_SEARCH_MATCH_TEXT_LIMIT,
+                )
+                for n in lst.items
+            ],
+            nextOffset=lst.next_offset,
+        )
+        return Response(
+            content=payload.model_dump_json(by_alias=True, exclude_none=True),
+            media_type="application/json",
+        )
+
     return AppNoteListResponse(
-        items=[note_card_to_app_note(n, text_content_limit=text_content_limit) for n in lst.items]
+        items=[note_card_to_app_note(n) for n in lst.items],
+        nextOffset=lst.next_offset,
     )
 
 

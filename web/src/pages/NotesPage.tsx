@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
+import { ChevronDown } from 'lucide-react'
 import { useNotes } from '../hooks/useNotes'
 import { useLocalNotes } from '../contexts/LocalNotesContext'
 import { NoteGrid } from '../components/NoteGrid/NoteGrid'
@@ -25,6 +26,8 @@ import {
 import { useFolders } from '../hooks/useFolders'
 import { fetchTags } from '../api/enrichment'
 import type { Folder } from '../types'
+import { LoaderSpinner } from '../components/LoaderSpinner'
+import styles from './NotesPage.module.css'
 
 const TYPE_OPTIONS = [
   { value: 'note', label: 'Notes', description: 'Текстовые заметки' },
@@ -144,7 +147,7 @@ export default function NotesPage() {
     [pendingNotes, serverNotes, pendingIds],
   )
   const hasActiveSearchOrFilters = hasActiveFilters(filters)
-  const isSearchUpdating = hasActiveSearchOrFilters && notesQuery.isFetching
+  const isSearchUpdating = hasActiveSearchOrFilters && notesQuery.isFetching && !notesQuery.isFetchingNextPage
 
   useThumbnailPoller(notes, { enabled: !hasActiveSearchOrFilters })
 
@@ -256,6 +259,21 @@ export default function NotesPage() {
         updatingLabel="Ищем материалы"
         onTagClick={handleTagClick}
       />
+      {notesQuery.hasNextPage && (
+        <div className={styles.loadMoreRow}>
+          <button
+            type="button"
+            className={styles.loadMoreButton}
+            onClick={() => void notesQuery.fetchNextPage()}
+            disabled={notesQuery.isFetchingNextPage}
+          >
+            {notesQuery.isFetchingNextPage
+              ? <LoaderSpinner size="xs" />
+              : <ChevronDown size={16} />}
+            <span>{notesQuery.isFetchingNextPage ? 'Загружаем' : 'Показать еще'}</span>
+          </button>
+        </div>
+      )}
     </BulkSelectProvider>
   )
 }

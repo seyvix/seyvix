@@ -1,8 +1,9 @@
 import { apiFetch } from '../lib/apiClient.ts'
 import { makeMarkdownTitle } from '../utils/markdownPaste.ts'
-import type { Note, NotesParams, RecommendedNote, UploadJob } from '../types'
+import type { Note, NotesPageResult, NotesParams, RecommendedNote, UploadJob } from '../types'
 
 const BASE = '/api/v1/notes'
+export const NOTES_PAGE_SIZE = 60
 export const MERGE_NOTES_ENABLED = false
 export interface ReorderNoteItem {
   slug: string
@@ -53,9 +54,21 @@ export async function fetchNotes(
   params: NotesParams = {},
   signal?: AbortSignal,
 ): Promise<Note[]> {
+  return (await fetchNotesPage(params, signal)).items
+}
+
+export async function fetchNotesPage(
+  params: NotesParams = {},
+  signal?: AbortSignal,
+  page: { limit?: number; offset?: number } = {},
+): Promise<NotesPageResult> {
   const origin = typeof window === 'undefined' ? 'http://localhost' : window.location.origin
   const url = new URL(BASE, origin)
   url.searchParams.set('view', 'card')
+  if (page.limit !== undefined) url.searchParams.set('limit', String(page.limit))
+  if (page.offset !== undefined && page.offset > 0) {
+    url.searchParams.set('offset', String(page.offset))
+  }
   if (params.search) url.searchParams.set('search', params.search)
   if (params.search && params.searchMode) url.searchParams.set('search_mode', params.searchMode)
   if (params.sort) url.searchParams.set('sort', params.sort)
@@ -72,8 +85,12 @@ export async function fetchNotes(
   const res = await apiFetch(url.toString(), { signal })
   if (!res.ok) throw new Error('Failed to fetch notes')
   const data: unknown = await res.json()
-  if (Array.isArray(data)) return data as Note[]
-  return ((data as { items?: Note[] }).items ?? []) as Note[]
+  if (Array.isArray(data)) return { items: data as Note[], nextOffset: null }
+  const payload = data as { items?: Note[]; nextOffset?: number | null }
+  return {
+    items: payload.items ?? [],
+    nextOffset: payload.nextOffset ?? null,
+  }
 }
 
 export async function fetchNoteRecommendations(

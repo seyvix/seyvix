@@ -124,6 +124,7 @@ class NoteCardResponse(BaseModel):
 
 class NoteListResponse(BaseModel):
     items: list[NoteCardResponse]
+    next_offset: int | None = None
 
 
 class CreateNoteRequest(BaseModel):

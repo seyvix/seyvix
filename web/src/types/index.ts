@@ -208,6 +208,11 @@ export interface NotesParams {
   sort?: 'newest' | 'custom'
 }
 
+export interface NotesPageResult {
+  items: Note[]
+  nextOffset?: number | null
+}
+
 export interface FileProgress {
   name: string
   status: 'pending' | 'processing' | 'done' | 'error'

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from app.modules.content.app_note import note_card_to_app_note
+from app.modules.content.app_note import note_card_to_app_card_note, note_card_to_app_note
 from app.modules.content.schemas import NoteAssetResponse, NoteCardResponse
 
 
@@ -169,3 +169,59 @@ def test_note_card_to_app_note_can_limit_text_object_content_for_lists() -> None
     assert len(full_note.objects[0].content) > 120
     assert list_note.objects[0].content.endswith("...")
     assert len(list_note.objects[0].content) <= 123
+
+
+def test_note_card_to_app_card_note_omits_heavy_detail_fields() -> None:
+    created_at = datetime(2026, 6, 6, 12, 0, tzinfo=UTC)
+    card = NoteCardResponse(
+        id="telegram-note",
+        slug="telegram-note",
+        kind="simple",
+        media_type="text",
+        title="Telegram note",
+        source_filename=None,
+        taxonomy_category=None,
+        tags=[],
+        is_favorite=False,
+        sort_order=0,
+        created_at=created_at,
+        updated_at=created_at,
+        download_url="/api/v1/notes/telegram-note/download",
+        source={
+            "provider": "telegram",
+            "provider_label": "Telegram",
+            "external_id": "message-1",
+            "raw_payload": {"body": "x" * 50_000},
+            "metadata": {
+                "custom_emoji_assets": {
+                    "1": {"data_url": "data:image/png;base64," + "a" * 10_000}
+                }
+            },
+        },
+        assets=[
+            NoteAssetResponse(
+                id="asset-text",
+                role="original",
+                media_type="text",
+                filename="content.md",
+                mime_type="text/markdown",
+                size_bytes=4096,
+                text_content="Alpha " * 300,
+                url="/api/v1/notes/telegram-note/asset/asset-text",
+                snapshot_views=[
+                    {
+                        "kind": "markdown",
+                        "label": "Markdown",
+                        "url": "/api/v1/snapshots/artifacts/markdown",
+                    }
+                ],
+            ),
+        ],
+    )
+
+    card_note = note_card_to_app_card_note(card, text_content_limit=120)
+    payload = card_note.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+    assert payload["objects"][0]["content"].endswith("...")
+    assert "source" not in payload
+    assert "snapshotViews" not in payload["objects"][0]
