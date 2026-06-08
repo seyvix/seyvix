@@ -844,10 +844,10 @@
   display: grid;
   gap: 12px;
   grid-template-rows: auto minmax(0, 1fr);
-  height: 100vh;
+  height: var(--app-viewport-height);
   max-width: min(440px, calc(100vw - 24px));
   overflow: auto;
-  padding: 18px;
+  padding: calc(18px + var(--app-safe-area-top)) max(18px, var(--app-safe-area-right)) calc(18px + var(--app-safe-area-bottom)) 18px;
   position: fixed;
   right: 0;
   top: 0;

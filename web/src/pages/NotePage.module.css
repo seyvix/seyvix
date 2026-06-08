@@ -2026,12 +2026,12 @@
   }
 
   .fullscreenBackdrop {
-    padding: 0;
+    padding: var(--app-safe-area-top) var(--app-safe-area-right) var(--app-safe-area-bottom) var(--app-safe-area-left);
   }
 
   .fullscreenShell {
-    width: 100vw;
-    height: 100dvh;
+    width: 100%;
+    height: calc(var(--app-viewport-height) - var(--app-safe-area-top) - var(--app-safe-area-bottom));
     border: none;
     border-radius: 0;
   }
@@ -2068,7 +2068,7 @@
   }
 
   .detailLayout {
-    padding: 16px 12px calc(88px + env(safe-area-inset-bottom));
+    padding: 16px 12px calc(88px + var(--app-safe-area-bottom));
     gap: 16px;
   }
 

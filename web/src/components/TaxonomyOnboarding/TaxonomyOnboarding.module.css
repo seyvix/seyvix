@@ -11,7 +11,7 @@
 
 .panel {
   width: min(760px, 100%);
-  max-height: min(760px, calc(100svh - 48px));
+  max-height: min(760px, calc(var(--app-viewport-height) - var(--app-safe-area-top) - var(--app-safe-area-bottom) - 48px));
   overflow: auto;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 8px;
@@ -181,14 +181,14 @@
 
 @media (max-width: 720px) {
   .backdrop {
-    --bottom-nav-offset: calc(76px + env(safe-area-inset-bottom));
+    --bottom-nav-offset: calc(76px + var(--app-safe-area-bottom));
 
     align-items: stretch;
     padding: 12px 12px calc(12px + var(--bottom-nav-offset));
   }
 
   .panel {
-    max-height: calc(100svh - 24px - var(--bottom-nav-offset));
+    max-height: calc(var(--app-viewport-height) - var(--app-safe-area-top) - 24px - var(--bottom-nav-offset));
   }
 
   .header,

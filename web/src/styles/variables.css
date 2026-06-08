@@ -52,6 +52,41 @@
   --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.5);
 
   /* Mobile layout */
-  --mobile-bottom-nav-height: calc(64px + env(safe-area-inset-bottom));
+  --telegram-safe-area-top: 0px;
+  --telegram-safe-area-bottom: 0px;
+  --telegram-safe-area-left: 0px;
+  --telegram-safe-area-right: 0px;
+  --telegram-content-safe-area-top: 0px;
+  --telegram-content-safe-area-bottom: 0px;
+  --telegram-content-safe-area-left: 0px;
+  --telegram-content-safe-area-right: 0px;
+  --telegram-viewport-height: 100dvh;
+  --telegram-viewport-stable-height: 100dvh;
+  --app-viewport-height: var(--telegram-viewport-stable-height);
+  --app-safe-area-top: max(env(safe-area-inset-top), var(--telegram-content-safe-area-top));
+  --app-safe-area-bottom: max(env(safe-area-inset-bottom), var(--telegram-content-safe-area-bottom));
+  --app-safe-area-left: max(env(safe-area-inset-left), var(--telegram-content-safe-area-left));
+  --app-safe-area-right: max(env(safe-area-inset-right), var(--telegram-content-safe-area-right));
+  --mobile-bottom-nav-height: calc(64px + var(--app-safe-area-bottom));
   --mobile-bottom-nav-clearance: calc(var(--mobile-bottom-nav-height) + 12px);
+}
+
+.seyvixTelegramSafeAreaLogo {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  html[data-telegram-mini-app='true'][data-telegram-fullscreen='true'] .seyvixTelegramSafeAreaLogo {
+    display: block;
+    position: fixed;
+    top: max(6px, calc(var(--app-safe-area-top) / 2 - 13px));
+    left: 50%;
+    z-index: 90;
+    width: 26px;
+    height: 26px;
+    border-radius: 8px;
+    opacity: 0.9;
+    pointer-events: none;
+    transform: translateX(-50%);
+  }
 }

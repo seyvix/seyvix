@@ -1470,7 +1470,7 @@
   .addCardEditing {
     left: 10px;
     right: 10px;
-    top: max(10px, env(safe-area-inset-top));
+    top: max(10px, var(--app-safe-area-top));
     bottom: calc(var(--mobile-bottom-nav-clearance) + 8px);
     width: auto;
     height: auto;
@@ -1515,7 +1515,7 @@
 
   .addCardActions {
     gap: 8px;
-    padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+    padding: 10px 12px calc(10px + var(--app-safe-area-bottom));
   }
 
   .addCardFileBtn,

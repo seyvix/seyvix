@@ -9,7 +9,6 @@ import { useAuth } from '../contexts/AuthContext'
 import {
   getTelegramWebApp,
   isTelegramMiniApp,
-  prepareTelegramAuthSurface,
 } from '../utils/telegramWebApp'
 import styles from './AuthPage.module.css'
 
@@ -151,7 +150,6 @@ export default function AuthPage() {
 
   useEffect(() => {
     if (!webApp) return
-    prepareTelegramAuthSurface(webApp)
 
     const mainButton = webApp.MainButton
     mainButton?.setText?.('Войти в Seyvix')

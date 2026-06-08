@@ -1,6 +1,6 @@
 .page {
   min-height: 100vh;
-  min-height: 100svh;
+  min-height: var(--app-viewport-height);
   background: var(--color-bg);
   display: flex;
   align-items: center;
@@ -217,8 +217,10 @@
 @media (max-width: 520px) {
   .page {
     align-items: flex-start;
-    padding-top: max(28px, env(safe-area-inset-top));
-    padding-bottom: max(24px, env(safe-area-inset-bottom));
+    padding-top: max(28px, var(--app-safe-area-top));
+    padding-bottom: max(24px, var(--app-safe-area-bottom));
+    padding-left: max(20px, var(--app-safe-area-left));
+    padding-right: max(20px, var(--app-safe-area-right));
   }
 
   .container {

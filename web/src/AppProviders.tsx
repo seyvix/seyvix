@@ -6,6 +6,7 @@ import {
 } from '@tanstack/react-query'
 import { useState } from 'react'
 import { UploadToast } from './components/UploadToast/UploadToast'
+import { TelegramSurface } from './components/TelegramSurface/TelegramSurface'
 import { AuthProvider } from './contexts/AuthContext'
 import type { UserResponse } from './api/auth'
 import { LocalNotesProvider } from './contexts/LocalNotesContext'
@@ -68,6 +69,7 @@ export function AppProviders({
           <SettingsProvider>
             <LocalNotesProvider>
               <UploadProvider>
+                <TelegramSurface />
                 {children}
                 <UploadToast />
               </UploadProvider>

@@ -16,13 +16,14 @@
 @media (max-width: 760px) {
   .root {
     display: block;
-    min-height: 100dvh;
-    height: 100dvh;
+    min-height: var(--app-viewport-height);
+    height: var(--app-viewport-height);
+    padding: var(--app-safe-area-top) var(--app-safe-area-right) 0 var(--app-safe-area-left);
     overflow: hidden;
   }
 
   .main {
-    height: 100dvh;
+    height: calc(var(--app-viewport-height) - var(--app-safe-area-top));
     padding-bottom: var(--mobile-bottom-nav-height);
     box-sizing: border-box;
   }
