@@ -81,9 +81,15 @@ def _not_found(exc: Exception) -> AppError:
     ),
     responses={
         201: {"description": "Note object created."},
-        401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
+        401: {
+            "model": ErrorResponse,
+            "description": "Missing or invalid access token.",
+        },
         404: {"model": ErrorResponse, "description": "Uploaded file not found."},
-        422: {"model": ErrorResponse, "description": "Validation error in input payload."},
+        422: {
+            "model": ErrorResponse,
+            "description": "Validation error in input payload.",
+        },
     },
 )
 async def create_note(
@@ -124,8 +130,14 @@ async def create_note(
             ),
             "model": FileUploadAppResponse,
         },
-        401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
-        422: {"model": ErrorResponse, "description": "Validation error in input payload."},
+        401: {
+            "model": ErrorResponse,
+            "description": "Missing or invalid access token.",
+        },
+        422: {
+            "model": ErrorResponse,
+            "description": "Validation error in input payload.",
+        },
     },
 )
 async def upload_note_files(
@@ -275,6 +287,7 @@ async def list_notes(
         search=search,
         search_result_ids=search_result_ids,
         search_matches_by_object_id=search_matches_by_object_id,
+        include_local_search_matches=search_mode == "hybrid",
         tag_slugs=tags or [],
         folder_path=folders or folder,
         sort=sort,
@@ -289,7 +302,10 @@ async def list_notes(
     description="Moves notes to trash when trash is enabled, otherwise permanently deletes them.",
     responses={
         204: {"description": "Notes deleted."},
-        401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
+        401: {
+            "model": ErrorResponse,
+            "description": "Missing or invalid access token.",
+        },
     },
 )
 async def bulk_delete_notes(
@@ -338,8 +354,14 @@ async def cleanup_trash(
     description="Stores explicit sort positions used by drag and drop UI ordering.",
     responses={
         204: {"description": "Custom order updated."},
-        401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
-        404: {"model": ErrorResponse, "description": "One or more notes were not found."},
+        401: {
+            "model": ErrorResponse,
+            "description": "Missing or invalid access token.",
+        },
+        404: {
+            "model": ErrorResponse,
+            "description": "One or more notes were not found.",
+        },
     },
 )
 async def reorder_notes(
@@ -368,8 +390,14 @@ async def reorder_notes(
     ),
     responses={
         200: {"description": "Sources moved into target collection."},
-        401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
-        404: {"model": ErrorResponse, "description": "One or more notes were not found."},
+        401: {
+            "model": ErrorResponse,
+            "description": "Missing or invalid access token.",
+        },
+        404: {
+            "model": ErrorResponse,
+            "description": "One or more notes were not found.",
+        },
     },
 )
 async def merge_notes(
@@ -396,7 +424,10 @@ async def merge_notes(
     summary="Get note",
     description="Returns a single note, object, or collection by slug or by id (UUID).",
     responses={
-        401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
+        401: {
+            "model": ErrorResponse,
+            "description": "Missing or invalid access token.",
+        },
         404: {"model": ErrorResponse, "description": "Note not found."},
     },
 )
@@ -419,7 +450,10 @@ async def get_note(
     summary="Restore deleted note",
     responses={
         200: {"description": "Restored note returned."},
-        401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
+        401: {
+            "model": ErrorResponse,
+            "description": "Missing or invalid access token.",
+        },
         404: {"model": ErrorResponse, "description": "Note not found."},
     },
 )
@@ -443,7 +477,10 @@ async def restore_note(
     description="Updates mutable fields of a note: title and/or tags.",
     responses={
         200: {"description": "Updated note returned."},
-        401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
+        401: {
+            "model": ErrorResponse,
+            "description": "Missing or invalid access token.",
+        },
         404: {"model": ErrorResponse, "description": "Note not found."},
     },
 )
@@ -507,7 +544,10 @@ async def decide_link_snapshots(
     description="Downloads the note/object directory as a zip archive for native export flows.",
     responses={
         200: {"description": "Zip archive returned."},
-        401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
+        401: {
+            "model": ErrorResponse,
+            "description": "Missing or invalid access token.",
+        },
         404: {"model": ErrorResponse, "description": "Note not found."},
     },
 )
@@ -537,7 +577,10 @@ async def download_note(
     description="Streams the raw file for a specific asset (image, document, etc.).",
     responses={
         200: {"description": "Asset file returned."},
-        401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
+        401: {
+            "model": ErrorResponse,
+            "description": "Missing or invalid access token.",
+        },
         404: {"model": ErrorResponse, "description": "Note or asset not found."},
     },
 )
@@ -568,7 +611,10 @@ async def get_asset_file(
         200: {"description": "Thumbnail artifact returned."},
         202: {"description": "Thumbnail not yet ready."},
         204: {"description": "Thumbnail is unavailable for this asset."},
-        401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
+        401: {
+            "model": ErrorResponse,
+            "description": "Missing or invalid access token.",
+        },
         404: {"model": ErrorResponse, "description": "Note or asset not found."},
     },
 )
@@ -598,7 +644,10 @@ async def get_asset_thumbnail(
     description="Detaches items from a collection without deleting the child notes.",
     responses={
         204: {"description": "Items removed from collection."},
-        401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
+        401: {
+            "model": ErrorResponse,
+            "description": "Missing or invalid access token.",
+        },
         404: {"model": ErrorResponse, "description": "Collection not found."},
     },
 )
@@ -626,7 +675,10 @@ async def remove_collection_items(
     description="Marks or unmarks a note, object, or collection as favorite.",
     responses={
         200: {"description": "Favorite state updated."},
-        401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
+        401: {
+            "model": ErrorResponse,
+            "description": "Missing or invalid access token.",
+        },
         404: {"model": ErrorResponse, "description": "Note not found."},
     },
 )
@@ -668,7 +720,10 @@ async def list_folders(
     summary="Get folder detail",
     description="Returns a folder, notes inside it, and tags used by notes in that folder.",
     responses={
-        401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
+        401: {
+            "model": ErrorResponse,
+            "description": "Missing or invalid access token.",
+        },
         404: {"model": ErrorResponse, "description": "Folder not found."},
     },
 )

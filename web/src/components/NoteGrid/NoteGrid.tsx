@@ -31,6 +31,7 @@ type MuuriItem = import('muuri').Item
 
 interface NoteGridProps {
   notes: Note[]
+  preserveOrder?: boolean
   emptyState?: {
     title: string
     description: string
@@ -39,7 +40,13 @@ interface NoteGridProps {
   onTagClick?: (tag: string) => void
 }
 
-export function NoteGrid({ notes, emptyState, onAddNote, onTagClick }: NoteGridProps) {
+export function NoteGrid({
+  notes,
+  preserveOrder = true,
+  emptyState,
+  onAddNote,
+  onTagClick,
+}: NoteGridProps) {
   const knownKeysRef  = useRef(new Set<string>())
   const isFirstRender = useRef(true)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -75,6 +82,11 @@ export function NoteGrid({ notes, emptyState, onAddNote, onTagClick }: NoteGridP
 
   function mergeIncomingNotes(incomingNotes: Note[]) {
     setOrderedNotes(current => {
+      if (!preserveOrder) {
+        orderedNotesRef.current = incomingNotes
+        return incomingNotes
+      }
+
       if (current.length === 0) {
         orderedNotesRef.current = incomingNotes
         return incomingNotes
@@ -100,7 +112,7 @@ export function NoteGrid({ notes, emptyState, onAddNote, onTagClick }: NoteGridP
     }
 
     mergeIncomingNotes(notes)
-  }, [notes])
+  }, [notes, preserveOrder])
 
   useEffect(() => {
     orderedNotesRef.current = orderedNotes

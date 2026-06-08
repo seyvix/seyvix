@@ -391,6 +391,7 @@ class ContentService:
         search: str | None,
         search_result_ids: list[str] | None = None,
         search_matches_by_object_id: dict[str, list[SearchContentMatch]] | None = None,
+        include_local_search_matches: bool = False,
         tag_slugs: list[str],
         folder_path: str | None,
         sort: str,
@@ -410,11 +411,28 @@ class ContentService:
         )
         items: list[ContentObject] = []
         seen_item_ids: set[str] = set()
+        local_search_scores: dict[str, float] = {}
 
         for content_object in objects:
-            if search_rank is not None and content_object.id not in search_rank:
-                continue
             assignment = assignment_by_object_id.get(content_object.id)
+            local_search_score = (
+                self._local_search_score(
+                    content_object,
+                    normalized_search,
+                    active_tags=tags_by_object_id.get(content_object.id, []),
+                    assignment=assignment,
+                )
+                if normalized_search
+                else 0.0
+            )
+            if local_search_score > 0:
+                local_search_scores[content_object.id] = local_search_score
+            if (
+                search_rank is not None
+                and content_object.id not in search_rank
+                and (not include_local_search_matches or local_search_score <= 0)
+            ):
+                continue
             if folder_path and (
                 assignment is None
                 or not self._path_matches_or_descends(
@@ -433,11 +451,18 @@ class ContentService:
                         child = item.content_object
                         if child.id in seen_item_ids:
                             continue
-                        if self._matches_search(child, normalized_search):
+                        child_score = self._local_search_score(
+                            child,
+                            normalized_search,
+                            active_tags=tags_by_object_id.get(child.id, []),
+                            assignment=assignment_by_object_id.get(child.id),
+                        )
+                        if child_score > 0:
+                            local_search_scores[child.id] = child_score
                             items.append(child)
                             seen_item_ids.add(child.id)
                     continue
-                if not self._matches_search(content_object, normalized_search):
+                if local_search_score <= 0:
                     continue
                 if content_object.id in seen_item_ids:
                     continue
@@ -453,7 +478,18 @@ class ContentService:
             items.append(content_object)
 
         if search_rank is not None:
-            items.sort(key=lambda item: search_rank[item.id])
+            items.sort(
+                key=lambda item: (
+                    -local_search_scores.get(item.id, 0.0),
+                    search_rank.get(item.id, 10**9),
+                    -self._external_search_match_score(
+                        item.id,
+                        search_matches_by_object_id,
+                    ),
+                    item.sort_order if sort == "custom" else 0,
+                    -item.created_at.timestamp(),
+                )
+            )
         elif sort == "custom":
             items.sort(key=lambda item: (item.sort_order, item.created_at))
         elif folder_path:
@@ -628,7 +664,7 @@ class ContentService:
                 "is_favorite": content_object.is_favorite,
                 "content_created_at": content_object.created_at.isoformat(),
                 "content_updated_at": content_object.updated_at.isoformat(),
-                "content_source_provider": object_source.provider if object_source else None,
+                "content_source_provider": (object_source.provider if object_source else None),
                 "source_original_created_at": (
                     object_source.original_created_at.isoformat()
                     if object_source and object_source.original_created_at
@@ -2054,7 +2090,10 @@ class ContentService:
                     for asset in content_object.assets
                     if asset.storage_ref is not None
                 ],
-                metadata={"kind": content_object.kind, "media_type": content_object.media_type},
+                metadata={
+                    "kind": content_object.kind,
+                    "media_type": content_object.media_type,
+                },
             ),
         )
         self.outbox.add(envelope, routing_key=event_name)
@@ -2066,7 +2105,10 @@ class ContentService:
         *,
         envelope: EventEnvelope,
     ) -> None:
-        if envelope.event_name not in {"content.object.created", "content.object.updated"}:
+        if envelope.event_name not in {
+            "content.object.created",
+            "content.object.updated",
+        }:
             return
         await self.snapshots.enqueue_for_content_object(
             content_object,
@@ -2531,19 +2573,164 @@ class ContentService:
             "media_type": content_object.media_type,
             "title": content_object.title,
             "source_filename": content_object.source_filename,
-            "folder": assignment.category_path_snapshot if assignment is not None else None,
+            "folder": (assignment.category_path_snapshot if assignment is not None else None),
             "tags": [tag.slug for tag in tags],
             "items": [item.slug for item in items],
         }
 
     @staticmethod
-    def _matches_search(content_object: ContentObject, search: str) -> bool:
-        haystack = [
-            content_object.title,
-            content_object.source_filename or "",
-            *(asset.text_content or "" for asset in content_object.assets),
-        ]
-        return any(search in value.casefold() for value in haystack)
+    def _external_search_match_score(
+        content_object_id: str,
+        search_matches_by_object_id: dict[str, list[SearchContentMatch]] | None,
+    ) -> float:
+        if search_matches_by_object_id is None:
+            return 0.0
+        return max(
+            (match.score for match in search_matches_by_object_id.get(content_object_id, [])),
+            default=0.0,
+        )
+
+    @classmethod
+    def _local_search_score(
+        cls,
+        content_object: ContentObject,
+        search: str | None,
+        *,
+        active_tags: list[Tag],
+        assignment: TaxonomyContentAssignment | None,
+    ) -> float:
+        if not search:
+            return 0.0
+        term_groups = cls._search_term_groups(search)
+        if not term_groups:
+            return 0.0
+        parts = cls._local_search_parts(
+            content_object,
+            active_tags=active_tags,
+            assignment=assignment,
+        )
+        if not parts:
+            return 0.0
+
+        normalized_query = search.casefold().strip()
+        has_specific_query_term = any(not is_generic for _, is_generic in term_groups)
+        matched_specific = False
+        matched_groups = 0
+        score = 0.0
+
+        for variants, is_generic in term_groups:
+            group_score = 0.0
+            for text, weight in parts:
+                lowered = text.casefold()
+                if normalized_query and normalized_query in lowered:
+                    group_score = max(group_score, weight * 3)
+                for variant in variants:
+                    if variant and variant in lowered:
+                        group_score = max(group_score, weight)
+            if group_score <= 0:
+                continue
+            matched_groups += 1
+            score += group_score
+            if not is_generic:
+                matched_specific = True
+
+        if matched_groups == 0:
+            return 0.0
+        if has_specific_query_term and not matched_specific:
+            return 0.0
+        if matched_groups == len(term_groups):
+            score *= 2
+        return score
+
+    @staticmethod
+    def _local_search_parts(
+        content_object: ContentObject,
+        *,
+        active_tags: list[Tag],
+        assignment: TaxonomyContentAssignment | None,
+    ) -> list[tuple[str, float]]:
+        parts: list[tuple[str, float]] = []
+        if content_object.title:
+            parts.append((content_object.title, 8.0))
+        if content_object.source_filename:
+            parts.append((content_object.source_filename, 4.0))
+        if assignment is not None:
+            parts.append((assignment.category_path_snapshot, 5.0))
+            parts.append((assignment.category_name_snapshot, 5.0))
+        for tag in active_tags:
+            parts.append((tag.name, 10.0))
+            parts.append((tag.slug, 8.0))
+        for tag in content_object.tags:
+            parts.append((tag.name, 10.0))
+            parts.append((tag.slug, 8.0))
+        for asset in content_object.assets:
+            if asset.filename:
+                parts.append((asset.filename, 4.0))
+            if asset.text_content:
+                parts.append((asset.text_content, 3.0))
+        return parts
+
+    @classmethod
+    def _search_term_groups(cls, search: str) -> list[tuple[tuple[str, ...], bool]]:
+        groups: list[tuple[tuple[str, ...], bool]] = []
+        seen: set[str] = set()
+        for raw_term in re.findall(r"[0-9A-Za-zА-Яа-яЁё_]{2,}", search.casefold()):
+            term = raw_term.strip("_")
+            if not term or term in seen:
+                continue
+            seen.add(term)
+            variants, is_generic = cls._search_variants(term)
+            groups.append((tuple(sorted(variants, key=len, reverse=True)), is_generic))
+        return groups
+
+    @staticmethod
+    def _search_variants(term: str) -> tuple[set[str], bool]:
+        variants = {term}
+        is_generic = term in {"new", "latest", "fresh"} or term.startswith("нов")
+        if re.search(r"[а-яё]", term) and len(term) >= 4:
+            variants.add(term[:-1])
+
+        if term in {"new", "latest", "fresh"}:
+            variants.update(
+                {
+                    "new",
+                    "latest",
+                    "fresh",
+                    "нов",
+                    "анонс",
+                    "announc",
+                    "релиз",
+                    "release",
+                    "update",
+                    "обнов",
+                    "апдейт",
+                    "выйдет",
+                }
+            )
+            is_generic = True
+        if term.startswith("нов"):
+            variants.update(
+                {
+                    "нов",
+                    "new",
+                    "анонс",
+                    "announc",
+                    "релиз",
+                    "release",
+                    "update",
+                    "обнов",
+                    "апдейт",
+                    "выйдет",
+                }
+            )
+            is_generic = True
+        if term in {"game", "games", "gaming"}:
+            variants.update({"game", "games", "gaming", "video game", "игр"})
+            is_generic = False
+        if term.startswith("игр") or term in {"игра", "игры", "игру", "игре"}:
+            variants.update({"игр", "game", "games", "gaming", "video game"})
+            is_generic = False
+        return {variant for variant in variants if len(variant) >= 2}, is_generic
 
     @staticmethod
     def _telegram_chat_type(origin: dict[str, Any] | None) -> str | None:

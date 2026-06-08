@@ -21,6 +21,19 @@ test('fetchNotes returns note items from the backend response', async () => {
   assert.equal(notes[0].slug, 'first')
 })
 
+test('fetchNotes forwards abort signal to the request', async () => {
+  const controller = new AbortController()
+  let capturedSignal: AbortSignal | undefined
+  globalThis.fetch = async (_input, init) => {
+    capturedSignal = init?.signal ?? undefined
+    return jsonResponse({ items: [] })
+  }
+
+  await fetchNotes({ search: 'Valheim' }, controller.signal)
+
+  assert.equal(capturedSignal, controller.signal)
+})
+
 test('reorderNotes reports backend failures', async () => {
   globalThis.fetch = async () => new Response(null, { status: 500 })
 

@@ -8,7 +8,10 @@ export interface ReorderNoteItem {
   position: number
 }
 
-export async function fetchNotes(params: NotesParams = {}): Promise<Note[]> {
+export async function fetchNotes(
+  params: NotesParams = {},
+  signal?: AbortSignal,
+): Promise<Note[]> {
   const origin = typeof window === 'undefined' ? 'http://localhost' : window.location.origin
   const url = new URL(BASE, origin)
   if (params.search) url.searchParams.set('search', params.search)
@@ -17,7 +20,7 @@ export async function fetchNotes(params: NotesParams = {}): Promise<Note[]> {
   params.tags?.forEach(t => url.searchParams.append('tags', t))
   params.folders?.forEach(f => url.searchParams.append('folders', f))
 
-  const res = await apiFetch(url.toString())
+  const res = await apiFetch(url.toString(), { signal })
   if (!res.ok) throw new Error('Failed to fetch notes')
   const data: unknown = await res.json()
   if (Array.isArray(data)) return data as Note[]
