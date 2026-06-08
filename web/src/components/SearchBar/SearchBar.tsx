@@ -200,7 +200,6 @@ export function SearchBar({
                 disabled={item.disabled}
                 onPointerDown={event => {
                   event.preventDefault()
-                  applySuggestion(item)
                 }}
                 onMouseDown={event => { event.preventDefault() }}
                 onClick={event => {
