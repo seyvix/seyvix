@@ -54,7 +54,12 @@ test('calculateMasonryGridMetrics honors dense column selections when cards rema
   })
 })
 
-test('calculateMasonryGridMetrics allows two readable columns on phones', () => {
+test('calculateMasonryGridMetrics allows up to three readable columns on phones', () => {
+  assert.deepEqual(calculateMasonryGridMetrics(520, 5), {
+    cols: 3,
+    itemWidth: 160,
+    contentWidth: 496,
+  })
   assert.deepEqual(calculateMasonryGridMetrics(390, 5), {
     cols: 2,
     itemWidth: 179,

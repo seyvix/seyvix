@@ -8,7 +8,7 @@ import styles from './AsideHeader.module.css'
 
 const STORAGE_KEY = 'seyvix:sidebar-expanded'
 const DESKTOP_COLUMN_OPTIONS = [1, 2, 3, 4, 5, 6, 7]
-const MOBILE_COLUMN_OPTIONS = [1, 2]
+const MOBILE_COLUMN_OPTIONS = [1, 2, 3]
 const MOBILE_COLUMNS_QUERY = '(max-width: 760px), (pointer: coarse)'
 
 function IconNotes() {
@@ -76,7 +76,7 @@ export default function AsideHeader() {
 
   const sidebarClass = [styles.sidebar, expanded ? styles.expanded : ''].filter(Boolean).join(' ')
   const columnOptions = isMobileColumns ? MOBILE_COLUMN_OPTIONS : DESKTOP_COLUMN_OPTIONS
-  const activeCols = isMobileColumns ? Math.min(cols, 2) : cols
+  const activeCols = isMobileColumns ? Math.min(cols, 3) : cols
   const initials = user?.display_name
     ? user.display_name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
     : 'U'

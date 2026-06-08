@@ -66,7 +66,7 @@ export function calculateMasonryGridMetrics(containerWidth: number, requestedCol
   const padding = containerWidth <= 640 ? MOBILE_PADDING : DESKTOP_PADDING
   const availableWidth = Math.max(160, containerWidth - padding)
   if (containerWidth <= 640) {
-    const requestedMobileCols = requestedCols <= 1 ? 1 : 2
+    const requestedMobileCols = Math.max(1, Math.min(3, Math.floor(requestedCols)))
     const maxColumnsByWidth = Math.max(
       1,
       Math.floor((availableWidth + GRID_GAP) / (MIN_READABLE_CARD_WIDTH + GRID_GAP)),
