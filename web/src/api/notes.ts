@@ -1,11 +1,41 @@
 import { apiFetch } from '../lib/apiClient.ts'
-import type { Note, NotesParams, UploadJob } from '../types'
+import type { Note, NotesParams, RecommendedNote, UploadJob } from '../types'
 
 const BASE = '/api/v1/notes'
 export const MERGE_NOTES_ENABLED = false
 export interface ReorderNoteItem {
   slug: string
   position: number
+}
+
+type RecommendedNoteBackendKind = RecommendedNote['type'] | 'complex'
+
+type RecommendedNoteResponse = {
+  id: string
+  slug: string
+  kind: RecommendedNoteBackendKind
+  media_type: RecommendedNote['mediaType']
+  title: string
+  score: number
+  matched_text: string
+  tags?: RecommendedNote['tags']
+  created_at: string
+  updated_at: string
+}
+
+export function mapRecommendedNote(item: RecommendedNoteResponse): RecommendedNote {
+  return {
+    id: item.id,
+    slug: item.slug,
+    type: item.kind === 'complex' ? 'composite' : item.kind,
+    mediaType: item.media_type,
+    title: item.title,
+    score: item.score,
+    matchedText: item.matched_text,
+    tags: item.tags ?? [],
+    createdAt: item.created_at,
+    updatedAt: item.updated_at,
+  }
 }
 
 export async function fetchNotes(
@@ -25,6 +55,21 @@ export async function fetchNotes(
   const data: unknown = await res.json()
   if (Array.isArray(data)) return data as Note[]
   return ((data as { items?: Note[] }).items ?? []) as Note[]
+}
+
+export async function fetchNoteRecommendations(
+  noteRef: string,
+  limit = 5,
+  signal?: AbortSignal,
+): Promise<RecommendedNote[]> {
+  const cappedLimit = Math.min(Math.max(limit, 1), 5)
+  const res = await apiFetch(
+    `${BASE}/${encodeURIComponent(noteRef)}/recommendations?limit=${cappedLimit}`,
+    { signal },
+  )
+  if (!res.ok) throw new Error('Failed to fetch recommendations')
+  const data = (await res.json()) as { items?: RecommendedNoteResponse[] }
+  return (data.items ?? []).map(mapRecommendedNote)
 }
 
 export async function reorderNotes(items: ReorderNoteItem[]): Promise<void> {

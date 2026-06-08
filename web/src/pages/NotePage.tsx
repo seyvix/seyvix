@@ -28,6 +28,7 @@ import {
   Plus,
   Search,
   Send,
+  Sparkles,
   Tag as TagIcon,
   Trash2,
   Type,
@@ -48,7 +49,7 @@ import AuthImage from '../components/AuthImage/AuthImage'
 import HtmlSnapshotViewer from '../components/HtmlSnapshotViewer/HtmlSnapshotViewer'
 import { LoaderSpinner } from '../components/LoaderSpinner'
 import { apiFetch } from '../lib/apiClient'
-import { decideDeferredLinkSnapshots, deleteNotes } from '../api/notes'
+import { decideDeferredLinkSnapshots, deleteNotes, fetchNoteRecommendations } from '../api/notes'
 import { SEARCH_CAPABILITIES_QUERY_KEY } from '../hooks/useSearchCapabilities'
 import { useAuthenticatedObjectUrl } from '../hooks/useAuthenticatedObjectUrl'
 import { openAuthenticatedAsset } from '../utils/authenticatedBlobUrl'
@@ -77,7 +78,7 @@ import {
   type TaxonomyAssignment,
   type TaxonomyClassificationJob,
 } from '../api/enrichment'
-import type { Note, NoteObject, SnapshotView, SourceMetadata, Tag } from '../types'
+import type { Note, NoteObject, RecommendedNote, SnapshotView, SourceMetadata, Tag } from '../types'
 import styles from './NotePage.module.css'
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
@@ -228,6 +229,17 @@ function objectNavTitle(obj: NoteObject, index: number): string {
   if (obj.caption?.trim()) return obj.caption.trim().slice(0, 64)
   if (obj.filename) return obj.filename
   return `${objectKindLabel(obj.type)} ${index + 1}`
+}
+
+function recommendedNoteTypeLabel(note: RecommendedNote): string {
+  if (note.type === 'collection') return 'Коллекция'
+  if (note.type === 'composite') return 'Составная заметка'
+  return note.mediaType ? objectKindLabel(note.mediaType) : 'Заметка'
+}
+
+function recommendationScoreLabel(score: number): string {
+  if (!Number.isFinite(score)) return ''
+  return `${Math.round(Math.max(0, Math.min(score, 1)) * 100)}%`
 }
 
 function objectCountSummary(objects: NoteObject[]): Array<{ type: NoteObject['type']; count: number }> {
@@ -475,6 +487,61 @@ function DeferredLinkSnapshotsPanel({ note }: { note: Note }) {
         </button>
       </div>
       {decision.isError && <span className={styles.deferredLinksError}>Не удалось сохранить выбор.</span>}
+    </section>
+  )
+}
+
+function RecommendationsPanel({ note }: { note: Note }) {
+  const recommendations = useQuery({
+    queryKey: ['note-recommendations', note.id],
+    queryFn: ({ signal }) => fetchNoteRecommendations(note.slug, 5, signal),
+    staleTime: 60_000,
+  })
+
+  const items = recommendations.data ?? []
+
+  return (
+    <section className={styles.recommendationsPanel}>
+      <div className={styles.recommendationsHeader}>
+        <Sparkles size={14} />
+        <span>Похожие материалы</span>
+        {recommendations.isFetching && !recommendations.isLoading && (
+          <LoaderSpinner size="xs" className={styles.recommendationsSpinner} />
+        )}
+      </div>
+
+      {recommendations.isLoading ? (
+        <div className={styles.recommendationsState}>
+          <LoaderSpinner size="md" />
+        </div>
+      ) : recommendations.isError ? (
+        <div className={styles.recommendationsState}>Не удалось загрузить рекомендации</div>
+      ) : items.length === 0 ? (
+        <div className={styles.recommendationsState}>Похожих материалов пока нет</div>
+      ) : (
+        <div className={styles.recommendationsList}>
+          {items.map(item => {
+            const scoreLabel = recommendationScoreLabel(item.score)
+            return (
+              <Link key={item.id} className={styles.recommendationItem} to={`/notes/${item.slug}`}>
+                <div className={styles.recommendationTop}>
+                  <strong>{item.title || 'Без названия'}</strong>
+                  {scoreLabel && <span className={styles.recommendationScore}>{scoreLabel}</span>}
+                </div>
+                <div className={styles.recommendationMeta}>
+                  <span>{recommendedNoteTypeLabel(item)}</span>
+                  {item.tags.slice(0, 2).map(tag => (
+                    <span key={tag.id}>#{tag.name}</span>
+                  ))}
+                </div>
+                {item.matchedText && (
+                  <p className={styles.recommendationText}>{item.matchedText}</p>
+                )}
+              </Link>
+            )
+          })}
+        </div>
+      )}
     </section>
   )
 }
@@ -1959,6 +2026,7 @@ export default function NotePage() {
 
           <aside className={styles.detailSidebar}>
             <NoteOverview note={note} objects={visibleObjects} />
+            <RecommendationsPanel note={note} />
             <DeferredLinkSnapshotsPanel note={note} />
             <EnrichmentPanel note={note} />
           </aside>

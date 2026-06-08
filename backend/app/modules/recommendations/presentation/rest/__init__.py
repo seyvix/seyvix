@@ -1,0 +1,1 @@
+"""REST presentation for recommendations."""
