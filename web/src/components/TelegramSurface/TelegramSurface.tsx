@@ -15,7 +15,7 @@ export function TelegramSurface() {
   return (
     <img
       className="seyvixTelegramSafeAreaLogo"
-      src="/favicon.svg"
+      src="/logo_0.svg"
       alt=""
       aria-hidden="true"
       draggable={false}

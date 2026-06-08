@@ -60,7 +60,7 @@
   --telegram-content-safe-area-bottom: 0px;
   --telegram-content-safe-area-left: 0px;
   --telegram-content-safe-area-right: 0px;
-  --telegram-safe-area-logo-top: 6px;
+  --telegram-safe-area-logo-center-y: 24px;
   --telegram-viewport-height: 100dvh;
   --telegram-viewport-stable-height: 100dvh;
   --app-viewport-height: var(--telegram-viewport-stable-height);
@@ -80,14 +80,14 @@
   html[data-telegram-mini-app='true'][data-telegram-fullscreen='true'] .seyvixTelegramSafeAreaLogo {
     display: block;
     position: fixed;
-    top: var(--telegram-safe-area-logo-top);
+    top: var(--telegram-safe-area-logo-center-y);
     left: 50%;
     z-index: 90;
-    width: 26px;
-    height: 26px;
-    border-radius: 8px;
-    opacity: 0.9;
+    width: 64px;
+    height: auto;
+    opacity: 1;
     pointer-events: none;
-    transform: translateX(-50%);
+    filter: drop-shadow(0 0 8px rgba(99, 102, 241, 0.34));
+    transform: translate(-50%, -50%);
   }
 }

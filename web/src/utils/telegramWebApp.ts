@@ -67,8 +67,7 @@ const TELEGRAM_SURFACE_COLOR = '#0f0f0f'
 const TELEGRAM_FULLSCREEN_RETRY_MS = 220
 const TELEGRAM_FULLSCREEN_MAX_ATTEMPTS = 4
 const TELEGRAM_FULLSCREEN_CONTROLS_TOP = 64
-const TELEGRAM_SAFE_AREA_LOGO_SIZE = 26
-const TELEGRAM_SAFE_AREA_LOGO_MIN_TOP = 6
+const TELEGRAM_SAFE_AREA_LOGO_MIN_CENTER = 24
 const CSS_VAR_NAMES = [
   '--telegram-safe-area-top',
   '--telegram-safe-area-bottom',
@@ -78,7 +77,7 @@ const CSS_VAR_NAMES = [
   '--telegram-content-safe-area-bottom',
   '--telegram-content-safe-area-left',
   '--telegram-content-safe-area-right',
-  '--telegram-safe-area-logo-top',
+  '--telegram-safe-area-logo-center-y',
   '--telegram-viewport-height',
   '--telegram-viewport-stable-height',
 ]
@@ -275,7 +274,11 @@ function syncTelegramCssVariables(webApp: TelegramWebApp, root: HTMLElement | nu
   setCssPx(root, '--telegram-safe-area-left', safeArea.left)
   setCssPx(root, '--telegram-safe-area-right', safeArea.right)
   setCssPx(root, '--telegram-content-safe-area-top', contentSafeAreaTop)
-  setCssPx(root, '--telegram-safe-area-logo-top', resolveSafeAreaLogoTop(webApp, safeArea.top, contentSafeAreaTop))
+  setCssPx(
+    root,
+    '--telegram-safe-area-logo-center-y',
+    resolveSafeAreaLogoCenterY(webApp, safeArea.top, contentSafeAreaTop),
+  )
   setCssPx(
     root,
     '--telegram-content-safe-area-bottom',
@@ -306,19 +309,15 @@ function resolveContentSafeAreaTop(
   return Math.max(reportedTop, safeAreaTop + TELEGRAM_FULLSCREEN_CONTROLS_TOP)
 }
 
-function resolveSafeAreaLogoTop(
+function resolveSafeAreaLogoCenterY(
   webApp: TelegramWebApp,
   safeAreaTop: number,
   contentSafeAreaTop: number,
 ): number {
-  const logoOffset = TELEGRAM_SAFE_AREA_LOGO_SIZE / 2
-  if (!webApp.isFullscreen) return Math.max(TELEGRAM_SAFE_AREA_LOGO_MIN_TOP, safeAreaTop / 2 - logoOffset)
+  if (!webApp.isFullscreen) return Math.max(TELEGRAM_SAFE_AREA_LOGO_MIN_CENTER, safeAreaTop / 2)
 
   const controlsHeight = Math.max(0, contentSafeAreaTop - safeAreaTop)
-  return Math.max(
-    TELEGRAM_SAFE_AREA_LOGO_MIN_TOP,
-    safeAreaTop + controlsHeight / 2 - logoOffset,
-  )
+  return Math.max(TELEGRAM_SAFE_AREA_LOGO_MIN_CENTER, safeAreaTop + controlsHeight / 2)
 }
 
 export function resetTelegramCssVariables(root: HTMLElement): void {
