@@ -138,6 +138,101 @@ def _clear_telegram_oidc_cookies(response: Response) -> None:
         )
 
 
+async def _fetch_remote_avatar(
+    client: httpx.AsyncClient,
+    photo_url: str,
+) -> tuple[bytes, str] | None:
+    try:
+        avatar_response = await client.get(photo_url)
+        avatar_response.raise_for_status()
+    except httpx.HTTPError:
+        return None
+
+    return (
+        avatar_response.content,
+        avatar_response.headers.get("content-type", "image/jpeg"),
+    )
+
+
+def _largest_telegram_photo_file_id(photo_sizes: object) -> str | None:
+    if not isinstance(photo_sizes, list):
+        return None
+
+    candidates = [
+        size for size in photo_sizes
+        if isinstance(size, dict) and isinstance(size.get("file_id"), str)
+    ]
+    if not candidates:
+        return None
+
+    largest = max(
+        candidates,
+        key=lambda size: (
+            int(size.get("file_size") or 0),
+            int(size.get("width") or 0) * int(size.get("height") or 0),
+        ),
+    )
+    return str(largest["file_id"])
+
+
+async def _fetch_telegram_profile_avatar(
+    client: httpx.AsyncClient,
+    *,
+    telegram_id: str,
+    bot_token: str | None,
+    api_base: str,
+) -> tuple[bytes, str] | None:
+    if not bot_token:
+        return None
+
+    base_url = api_base.rstrip("/")
+    try:
+        photos_response = await client.get(
+            f"{base_url}/bot{bot_token}/getUserProfilePhotos",
+            params={"user_id": telegram_id, "limit": 1},
+        )
+        photos_response.raise_for_status()
+        photos_payload = photos_response.json()
+        if not isinstance(photos_payload, dict) or photos_payload.get("ok") is not True:
+            return None
+
+        result = photos_payload.get("result")
+        if not isinstance(result, dict):
+            return None
+
+        photos = result.get("photos")
+        if not isinstance(photos, list) or not photos:
+            return None
+
+        file_id = _largest_telegram_photo_file_id(photos[0])
+        if file_id is None:
+            return None
+
+        file_response = await client.get(
+            f"{base_url}/bot{bot_token}/getFile",
+            params={"file_id": file_id},
+        )
+        file_response.raise_for_status()
+        file_payload = file_response.json()
+        if not isinstance(file_payload, dict) or file_payload.get("ok") is not True:
+            return None
+
+        file_result = file_payload.get("result")
+        if not isinstance(file_result, dict):
+            return None
+
+        file_path = file_result.get("file_path")
+        if not isinstance(file_path, str) or not file_path:
+            return None
+
+        return await _fetch_remote_avatar(
+            client,
+            f"{base_url}/file/bot{bot_token}/{file_path.lstrip('/')}",
+        )
+    except (httpx.HTTPError, ValueError, TypeError):
+        return None
+
+
 def _build_telegram_redirect_url(**params: str) -> str:
     settings = get_settings()
     if settings.telegram_login_redirect_url is None:
@@ -781,28 +876,32 @@ async def current_user_avatar(
             message="Invalid refresh token.",
         ) from exc
 
-    photo_url = context.user.telegram_photo_url
-    if not photo_url or urlsplit(photo_url).scheme not in {"http", "https"}:
+    avatar: tuple[bytes, str] | None = None
+    async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+        photo_url = context.user.telegram_photo_url
+        if photo_url and urlsplit(photo_url).scheme in {"http", "https"}:
+            avatar = await _fetch_remote_avatar(client, photo_url)
+
+        if avatar is None:
+            avatar = await _fetch_telegram_profile_avatar(
+                client,
+                telegram_id=context.user.telegram_id,
+                bot_token=settings.telegram_bot_token,
+                api_base=settings.telegram_api_base,
+            )
+
+    if avatar is None:
         raise AppError(
             status_code=status.HTTP_404_NOT_FOUND,
             code="avatar_not_available",
             message="Avatar is not available.",
         )
 
-    try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
-            avatar_response = await client.get(photo_url)
-            avatar_response.raise_for_status()
-    except httpx.HTTPError as exc:
-        raise AppError(
-            status_code=status.HTTP_404_NOT_FOUND,
-            code="avatar_not_available",
-            message="Avatar is not available.",
-        ) from exc
+    content, media_type = avatar
 
     return Response(
-        content=avatar_response.content,
-        media_type=avatar_response.headers.get("content-type", "image/jpeg"),
+        content=content,
+        media_type=media_type,
         headers={"Cache-Control": "private, max-age=3600"},
     )
 

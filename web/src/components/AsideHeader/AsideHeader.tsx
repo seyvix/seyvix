@@ -80,6 +80,7 @@ export default function AsideHeader() {
   const initials = user?.display_name
     ? user.display_name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
     : 'U'
+  const avatarSrc = user?.avatar_url ?? user?.telegram_photo_url ?? null
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia === 'undefined') return
@@ -96,10 +97,10 @@ export default function AsideHeader() {
       <div className={styles.top}>
         <div className={styles.avatar}>
           <span className={styles.avatarInitials}>{initials}</span>
-          {user?.telegram_photo_url && (
+          {avatarSrc && (
             <img
               className={styles.avatarImage}
-              src={ user.telegram_photo_url ?? user.avatar_url}
+              src={avatarSrc}
               alt=""
               referrerPolicy="no-referrer"
               onError={event => { event.currentTarget.hidden = true }}
@@ -157,10 +158,10 @@ export default function AsideHeader() {
           <div className={styles.mobileProfileCard}>
             <div className={styles.avatar}>
               <span className={styles.avatarInitials}>{initials}</span>
-              {user?.telegram_photo_url && (
+              {avatarSrc && (
                 <img
                   className={styles.avatarImage}
-                  src={user.avatar_url ?? user.telegram_photo_url}
+                  src={avatarSrc}
                   alt=""
                   referrerPolicy="no-referrer"
                   onError={event => { event.currentTarget.hidden = true }}

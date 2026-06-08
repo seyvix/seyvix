@@ -433,6 +433,89 @@ def test_current_user_avatar_proxies_telegram_photo(
     assert requested_urls == ["https://t.me/i/userpic/320/example.jpg"]
 
 
+def test_current_user_avatar_falls_back_to_bot_profile_photo(
+    auth_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested: list[tuple[str, object | None]] = []
+
+    class FakeAsyncClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def get(self, url: str, **kwargs: object):
+            requested.append((url, kwargs.get("params")))
+
+            class FakeResponse:
+                headers = {"content-type": "image/jpeg"}
+
+                @property
+                def content(self) -> bytes:
+                    return b"avatar-from-bot-api"
+
+                def raise_for_status(self) -> None:
+                    return None
+
+                def json(self) -> dict[str, object]:
+                    if url.endswith("/getUserProfilePhotos"):
+                        return {
+                            "ok": True,
+                            "result": {
+                                "photos": [
+                                    [
+                                        {
+                                            "file_id": "small-photo",
+                                            "width": 80,
+                                            "height": 80,
+                                        },
+                                        {
+                                            "file_id": "large-photo",
+                                            "width": 320,
+                                            "height": 320,
+                                        },
+                                    ]
+                                ]
+                            },
+                        }
+                    if url.endswith("/getFile"):
+                        return {
+                            "ok": True,
+                            "result": {"file_path": "photos/current-avatar.jpg"},
+                        }
+                    return {}
+
+            return FakeResponse()
+
+    monkeypatch.setattr(auth_router.httpx, "AsyncClient", FakeAsyncClient)
+    _telegram_login(auth_client, photo_url=None)
+
+    response = auth_client.get("/api/v1/auth/me/avatar")
+
+    assert response.status_code == 200
+    assert response.content == b"avatar-from-bot-api"
+    assert response.headers["content-type"] == "image/jpeg"
+    assert requested == [
+        (
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUserProfilePhotos",
+            {"user_id": "100500", "limit": 1},
+        ),
+        (
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile",
+            {"file_id": "large-photo"},
+        ),
+        (
+            f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/photos/current-avatar.jpg",
+            None,
+        ),
+    ]
+
+
 def test_sessions_returns_active_sessions_for_current_user(auth_client: TestClient) -> None:
     _telegram_login(auth_client)
     auth_client.cookies.clear()

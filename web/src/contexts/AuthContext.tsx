@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
-import { apiLogin, apiLogout, apiRefresh, apiRegister } from '../api/auth'
+import { apiLogin, apiLogout, apiRegister } from '../api/auth'
 import type { UserResponse } from '../api/auth'
 import { configureApiClient, refreshApiToken } from '../lib/apiClient'
 import { shouldRenderBeforeAuthRefresh, shouldSkipInitialRefresh } from '../utils/authBootstrap'
@@ -46,17 +46,16 @@ export function AuthProvider({
   // access_token живёт только в памяти
   const tokenRef = useRef<string | null>(initialAccessToken)
 
-  // Настраиваем apiClient сразу — он будет использоваться в api/notes.ts
-  useEffect(() => {
-    configureApiClient({
-      getToken: () => tokenRef.current,
-      setToken: (t) => { tokenRef.current = t },
-      onUnauthenticated: () => {
-        tokenRef.current = null
-        setUser(null)
-      },
-    })
-  }, [])
+  // Настраиваем apiClient во время render, чтобы query-эффекты детей не успели стартовать
+  // с дефолтным пустым токеном после hydration.
+  configureApiClient({
+    getToken: () => tokenRef.current,
+    setToken: (t) => { tokenRef.current = t },
+    onUnauthenticated: () => {
+      tokenRef.current = null
+      setUser(null)
+    },
+  })
 
   // Bootstrap: пробуем refresh при старте приложения
   useEffect(() => {
@@ -81,7 +80,7 @@ export function AuthProvider({
       return
     }
 
-    apiRefresh()
+    refreshApiToken()
       .then(({ user, access_token }) => {
         tokenRef.current = access_token
         setUser(user)

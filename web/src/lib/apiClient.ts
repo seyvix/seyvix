@@ -15,6 +15,7 @@ let getToken: GetToken = () => null
 let setToken: SetToken = () => {}
 let onUnauthenticated: OnUnauthenticated = () => {}
 let refreshPromise: ReturnType<typeof apiRefresh> | null = null
+let isConfigured = false
 
 export function configureApiClient(cfg: {
   getToken: GetToken
@@ -24,6 +25,7 @@ export function configureApiClient(cfg: {
   getToken = cfg.getToken
   setToken = cfg.setToken
   onUnauthenticated = cfg.onUnauthenticated
+  isConfigured = true
 }
 
 export async function refreshApiToken() {
@@ -37,9 +39,9 @@ export async function refreshApiToken() {
 
 export async function apiFetch(input: RequestInfo, init: RequestInit = {}): Promise<Response> {
   let token = getToken()
-  if (!token && refreshPromise) {
+  if (!token && isConfigured) {
     try {
-      const refreshed = await refreshPromise
+      const refreshed = await refreshApiToken()
       token = refreshed.access_token
     } catch {
       token = null

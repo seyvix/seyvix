@@ -2,6 +2,7 @@
   overflow-y: auto;
   flex: 1;
   width: 100%;
+  -webkit-overflow-scrolling: touch;
 }
 
 .grid {
@@ -85,6 +86,13 @@
 .mobileGrid .item {
   cursor: default;
   touch-action: pan-y;
+}
+
+.grid[data-masonry-ready='true'].mobileGrid .item,
+.grid[data-masonry-ready='true'][data-mobile-grid='true'] .item {
+  cursor: default;
+  touch-action: pan-y;
+  will-change: auto;
 }
 
 .itemDragging {

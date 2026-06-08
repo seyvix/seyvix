@@ -95,6 +95,40 @@ test('protected media waits for an in-flight refresh before first fetch', async 
   ])
 })
 
+test('protected media refreshes before the first fetch when no token is loaded', async () => {
+  let token: string | null = null
+  const calls: Array<{ url: string; authorization: string | null }> = []
+
+  configureApiClient({
+    getToken: () => token,
+    setToken: (nextToken) => { token = nextToken },
+    onUnauthenticated: () => {},
+  })
+
+  globalThis.fetch = async (input, init) => {
+    const url = String(input)
+    calls.push({ url, authorization: new Headers(init?.headers).get('Authorization') })
+
+    if (url === '/api/v1/auth/refresh') {
+      return Response.json({
+        access_token: 'fresh-access-token',
+        token_type: 'bearer',
+        user: { id: 'u1', display_name: 'User', is_active: true },
+      })
+    }
+
+    return new Response(new Blob(['image'], { type: 'image/png' }), { status: 200 })
+  }
+
+  const objectUrl = await authenticatedBlobUrl('/api/v1/notes/note/asset/no-token-yet')
+
+  assert.match(objectUrl, /^blob:/)
+  assert.deepEqual(calls, [
+    { url: '/api/v1/auth/refresh', authorization: null },
+    { url: '/api/v1/notes/note/asset/no-token-yet', authorization: 'Bearer fresh-access-token' },
+  ])
+})
+
 test('protected assets open from an authenticated object URL', async () => {
   const events: string[] = []
   const openedWindow = { location: { href: 'about:blank' }, opener: {}, close: () => {} }

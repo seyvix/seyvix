@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     refresh_cookie_secure: bool = False
     refresh_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
     telegram_bot_token: str | None = None
+    telegram_api_base: str = "https://api.telegram.org"
     telegram_internal_token: str | None = None
     telegram_default_group_window_seconds: int = 3
     telegram_login_max_age_seconds: int = 86400
