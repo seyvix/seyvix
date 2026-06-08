@@ -13,14 +13,17 @@ const KEY = 'seyvix:masonry-cols'
 const VIDEO_PREVIEW_AUTOPLAY_KEY = 'seyvix:video-preview-autoplay'
 export function SettingsProvider({ children }: { children: React.ReactNode }) {
   const [cols, setCols] = useState<number>(5)
-  const [videoPreviewAutoplay, setVideoPreviewAutoplay] = useState(false)
+  const [videoPreviewAutoplay, setVideoPreviewAutoplay] = useState(true)
 
   useLayoutEffect(() => {
     try {
       const stored = localStorage.getItem(KEY)
       const n = stored ? Number(stored) : 5
       if (n >= 1 && n <= 7) setCols(n)
-      setVideoPreviewAutoplay(localStorage.getItem(VIDEO_PREVIEW_AUTOPLAY_KEY) === '1')
+      const storedVideoPreviewAutoplay = localStorage.getItem(VIDEO_PREVIEW_AUTOPLAY_KEY)
+      setVideoPreviewAutoplay(
+        storedVideoPreviewAutoplay === null ? true : storedVideoPreviewAutoplay === '1',
+      )
     } catch {
       // ignore unavailable storage
     }
