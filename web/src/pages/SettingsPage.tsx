@@ -129,7 +129,7 @@ export default function SettingsPage() {
                   <span>{initials}</span>
                   {(user?.avatar_url || user?.telegram_photo_url) && (
                     <img
-                      src={user.avatar_url ?? user.telegram_photo_url ?? undefined}
+                      src={user.telegram_photo_url ?? user.avatar_url ?? undefined}
                       alt=""
                       referrerPolicy="no-referrer"
                       onError={(event) => { event.currentTarget.hidden = true }}

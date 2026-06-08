@@ -80,7 +80,7 @@ export default function AsideHeader() {
   const initials = user?.display_name
     ? user.display_name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
     : 'U'
-  const avatarSrc = user?.avatar_url ?? user?.telegram_photo_url ?? null
+  const avatarSrc = user?.telegram_photo_url ?? user?.avatar_url ?? null
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia === 'undefined') return
