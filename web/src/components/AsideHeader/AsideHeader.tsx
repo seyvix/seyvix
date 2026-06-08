@@ -4,6 +4,7 @@ import { Tags, Trash2 } from 'lucide-react'
 import { useLocalStorage } from '../../hooks/useLocalStorage'
 import { useSettings } from '../../contexts/SettingsContext'
 import { useAuth } from '../../contexts/AuthContext'
+import { calculateMasonryColumnPickerState } from '../../utils/noteGridOrder'
 import styles from './AsideHeader.module.css'
 
 const STORAGE_KEY = 'seyvix:sidebar-expanded'
@@ -67,16 +68,29 @@ function IconChevronLeft() {
   )
 }
 
+function readViewportWidth(): number {
+  return Math.round(
+    window.visualViewport?.width
+      ?? document.documentElement.clientWidth
+      ?? window.innerWidth,
+  )
+}
+
 export default function AsideHeader() {
   const [expanded, setExpanded] = useLocalStorage(STORAGE_KEY, false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [isMobileColumns, setIsMobileColumns] = useState(false)
+  const [columnViewportWidth, setColumnViewportWidth] = useState<number | null>(null)
   const { cols, setCols } = useSettings()
   const { user, logout } = useAuth()
 
   const sidebarClass = [styles.sidebar, expanded ? styles.expanded : ''].filter(Boolean).join(' ')
   const columnOptions = isMobileColumns ? MOBILE_COLUMN_OPTIONS : DESKTOP_COLUMN_OPTIONS
-  const activeCols = isMobileColumns ? Math.min(cols, 3) : cols
+  const mobileColumnState = isMobileColumns && columnViewportWidth !== null
+    ? calculateMasonryColumnPickerState(columnViewportWidth, cols, MOBILE_COLUMN_OPTIONS)
+    : null
+  const activeCols = mobileColumnState?.activeCols ?? (isMobileColumns ? Math.min(cols, 3) : cols)
+  const maxSelectableCols = mobileColumnState?.maxSelectableCols ?? columnOptions[columnOptions.length - 1]
   const initials = user?.display_name
     ? user.display_name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
     : 'U'
@@ -85,11 +99,20 @@ export default function AsideHeader() {
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia === 'undefined') return
     const media = window.matchMedia(MOBILE_COLUMNS_QUERY)
-    const handleChange = () => setIsMobileColumns(media.matches)
+    const handleChange = () => {
+      setIsMobileColumns(media.matches)
+      setColumnViewportWidth(readViewportWidth())
+    }
 
     handleChange()
     media.addEventListener?.('change', handleChange)
-    return () => media.removeEventListener?.('change', handleChange)
+    window.addEventListener('resize', handleChange)
+    window.visualViewport?.addEventListener('resize', handleChange)
+    return () => {
+      media.removeEventListener?.('change', handleChange)
+      window.removeEventListener('resize', handleChange)
+      window.visualViewport?.removeEventListener('resize', handleChange)
+    }
   }, [])
 
   return (
@@ -190,6 +213,7 @@ export default function AsideHeader() {
                     key={n}
                     className={[styles.colsBtn, activeCols === n ? styles.colsBtnActive : ''].filter(Boolean).join(' ')}
                     onClick={() => setCols(n)}
+                    disabled={isMobileColumns && n > maxSelectableCols}
                     aria-pressed={activeCols === n}
                   >
                     {n}

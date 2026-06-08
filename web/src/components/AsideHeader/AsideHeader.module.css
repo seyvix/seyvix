@@ -305,6 +305,16 @@
   color: var(--color-text-primary);
 }
 
+.colsBtn:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.colsBtn:disabled:hover {
+  background: var(--color-border);
+  color: var(--color-text-secondary);
+}
+
 .colsBtnActive {
   background: var(--color-accent);
   color: #fff;

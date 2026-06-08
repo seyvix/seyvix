@@ -1,7 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { buildMasonryLayoutSlots, calculateMasonryGridMetrics, orderNotesByIds, toReorderPayload } from './noteGridOrder.ts'
+import {
+  buildMasonryLayoutSlots,
+  calculateMasonryColumnPickerState,
+  calculateMasonryGridMetrics,
+  orderNotesByIds,
+  toReorderPayload,
+} from './noteGridOrder.ts'
 
 const notes = [
   { id: 'note-1', slug: 'first' },
@@ -77,6 +83,17 @@ test('calculateMasonryGridMetrics falls back to one column on narrow phones', ()
     cols: 1,
     itemWidth: 296,
     contentWidth: 296,
+  })
+})
+
+test('calculateMasonryColumnPickerState follows the effective mobile column count', () => {
+  assert.deepEqual(calculateMasonryColumnPickerState(390, 5, [1, 2, 3]), {
+    activeCols: 2,
+    maxSelectableCols: 2,
+  })
+  assert.deepEqual(calculateMasonryColumnPickerState(320, 3, [1, 2, 3]), {
+    activeCols: 1,
+    maxSelectableCols: 1,
   })
 })
 

@@ -15,6 +15,11 @@ export interface MasonryGridMetrics {
   contentWidth: number
 }
 
+export interface MasonryColumnPickerState {
+  activeCols: number
+  maxSelectableCols: number
+}
+
 export interface MasonryLayoutInput {
   heights: readonly number[]
   cols: number
@@ -87,6 +92,25 @@ export function calculateMasonryGridMetrics(containerWidth: number, requestedCol
   const contentWidth = itemWidth * cols + GRID_GAP * (cols - 1)
 
   return { cols, itemWidth, contentWidth }
+}
+
+export function calculateMasonryColumnPickerState(
+  containerWidth: number,
+  requestedCols: number,
+  options: readonly number[],
+): MasonryColumnPickerState {
+  const normalizedOptions = options
+    .map(option => Math.floor(option))
+    .filter(option => option > 0)
+
+  const maxOption = normalizedOptions.length > 0 ? Math.max(...normalizedOptions) : 1
+  const maxSelectableCols = calculateMasonryGridMetrics(containerWidth, maxOption).cols
+  const activeCols = calculateMasonryGridMetrics(containerWidth, requestedCols).cols
+
+  return {
+    activeCols: Math.max(1, Math.min(activeCols, maxOption)),
+    maxSelectableCols: Math.max(1, Math.min(maxSelectableCols, maxOption)),
+  }
 }
 
 export function buildMasonryLayoutSlots({ heights, cols, itemWidth, gap }: MasonryLayoutInput): MasonryLayoutResult {
