@@ -1205,7 +1205,10 @@
   position: absolute;
   z-index: 5;
   width: min(340px, calc(100% - 32px));
+  max-height: min(320px, calc(100vh - 240px));
   padding: 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border-radius: 12px;
   background: rgba(8, 9, 14, 0.96);
   border: 1px solid rgba(120, 134, 170, 0.18);
@@ -1214,7 +1217,7 @@
 
 .quickNoteSlashMenu button {
   width: 100%;
-  min-height: 40px;
+  min-height: 48px;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -1224,10 +1227,35 @@
   font-size: 14px;
 }
 
-.quickNoteSlashMenu button:first-child,
-.quickNoteSlashMenu button:hover {
+.quickNoteSlashMenu button:hover,
+.quickNoteSlashItemActive {
   color: var(--color-text-primary);
   background: rgba(255, 255, 255, 0.07);
+}
+
+.quickNoteSlashText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.quickNoteSlashText span,
+.quickNoteSlashText small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quickNoteSlashText span {
+  font-weight: var(--font-weight-semibold);
+}
+
+.quickNoteSlashText small {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.25;
 }
 
 .addCardFileList {
@@ -1498,6 +1526,10 @@
 
   .quickNoteSlashMenu {
     width: min(320px, calc(100vw - 28px));
+    max-height: min(42svh, 300px);
+    left: 14px !important;
+    right: 14px;
+    overflow-y: auto;
   }
 
   .addCardFileList {

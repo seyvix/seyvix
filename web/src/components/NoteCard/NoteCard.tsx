@@ -66,6 +66,7 @@ import {
 } from '../../utils/noteCardPresentation'
 import { normalizedHighlightRanges } from '../../utils/searchHighlight'
 import { htmlToMarkdown, makeMarkdownTitle, replaceBlobImageSources } from '../../utils/markdownPaste'
+import { moveSlashMenuSelection } from '../../utils/slashMenuNavigation'
 import { useFavicon } from '../../hooks/useFavicon'
 import { LoaderSpinner } from '../LoaderSpinner'
 import styles from './NoteCard.module.css'
@@ -905,6 +906,7 @@ export function AddNoteCard({ onClick }: { onClick?: () => void }) {
   const modalDropRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const editorRef = useRef<Editor | null>(null)
+  const slashMenuRef = useRef<HTMLDivElement>(null)
   const blobNamesRef = useRef(new Map<string, string>())
   const objectUrlsRef = useRef<string[]>([])
 
@@ -918,6 +920,7 @@ export function AddNoteCard({ onClick }: { onClick?: () => void }) {
     left: 0,
     query: '',
   })
+  const [slashSelectedIndex, setSlashSelectedIndex] = useState(0)
 
   const { mutate: upload } = useUploadFiles()
   const { mutate: create } = useCreateNote()
@@ -972,6 +975,17 @@ export function AddNoteCard({ onClick }: { onClick?: () => void }) {
     })
   }, [])
 
+  const slashItems = [
+    { id: 'heading', label: 'Заголовок', description: 'Крупный H1-блок', icon: <Heading1 size={18} />, keywords: 'heading заголовок h1' },
+    { id: 'task', label: 'Список задач', description: 'Чеклист с галочками', icon: <ListChecks size={18} />, keywords: 'task todo задача чеклист' },
+    { id: 'image', label: 'Изображение', description: 'Прикрепить картинку', icon: <ImageIcon size={18} />, keywords: 'image img фото картинка' },
+    { id: 'divider', label: 'Разделитель', description: 'Горизонтальная линия', icon: <Minus size={18} />, keywords: 'divider hr линия' },
+    { id: 'quote', label: 'Цитата', description: 'Выделенный блок текста', icon: <TextQuote size={18} />, keywords: 'quote цитата' },
+    { id: 'code', label: 'Код', description: 'Блок моноширинного текста', icon: <Code2 size={18} />, keywords: 'code код' },
+    { id: 'bullet', label: 'Маркированный список', description: 'Список с точками', icon: <List size={18} />, keywords: 'bullet list список' },
+    { id: 'ordered', label: 'Нумерованный список', description: 'Список 1, 2, 3', icon: <ListOrdered size={18} />, keywords: 'ordered number список' },
+  ].filter(item => !slashMenu.query || item.keywords.includes(slashMenu.query) || item.label.toLowerCase().includes(slashMenu.query))
+
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
@@ -1022,7 +1036,21 @@ export function AddNoteCard({ onClick }: { onClick?: () => void }) {
       },
       handleKeyDown: (_view, event) => {
         if (event.key === 'Escape') {
+          if (slashMenu.visible) {
+            setSlashMenu(prev => ({ ...prev, visible: false }))
+            return true
+          }
           handleCancel()
+          return true
+        }
+        if (slashMenu.visible && slashItems.length > 0 && (event.key === 'ArrowDown' || event.key === 'Tab')) {
+          event.preventDefault()
+          setSlashSelectedIndex(index => moveSlashMenuSelection(index, slashItems.length, 1))
+          return true
+        }
+        if (slashMenu.visible && slashItems.length > 0 && event.key === 'ArrowUp') {
+          event.preventDefault()
+          setSlashSelectedIndex(index => moveSlashMenuSelection(index, slashItems.length, -1))
           return true
         }
         if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
@@ -1030,7 +1058,8 @@ export function AddNoteCard({ onClick }: { onClick?: () => void }) {
           return true
         }
         if (event.key === 'Enter' && slashMenu.visible && slashItems.length > 0) {
-          runSlashCommand(slashItems[0].id)
+          event.preventDefault()
+          runSlashCommand(slashItems[Math.min(slashSelectedIndex, slashItems.length - 1)].id)
           return true
         }
         return false
@@ -1050,6 +1079,25 @@ export function AddNoteCard({ onClick }: { onClick?: () => void }) {
   useEffect(() => () => {
     objectUrlsRef.current.forEach(url => URL.revokeObjectURL(url))
   }, [])
+
+  useEffect(() => {
+    setSlashSelectedIndex(0)
+  }, [slashMenu.query, slashMenu.visible])
+
+  useEffect(() => {
+    if (slashItems.length === 0) {
+      setSlashSelectedIndex(0)
+      return
+    }
+    setSlashSelectedIndex(index => Math.min(index, slashItems.length - 1))
+  }, [slashItems.length])
+
+  useEffect(() => {
+    const menu = slashMenuRef.current
+    if (!menu || !slashMenu.visible) return
+    const active = menu.querySelector<HTMLElement>('[data-active="true"]')
+    active?.scrollIntoView({ block: 'nearest' })
+  }, [slashMenu.visible, slashSelectedIndex])
 
   useEffect(() => {
     const el = dropRef.current
@@ -1181,17 +1229,6 @@ export function AddNoteCard({ onClick }: { onClick?: () => void }) {
     isFileDragging && !isEditing ? styles.addCardFileDrag  : '',
   ].filter(Boolean).join(' ')
 
-  const slashItems = [
-    { id: 'heading', label: 'Заголовок', icon: <Heading1 size={18} />, keywords: 'heading заголовок h1' },
-    { id: 'task', label: 'Список задач', icon: <ListChecks size={18} />, keywords: 'task todo задача чеклист' },
-    { id: 'image', label: 'Изображение', icon: <ImageIcon size={18} />, keywords: 'image img фото картинка' },
-    { id: 'divider', label: 'Разделитель', icon: <Minus size={18} />, keywords: 'divider hr линия' },
-    { id: 'quote', label: 'Цитата', icon: <TextQuote size={18} />, keywords: 'quote цитата' },
-    { id: 'code', label: 'Код', icon: <Code2 size={18} />, keywords: 'code код' },
-    { id: 'bullet', label: 'Маркированный список', icon: <List size={18} />, keywords: 'bullet list список' },
-    { id: 'ordered', label: 'Нумерованный список', icon: <ListOrdered size={18} />, keywords: 'ordered number список' },
-  ].filter(item => !slashMenu.query || item.keywords.includes(slashMenu.query) || item.label.toLowerCase().includes(slashMenu.query))
-
   const editorDialog = isEditing && typeof document !== 'undefined' ? createPortal(
     <>
       <div className={styles.addCardBackdrop} onClick={handleCancel} />
@@ -1220,11 +1257,29 @@ export function AddNoteCard({ onClick }: { onClick?: () => void }) {
             )}
             <EditorContent editor={editor} className={styles.quickNoteEditor} />
             {slashMenu.visible && slashItems.length > 0 && (
-              <div className={styles.quickNoteSlashMenu} style={{ top: slashMenu.top, left: slashMenu.left }}>
-                {slashItems.map(item => (
-                  <button key={item.id} type="button" onMouseDown={e => { e.preventDefault(); runSlashCommand(item.id) }}>
+              <div
+                ref={slashMenuRef}
+                className={styles.quickNoteSlashMenu}
+                style={{ top: slashMenu.top, left: slashMenu.left }}
+                role="listbox"
+                aria-label="Команды редактора"
+              >
+                {slashItems.map((item, index) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={index === slashSelectedIndex ? styles.quickNoteSlashItemActive : ''}
+                    data-active={index === slashSelectedIndex ? 'true' : undefined}
+                    role="option"
+                    aria-selected={index === slashSelectedIndex}
+                    onMouseEnter={() => setSlashSelectedIndex(index)}
+                    onMouseDown={e => { e.preventDefault(); runSlashCommand(item.id) }}
+                  >
                     {item.icon}
-                    <span>{item.label}</span>
+                    <span className={styles.quickNoteSlashText}>
+                      <span>{item.label}</span>
+                      <small>{item.description}</small>
+                    </span>
                   </button>
                 ))}
               </div>
