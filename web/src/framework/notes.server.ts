@@ -33,7 +33,7 @@ export async function prefetchNotesRoute(
     const notesParams = buildNotesParams(requestUrl, capabilities)
 
     await queryClient.prefetchQuery({
-      queryKey: ['notes', notesParams],
+      queryKey: notesQueryKey(notesParams),
       queryFn: () => fetchNotes(apiBaseUrl, accessToken, notesParams),
     })
   } catch (error) {
@@ -54,6 +54,16 @@ function buildNotesParams(url: URL, capabilities: SearchCapabilities): NotesPara
     folders: folders.length ? folders : undefined,
     sort: 'custom',
   }
+}
+
+function notesQueryKey(params: NotesParams) {
+  return ['notes', {
+    search: params.search ?? null,
+    searchMode: params.searchMode ?? null,
+    sort: params.sort ?? null,
+    tags: params.tags ?? [],
+    folders: params.folders ?? [],
+  }] as const
 }
 
 async function fetchSearchCapabilities(

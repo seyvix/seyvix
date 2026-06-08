@@ -1,17 +1,24 @@
-type LoaderSpinnerSize = 'md' | 'lg'
+type LoaderSpinnerSize = 'xs' | 'md' | 'lg'
 
 interface LoaderSpinnerProps {
   size?: LoaderSpinnerSize
   className?: string
 }
 
-/** Uses global classes from `styles/loaders.css` (imported in main). */
+/** Uses global classes from `styles/loaders.css` (imported in root). */
 export function LoaderSpinner({ size = 'lg', className }: LoaderSpinnerProps) {
-  const sm = size === 'md' ? 'appLoaderSpinner--sm' : ''
+  const sizeClass = size === 'xs'
+    ? 'appLoaderSpinner--xs'
+    : size === 'md'
+      ? 'appLoaderSpinner--md'
+      : ''
   return (
-    <div
-      className={['appLoaderSpinner', sm, className].filter(Boolean).join(' ')}
+    <img
+      src="/logo_loader_breath.svg"
+      alt=""
+      className={['appLoaderSpinner', sizeClass, className].filter(Boolean).join(' ')}
       aria-hidden
+      draggable={false}
     />
   )
 }

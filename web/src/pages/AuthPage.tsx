@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 import { motion, useMotionValue, useTransform, useSpring } from 'framer-motion'
-import { Bot, ExternalLink, LoaderCircle, ShieldCheck, Sparkles } from 'lucide-react'
+import { Bot, ExternalLink, ShieldCheck, Sparkles } from 'lucide-react'
 import { apiTelegramWebApp } from '../api/auth'
 import CircularText from '../components/CircularText/CircularText'
+import { LoaderSpinner } from '../components/LoaderSpinner'
 import { useAuth } from '../contexts/AuthContext'
 import {
   getTelegramWebApp,
@@ -13,6 +14,7 @@ import {
 import styles from './AuthPage.module.css'
 
 const AUTH_RING_DEFAULT_SIZE = 236
+const DevLoginIcon = Bot
 
 function useElementWidth<T extends HTMLElement>(fallbackWidth: number) {
   const ref = useRef<T | null>(null)
@@ -230,7 +232,7 @@ export default function AuthPage() {
           <div className={styles.iconCenter}>
             {loading ? (
               <div className={styles.loadingMark}>
-                <LoaderCircle size={32} aria-hidden="true" />
+                <LoaderSpinner className={styles.authLoader} />
               </div>
             ) : (
               <TelegramIcon3D />
@@ -270,7 +272,7 @@ export default function AuthPage() {
               onClick={handleDevClick}
               disabled={loading}
             >
-              <Bot size={17} aria-hidden="true" />
+              <DevLoginIcon size={17} aria-hidden="true" />
               <span>Локальный вход</span>
             </button>
           )}

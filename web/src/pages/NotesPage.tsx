@@ -67,6 +67,9 @@ export default function NotesPage() {
     () => [...pendingNotes, ...serverNotes.filter(n => !pendingIds.has(n.id))],
     [pendingNotes, serverNotes, pendingIds],
   )
+  const noteGridKey = search.trim()
+    ? `search:${search}:${searchMode}:${activeTags.join(',')}:${activeFolders.join(',')}`
+    : 'notes'
 
   useThumbnailPoller(notes)
 
@@ -140,7 +143,12 @@ export default function NotesPage() {
         onClear={handleClear}
       />
       <BulkToolbar />
-      <NoteGrid notes={notes} onTagClick={handleTagClick} />
+      <NoteGrid
+        key={noteGridKey}
+        notes={notes}
+        preserveOrder={!search.trim()}
+        onTagClick={handleTagClick}
+      />
     </BulkSelectProvider>
   )
 }

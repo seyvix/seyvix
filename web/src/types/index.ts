@@ -151,6 +151,14 @@ export interface SearchMatch {
   highlightRanges?: SearchHighlightRange[]
 }
 
+export interface DeferredLinkSnapshots {
+  totalLinks: number
+  processedLinks: number
+  remainingLinks: number
+  expiresAt: string
+  status: 'pending'
+}
+
 export interface Note {
   id: string
   slug: string
@@ -167,6 +175,7 @@ export interface Note {
   collection?: NoteCollectionRef | null
   source?: SourceMetadata | null
   searchMatches?: SearchMatch[]
+  deferredLinkSnapshots?: DeferredLinkSnapshots | null
   /** Стабильный ключ для React — не меняется при tempId→serverId переходе */
   stableKey?: string
   isLocal?: boolean    // хранится локально, ещё не синхронизировано

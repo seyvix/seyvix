@@ -48,7 +48,7 @@ import AuthImage from '../components/AuthImage/AuthImage'
 import HtmlSnapshotViewer from '../components/HtmlSnapshotViewer/HtmlSnapshotViewer'
 import { LoaderSpinner } from '../components/LoaderSpinner'
 import { apiFetch } from '../lib/apiClient'
-import { deleteNotes } from '../api/notes'
+import { decideDeferredLinkSnapshots, deleteNotes } from '../api/notes'
 import { SEARCH_CAPABILITIES_QUERY_KEY } from '../hooks/useSearchCapabilities'
 import { useAuthenticatedObjectUrl } from '../hooks/useAuthenticatedObjectUrl'
 import { openAuthenticatedAsset } from '../utils/authenticatedBlobUrl'
@@ -421,6 +421,61 @@ function NoteOverview({ note, objects }: { note: Note; objects: NoteObject[] }) 
         </nav>
       )}
     </div>
+  )
+}
+
+function DeferredLinkSnapshotsPanel({ note }: { note: Note }) {
+  const queryClient = useQueryClient()
+  const deferred = note.deferredLinkSnapshots
+
+  const decision = useMutation({
+    mutationFn: (value: 'accept' | 'reject') => decideDeferredLinkSnapshots(note.slug, value),
+    onSuccess: async updated => {
+      queryClient.setQueriesData<Note>({ queryKey: ['note'] }, old => {
+        if (!old || (old.id !== updated.id && old.slug !== updated.slug)) return old
+        return updated
+      })
+      await queryClient.invalidateQueries({ queryKey: ['notes'] })
+      await queryClient.invalidateQueries({ queryKey: ['snapshot-jobs', note.id] })
+      await queryClient.invalidateQueries({ queryKey: ['snapshot-artifacts', note.id] })
+      await queryClient.invalidateQueries({ queryKey: SEARCH_CAPABILITIES_QUERY_KEY })
+    },
+  })
+
+  if (!deferred) return null
+
+  return (
+    <section className={styles.deferredLinksPanel}>
+      <div className={styles.deferredLinksHeader}>
+        <AlertTriangle size={14} />
+        <span>Ссылки в тексте</span>
+      </div>
+      <p>
+        Обработано {deferred.processedLinks} ссылок из {deferred.totalLinks}. Сделать снапшоты
+        остальных {deferred.remainingLinks}?
+      </p>
+      <div className={styles.deferredLinksActions}>
+        <button
+          type="button"
+          className={styles.deferredLinksAccept}
+          disabled={decision.isPending}
+          onClick={() => decision.mutate('accept')}
+        >
+          <Check size={13} />
+          Да
+        </button>
+        <button
+          type="button"
+          className={styles.deferredLinksReject}
+          disabled={decision.isPending}
+          onClick={() => decision.mutate('reject')}
+        >
+          <X size={13} />
+          Нет
+        </button>
+      </div>
+      {decision.isError && <span className={styles.deferredLinksError}>Не удалось сохранить выбор.</span>}
+    </section>
   )
 }
 
@@ -1904,6 +1959,7 @@ export default function NotePage() {
 
           <aside className={styles.detailSidebar}>
             <NoteOverview note={note} objects={visibleObjects} />
+            <DeferredLinkSnapshotsPanel note={note} />
             <EnrichmentPanel note={note} />
           </aside>
         </div>

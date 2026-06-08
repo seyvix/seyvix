@@ -12,12 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.core.database import build_session_factory
+from app.modules.content.models import ContentObject
+from app.modules.content.models import ContentTag as LegacyContentTag
 from app.modules.content.service import ContentService
 from app.modules.search.infrastructure.meilisearch import (
     MeilisearchSearchBackend,
     build_meilisearch_filter_expression,
 )
-from app.modules.search.schemas import HybridSearchResult, SearchFilters
+from app.modules.search.schemas import HybridSearchResult, SearchContentMatch, SearchFilters
 from app.modules.search.service import SemanticSearchService, build_search_matches_by_source_id
 from app.modules.vectorization.contracts import (
     VectorizedChunkFullTextSearchResult,
@@ -26,6 +28,62 @@ from app.modules.vectorization.contracts import (
 from app.modules.vectorization.worker import VectorizationWorker
 
 TELEGRAM_BOT_TOKEN = "123456:test-bot-token"
+
+
+def test_local_search_score_uses_legacy_content_tags() -> None:
+    note = ContentObject(
+        owner_user_id="user-1",
+        slug="valheim-update",
+        title="Patch notes",
+        kind="single",
+        media_type="text",
+        storage_path="objects/valheim-update",
+    )
+    note.tags = [
+        LegacyContentTag(
+            owner_user_id="user-1",
+            name="Viking survival game",
+            slug="viking-survival-game",
+        )
+    ]
+
+    assert (
+        ContentService._local_search_score(
+            note,
+            "new game",
+            active_tags=[],
+            assignment=None,
+        )
+        > 0
+    )
+    assert (
+        ContentService._local_search_score(
+            note,
+            "игра",
+            active_tags=[],
+            assignment=None,
+        )
+        > 0
+    )
+
+    recipe = ContentObject(
+        owner_user_id="user-1",
+        slug="new-recipe",
+        title="New recipe update",
+        kind="single",
+        media_type="text",
+        storage_path="objects/new-recipe",
+    )
+
+    assert (
+        ContentService._local_search_score(
+            recipe,
+            "new game",
+            active_tags=[],
+            assignment=None,
+        )
+        == 0
+    )
 
 
 def _telegram_payload(telegram_id: int = 100500) -> dict[str, object]:
@@ -1185,3 +1243,108 @@ def test_list_notes_keeps_empty_meilisearch_result_set(
 
     assert response.status_code == 200
     assert response.json()["items"] == []
+
+
+def test_list_notes_hybrid_falls_back_to_local_tag_matches_when_meilisearch_is_empty(
+    content_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers = _auth_headers(content_client)
+    settings = get_settings()
+    settings.search_vector_modes_min_notes = 0
+    settings.search_engine = "meilisearch"
+    settings.search_meilisearch_url = "http://meilisearch:7700"
+
+    async def fake_search(self, *, owner_user_id, query, limit, mode, filters):  # type: ignore[no-untyped-def]
+        return {}
+
+    monkeypatch.setattr(
+        "app.modules.search.service.SemanticSearchService." "search_content_object_matches",
+        fake_search,
+    )
+
+    valheim = _create_text_note(
+        content_client,
+        headers,
+        title="Valheim 1.0 release",
+        text="A large survival update with a northern biome.",
+        tag_names=["Game update", "New biome", "Viking survival game"],
+    )
+    stronghold = _create_text_note(
+        content_client,
+        headers,
+        title="Stronghold 4 announced",
+        text="A medieval strategy sequel trailer.",
+        tag_names=["Game update", "real-time strategy"],
+    )
+    _create_text_note(
+        content_client,
+        headers,
+        title="New recipe",
+        text="A new dinner recipe with no entertainment context.",
+        tag_names=[],
+    )
+
+    response = content_client.get(
+        "/api/v1/notes",
+        headers=headers,
+        params={"search": "new game", "search_mode": "hybrid"},
+    )
+
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert [item["id"] for item in items] == [valheim["id"], stronghold["id"]]
+
+
+def test_list_notes_hybrid_prioritizes_local_matches_before_semantic_only_results(
+    content_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers = _auth_headers(content_client)
+    settings = get_settings()
+    settings.search_vector_modes_min_notes = 0
+    settings.search_engine = "meilisearch"
+    settings.search_meilisearch_url = "http://meilisearch:7700"
+
+    game_note = _create_text_note(
+        content_client,
+        headers,
+        title="Valheim 1.0 release",
+        text="A survival update with a new biome.",
+        tag_names=["Game update", "New biome", "Viking survival game"],
+    )
+    semantic_only = _create_text_note(
+        content_client,
+        headers,
+        title="Habr article",
+        text="A backend indexing article.",
+        tag_names=["backend"],
+    )
+
+    async def fake_search(self, *, owner_user_id, query, limit, mode, filters):  # type: ignore[no-untyped-def]
+        return {
+            semantic_only["id"]: [
+                SearchContentMatch(
+                    chunk_id="semantic-only",
+                    chunk_external_id="content_object:semantic-only:chunk:0",
+                    text="A semantically similar but lexically unrelated article.",
+                    score=0.99,
+                    highlight_ranges=[],
+                )
+            ]
+        }
+
+    monkeypatch.setattr(
+        "app.modules.search.service.SemanticSearchService." "search_content_object_matches",
+        fake_search,
+    )
+
+    response = content_client.get(
+        "/api/v1/notes",
+        headers=headers,
+        params={"search": "new game", "search_mode": "hybrid"},
+    )
+
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert [item["id"] for item in items] == [game_note["id"], semantic_only["id"]]

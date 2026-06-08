@@ -1,7 +1,8 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { AlertTriangle, CheckCircle, Loader, X } from 'lucide-react'
+import { AlertTriangle, CheckCircle, X } from 'lucide-react'
 import { useUploadContext, type UploadJobEntry } from '../../contexts/UploadContext'
 import { useUploadJob } from '../../hooks/useUploadJob'
+import { LoaderSpinner } from '../LoaderSpinner'
 import styles from './UploadToast.module.css'
 
 function JobRow({ job }: { job: UploadJobEntry }) {
@@ -16,7 +17,7 @@ function JobRow({ job }: { job: UploadJobEntry }) {
       <div className={styles.jobHeader}>
         {isDone
           ? <CheckCircle size={13} className={styles.iconDone} />
-          : <Loader size={13} className={styles.iconSpinner} />
+          : <LoaderSpinner size="xs" className={styles.iconSpinner} />
         }
         <span className={styles.jobTitle}>
           {isDone ? 'Готово' : 'Загрузка…'}

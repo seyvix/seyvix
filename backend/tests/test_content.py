@@ -4,7 +4,7 @@ import hashlib
 import hmac
 import os
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -64,7 +64,9 @@ async def _prepare_database(database_url: str) -> async_sessionmaker:
 def _test_database_url() -> str:
     database_url = os.getenv("TEST_DATABASE_URL")
     if not database_url:
-        pytest.skip("Set TEST_DATABASE_URL to a disposable database for DB-resetting tests.")
+        pytest.skip(
+            "Set TEST_DATABASE_URL to a disposable database for DB-resetting tests."
+        )
     return database_url
 
 
@@ -156,7 +158,9 @@ def test_create_text_note_persists_manifest_and_downloads_archive(
     assert payload["taxonomyCategory"]["path"] == "projects/ai"
     assert [tag["name"] for tag in payload["tags"]] == ["AI", "draft"]
 
-    manifests = list(content_client.app.state.content_storage_root.rglob("manifest.json"))
+    manifests = list(
+        content_client.app.state.content_storage_root.rglob("manifest.json")
+    )
     assert len(manifests) == 1
     assert manifests[0].read_text(encoding="utf-8").find("Manual title") != -1
 
@@ -170,7 +174,9 @@ def test_create_text_note_persists_manifest_and_downloads_archive(
     assert len(download_response.content) > 100
 
 
-def test_deleted_notes_go_to_trash_and_can_be_restored(content_client: TestClient) -> None:
+def test_deleted_notes_go_to_trash_and_can_be_restored(
+    content_client: TestClient,
+) -> None:
     headers = _auth_headers(content_client)
     note = _create_text_note(
         content_client,
@@ -187,7 +193,10 @@ def test_deleted_notes_go_to_trash_and_can_be_restored(content_client: TestClien
     )
     assert delete_response.status_code == 204
 
-    assert content_client.get(f"/api/v1/notes/{note['slug']}", headers=headers).status_code == 404
+    assert (
+        content_client.get(f"/api/v1/notes/{note['slug']}", headers=headers).status_code
+        == 404
+    )
     list_response = content_client.get("/api/v1/notes", headers=headers)
     assert note["slug"] not in {item["slug"] for item in list_response.json()["items"]}
 
@@ -201,7 +210,10 @@ def test_deleted_notes_go_to_trash_and_can_be_restored(content_client: TestClien
     )
     assert restore_response.status_code == 200, restore_response.text
     assert restore_response.json()["slug"] == note["slug"]
-    assert content_client.get(f"/api/v1/notes/{note['slug']}", headers=headers).status_code == 200
+    assert (
+        content_client.get(f"/api/v1/notes/{note['slug']}", headers=headers).status_code
+        == 200
+    )
 
 
 def test_create_plain_url_note_creates_link_object_and_content_event(
@@ -225,17 +237,20 @@ def test_create_plain_url_note_creates_link_object_and_content_event(
     assert payload["objects"][0]["mimeType"] == "text/uri-list"
     assert payload["objects"][0]["content"] == "https://example.com/research?item=1"
 
-    async def load_processing_rows() -> (
-        tuple[
-            list[EventOutbox], list[SnapshotJob], list[TaggingJob], list[TaxonomyClassificationJob]
-        ]
-    ):
+    async def load_processing_rows() -> tuple[
+        list[EventOutbox],
+        list[SnapshotJob],
+        list[TaggingJob],
+        list[TaxonomyClassificationJob],
+    ]:
         async with content_client.app.state.session_factory() as session:
             events_result = await session.scalars(
                 select(EventOutbox).where(EventOutbox.entity_id == payload["id"])
             )
             snapshots_result = await session.scalars(
-                select(SnapshotJob).where(SnapshotJob.content_object_id == payload["id"])
+                select(SnapshotJob).where(
+                    SnapshotJob.content_object_id == payload["id"]
+                )
             )
             tags_result = await session.scalars(
                 select(TaggingJob).where(TaggingJob.content_object_id == payload["id"])
@@ -258,7 +273,12 @@ def test_create_plain_url_note_creates_link_object_and_content_event(
     assert [event.event_name for event in events] == ["content.object.created"]
     assert events[0].payload["metadata"]["media_type"] == "link"
     assert events[0].payload["asset_ids"] == [payload["objects"][0]["id"]]
-    assert {job.job_type for job in snapshot_jobs} >= {"thumbnail", "markdown", "pdf", "screenshot"}
+    assert {job.job_type for job in snapshot_jobs} >= {
+        "thumbnail",
+        "markdown",
+        "pdf",
+        "screenshot",
+    }
     assert tag_jobs == []
     assert taxonomy_jobs == []
 
@@ -318,6 +338,200 @@ def test_create_plain_url_note_ignores_url_payload_title_for_page_title(
     assert response.json()["title"] == "Research Page Title"
 
 
+def test_create_text_with_link_keeps_text_title_instead_of_page_title(
+    content_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers = _auth_headers(content_client)
+
+    async def fake_fetch_title(url: str) -> str | None:
+        return "Research Page Title"
+
+    monkeypatch.setattr(
+        ContentService,
+        "_fetch_link_page_title",
+        staticmethod(fake_fetch_title),
+        raising=False,
+    )
+
+    response = content_client.post(
+        "/api/v1/notes",
+        headers=headers,
+        json={"text": "Read later https://example.com/research?item=1"},
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["title"] == "Read later https://example.com/research?item=1"
+    assert {obj["type"] for obj in payload["objects"]} == {"link", "text"}
+
+
+def test_markdown_url_equal_to_label_is_saved_as_plain_link_note(
+    content_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers = _auth_headers(content_client)
+    url = "https://example.com/research?item=1"
+
+    async def fake_fetch_title(fetch_url: str) -> str | None:
+        assert fetch_url == url
+        return "Research Page Title"
+
+    monkeypatch.setattr(
+        ContentService,
+        "_fetch_link_page_title",
+        staticmethod(fake_fetch_title),
+        raising=False,
+    )
+
+    response = content_client.post(
+        "/api/v1/notes",
+        headers=headers,
+        json={"title": url, "text": f"[{url}]({url})"},
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["title"] == "Research Page Title"
+    assert [(obj["type"], obj["content"]) for obj in payload["objects"]] == [
+        ("link", url)
+    ]
+
+
+def _many_links_text(count: int = 5) -> tuple[str, list[str]]:
+    urls = [f"https://example.com/research-{index}" for index in range(1, count + 1)]
+    return "Read later\n" + "\n".join(urls), urls
+
+
+def test_text_note_with_many_links_processes_first_three_and_prompts_for_rest(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client)
+    text_value, urls = _many_links_text()
+
+    response = content_client.post(
+        "/api/v1/notes",
+        headers=headers,
+        json={"text": text_value},
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    link_objects = [obj for obj in payload["objects"] if obj["type"] == "link"]
+    text_objects = [obj for obj in payload["objects"] if obj["type"] == "text"]
+    assert [obj["content"] for obj in link_objects] == urls[:3]
+    assert len(text_objects) == 1
+    assert urls[4] in text_objects[0]["content"]
+    assert payload["deferredLinkSnapshots"]["totalLinks"] == 5
+    assert payload["deferredLinkSnapshots"]["processedLinks"] == 3
+    assert payload["deferredLinkSnapshots"]["remainingLinks"] == 2
+    assert payload["deferredLinkSnapshots"]["status"] == "pending"
+
+    async def load_snapshot_jobs() -> list[SnapshotJob]:
+        async with content_client.app.state.session_factory() as session:
+            result = await session.scalars(
+                select(SnapshotJob).where(
+                    SnapshotJob.content_object_id == payload["id"]
+                )
+            )
+            return list(result)
+
+    snapshot_jobs = content_client.portal.call(load_snapshot_jobs)
+    assert {job.source_asset_id for job in snapshot_jobs} == {
+        obj["id"] for obj in link_objects
+    }
+
+
+def test_accept_deferred_link_snapshots_adds_remaining_links_from_text(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client)
+    text_value, urls = _many_links_text()
+    created = content_client.post(
+        "/api/v1/notes",
+        headers=headers,
+        json={"text": text_value},
+    ).json()
+
+    response = content_client.post(
+        f"/api/v1/notes/{created['slug']}/link-snapshots/decision",
+        headers=headers,
+        json={"decision": "accept"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["deferredLinkSnapshots"] is None
+    link_objects = [obj for obj in payload["objects"] if obj["type"] == "link"]
+    assert [obj["content"] for obj in link_objects] == urls
+
+    async def load_snapshot_jobs() -> list[SnapshotJob]:
+        async with content_client.app.state.session_factory() as session:
+            result = await session.scalars(
+                select(SnapshotJob).where(
+                    SnapshotJob.content_object_id == payload["id"]
+                )
+            )
+            return list(result)
+
+    snapshot_jobs = content_client.portal.call(load_snapshot_jobs)
+    assert {job.source_asset_id for job in snapshot_jobs} == {
+        obj["id"] for obj in link_objects
+    }
+
+
+def test_reject_deferred_link_snapshots_hides_prompt_without_adding_links(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client)
+    text_value, urls = _many_links_text()
+    created = content_client.post(
+        "/api/v1/notes",
+        headers=headers,
+        json={"text": text_value},
+    ).json()
+
+    response = content_client.post(
+        f"/api/v1/notes/{created['slug']}/link-snapshots/decision",
+        headers=headers,
+        json={"decision": "reject"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["deferredLinkSnapshots"] is None
+    link_objects = [obj for obj in payload["objects"] if obj["type"] == "link"]
+    assert [obj["content"] for obj in link_objects] == urls[:3]
+
+
+def test_deferred_link_snapshot_prompt_expires_after_twelve_hours(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client)
+    text_value, _ = _many_links_text()
+    created = content_client.post(
+        "/api/v1/notes",
+        headers=headers,
+        json={"text": text_value},
+    ).json()
+
+    async def age_note() -> None:
+        async with content_client.app.state.session_factory() as session:
+            note = await session.scalar(
+                select(ContentObject).where(ContentObject.id == created["id"])
+            )
+            assert note is not None
+            note.created_at = datetime.now(UTC) - timedelta(hours=13)
+            await session.commit()
+
+    content_client.portal.call(age_note)
+
+    response = content_client.get(f"/api/v1/notes/{created['slug']}", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["deferredLinkSnapshots"] is None
+
+
 def test_concurrent_notes_reuse_folder_and_tags_and_allocate_unique_slugs(
     tmp_path: Path,
 ) -> None:
@@ -356,12 +570,17 @@ def test_concurrent_notes_reuse_folder_and_tags_and_allocate_unique_slugs(
             assignments = list(await session.scalars(select(TaxonomyContentAssignment)))
 
         assert sorted(slugs) == ["same-title", "same-title-2"]
-        assert sorted(category.path for category in categories) == ["projects", "projects/ai"]
+        assert sorted(category.path for category in categories) == [
+            "projects",
+            "projects/ai",
+        ]
         assert [tag.slug for tag in tags] == ["ai"]
         assert len(notes) == 2
         assert all(note.category_id is None for note in notes)
         assert len(assignments) == 2
-        assert {assignment.category_path_snapshot for assignment in assignments} == {"projects/ai"}
+        assert {assignment.category_path_snapshot for assignment in assignments} == {
+            "projects/ai"
+        }
 
     try:
         asyncio.run(scenario())
@@ -443,7 +662,9 @@ def test_favorite_and_custom_order_are_exposed_in_note_list(
 ) -> None:
     headers = _auth_headers(content_client)
     first = _create_text_note(content_client, headers, title="First", text="First body")
-    second = _create_text_note(content_client, headers, title="Second", text="Second body")
+    second = _create_text_note(
+        content_client, headers, title="Second", text="Second body"
+    )
 
     favorite_response = content_client.patch(
         f"/api/v1/notes/{first['slug']}/favorite",
@@ -479,7 +700,9 @@ def test_custom_order_defaults_new_notes_to_top(
 ) -> None:
     headers = _auth_headers(content_client)
     first = _create_text_note(content_client, headers, title="First", text="First body")
-    second = _create_text_note(content_client, headers, title="Second", text="Second body")
+    second = _create_text_note(
+        content_client, headers, title="Second", text="Second body"
+    )
 
     list_response = content_client.get("/api/v1/notes?sort=custom", headers=headers)
 
@@ -504,7 +727,9 @@ def test_upload_file_without_object_id_stays_temporary_until_note_creation(
     upload_payload = upload_response.json()
     assert upload_payload["object"] is None
     assert upload_payload["files"][0]["source_filename"] == "draft.txt"
-    assert not list(content_client.app.state.content_storage_root.rglob("manifest.json"))
+    assert not list(
+        content_client.app.state.content_storage_root.rglob("manifest.json")
+    )
 
     create_response = content_client.post(
         "/api/v1/notes",
@@ -593,7 +818,9 @@ def test_repeated_upload_with_object_id_extends_same_object_as_collection(
     assert [obj["filename"] for obj in payload["objects"]] == ["one.txt", "two.txt"]
 
 
-def test_image_upload_returns_dimensions_for_card_layout(content_client: TestClient) -> None:
+def test_image_upload_returns_dimensions_for_card_layout(
+    content_client: TestClient,
+) -> None:
     headers = _auth_headers(content_client)
 
     response = content_client.post(
@@ -675,12 +902,18 @@ def test_merge_moves_objects_and_collections_into_target_collection(
 ) -> None:
     headers = _auth_headers(content_client)
     first = _create_text_note(content_client, headers, title="First", text="First body")
-    second = _create_text_note(content_client, headers, title="Second", text="Second body")
+    second = _create_text_note(
+        content_client, headers, title="Second", text="Second body"
+    )
 
     merge_response = content_client.post(
         "/api/v1/notes/merge",
         headers=headers,
-        json={"target_slug": first["slug"], "source_slugs": [second["slug"]], "title": "Merged"},
+        json={
+            "target_slug": first["slug"],
+            "source_slugs": [second["slug"]],
+            "title": "Merged",
+        },
     )
     assert merge_response.status_code == 200
     collection = merge_response.json()
@@ -713,7 +946,10 @@ def test_merge_moves_objects_and_collections_into_target_collection(
     collection_merge_response = content_client.post(
         "/api/v1/notes/merge",
         headers=headers,
-        json={"target_slug": collection["slug"], "source_slugs": [other_collection["slug"]]},
+        json={
+            "target_slug": collection["slug"],
+            "source_slugs": [other_collection["slug"]],
+        },
     )
 
     assert collection_merge_response.status_code == 200
@@ -770,7 +1006,10 @@ def test_merge_moves_collection_items_into_target_folder(
     merge_response = content_client.post(
         "/api/v1/notes/merge",
         headers=headers,
-        json={"target_slug": target["slug"], "source_slugs": [source_collection["slug"]]},
+        json={
+            "target_slug": target["slug"],
+            "source_slugs": [source_collection["slug"]],
+        },
     )
 
     assert merge_response.status_code == 200
@@ -781,7 +1020,10 @@ def test_merge_moves_collection_items_into_target_folder(
         headers=headers,
     ).json()
     assert moved_payload["taxonomyCategory"]["path"] == "work/target"
-    assert [obj["filename"] for obj in moved_payload["objects"]] == ["one.txt", "two.txt"]
+    assert [obj["filename"] for obj in moved_payload["objects"]] == [
+        "one.txt",
+        "two.txt",
+    ]
 
 
 def test_folder_tree_and_folder_tags_are_available(content_client: TestClient) -> None:
@@ -811,14 +1053,20 @@ def test_folder_tree_and_folder_tags_are_available(content_client: TestClient) -
     )
 
     tree_response = content_client.get("/api/v1/folders", headers=headers)
-    folder_response = content_client.get("/api/v1/folders/work/research", headers=headers)
-    notes_response = content_client.get("/api/v1/notes?folders=work/research", headers=headers)
+    folder_response = content_client.get(
+        "/api/v1/folders/work/research", headers=headers
+    )
+    notes_response = content_client.get(
+        "/api/v1/notes?folders=work/research", headers=headers
+    )
 
     assert tree_response.status_code == 200
     assert tree_response.json()["items"][0]["name"] == "work"
     assert tree_response.json()["items"][0]["direct_count"] == 0
     assert tree_response.json()["items"][0]["total_count"] == 3
-    assert {child["path"] for child in tree_response.json()["items"][0]["children"]} == {
+    assert {
+        child["path"] for child in tree_response.json()["items"][0]["children"]
+    } == {
         "work/archive",
         "work/research",
     }
@@ -839,11 +1087,19 @@ def test_folder_tree_and_folder_tags_are_available(content_client: TestClient) -
         "Folder note",
         "Nested folder note",
     ]
-    assert folder_response.json()["notes"][0]["taxonomyCategory"]["path"] == "work/research"
-    assert folder_response.json()["notes"][1]["taxonomyCategory"]["path"] == "work/research/llm"
+    assert (
+        folder_response.json()["notes"][0]["taxonomyCategory"]["path"]
+        == "work/research"
+    )
+    assert (
+        folder_response.json()["notes"][1]["taxonomyCategory"]["path"]
+        == "work/research/llm"
+    )
     assert notes_response.status_code == 200
     assert len(notes_response.json()["items"]) == 2
-    assert notes_response.json()["items"][0]["taxonomyCategory"]["path"] == "work/research"
+    assert (
+        notes_response.json()["items"][0]["taxonomyCategory"]["path"] == "work/research"
+    )
 
 
 @pytest.mark.parametrize(

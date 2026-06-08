@@ -32,15 +32,8 @@
   flex-shrink: 0;
 }
 
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to   { transform: rotate(360deg); }
-}
-
 .iconSpinner {
-  color: var(--color-accent);
   flex-shrink: 0;
-  animation: spin 1s linear infinite;
 }
 
 .jobTitle {
@@ -53,62 +46,6 @@
 .jobCount {
   font-size: 10px;
   color: var(--color-text-secondary);
-}
-
-.fileList {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.fileRow {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.fileName {
-  font-size: 10px;
-  color: var(--color-text-secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Progress track */
-.progressTrack {
-  height: 4px;
-  border-radius: 2px;
-  background: #2a2a2a;
-  overflow: hidden;
-}
-
-.progressBar {
-  height: 100%;
-  border-radius: 2px;
-  background: #333;
-  transition: width 0.2s ease;
-}
-
-/* Шиммер — активный файл */
-@keyframes shimmer {
-  0%   { background-position: -200% center; }
-  100% { background-position:  200% center; }
-}
-
-.progressBarActive {
-  background: linear-gradient(
-    90deg,
-    var(--color-accent) 0%,
-    rgba(165, 168, 255, 0.85) 40%,
-    var(--color-accent) 80%
-  );
-  background-size: 200% 100%;
-  animation: shimmer 1.2s linear infinite;
-}
-
-.progressBarDone {
-  background: #22c55e;
 }
 
 .notice {

@@ -30,6 +30,7 @@ from app.modules.content.models import (
     ContentAsset,
     ContentCollectionItem,
     ContentFileUpload,
+    ContentLinkSnapshotDecision,
     ContentObject,
     ContentObjectTag,
     ContentSource,
@@ -38,6 +39,7 @@ from app.modules.content.models import ContentTag as LegacyContentTag
 from app.modules.content.schemas import (
     CollectionParentResponse,
     ContentTaxonomyCategoryResponse,
+    DeferredLinkSnapshotsResponse,
     FileUploadResponse,
     FolderDetailResponse,
     FolderResponse,
@@ -75,6 +77,8 @@ def _note_path_ref_as_uuid(ref: str) -> str | None:
 logger = get_logger(__name__)
 LINK_TITLE_FETCH_TIMEOUT_SECONDS = 2.5
 LINK_TITLE_FETCH_MAX_CHARS = 200_000
+AUTO_LINK_SNAPSHOT_LIMIT = 3
+DEFERRED_LINK_SNAPSHOT_TTL = timedelta(hours=12)
 
 
 def _optional_string(value: Any) -> str | None:
@@ -272,10 +276,11 @@ class ContentService:
                 links=links,
             )
             if links:
-                if self._plain_url(text) is not None and len(links) == 1:
+                link_only_url = self._link_only_url(text)
+                if link_only_url is not None and len(links) == 1:
                     return await self._create_link_note(
                         owner_user_id=owner_user_id,
-                        url=links[0],
+                        url=link_only_url,
                         title=title,
                         folder_path=folder_path,
                         tag_names=tag_names,
@@ -283,6 +288,7 @@ class ContentService:
                 return await self._create_note_from_text_and_links(
                     owner_user_id=owner_user_id,
                     text=text_with_markdown_links,
+                    title_source_text=text,
                     links=links,
                     title=title,
                     folder_path=folder_path,
@@ -385,6 +391,7 @@ class ContentService:
         search: str | None,
         search_result_ids: list[str] | None = None,
         search_matches_by_object_id: dict[str, list[SearchContentMatch]] | None = None,
+        include_local_search_matches: bool = False,
         tag_slugs: list[str],
         folder_path: str | None,
         sort: str,
@@ -404,11 +411,28 @@ class ContentService:
         )
         items: list[ContentObject] = []
         seen_item_ids: set[str] = set()
+        local_search_scores: dict[str, float] = {}
 
         for content_object in objects:
-            if search_rank is not None and content_object.id not in search_rank:
-                continue
             assignment = assignment_by_object_id.get(content_object.id)
+            local_search_score = (
+                self._local_search_score(
+                    content_object,
+                    normalized_search,
+                    active_tags=tags_by_object_id.get(content_object.id, []),
+                    assignment=assignment,
+                )
+                if normalized_search
+                else 0.0
+            )
+            if local_search_score > 0:
+                local_search_scores[content_object.id] = local_search_score
+            if (
+                search_rank is not None
+                and content_object.id not in search_rank
+                and (not include_local_search_matches or local_search_score <= 0)
+            ):
+                continue
             if folder_path and (
                 assignment is None
                 or not self._path_matches_or_descends(
@@ -427,11 +451,18 @@ class ContentService:
                         child = item.content_object
                         if child.id in seen_item_ids:
                             continue
-                        if self._matches_search(child, normalized_search):
+                        child_score = self._local_search_score(
+                            child,
+                            normalized_search,
+                            active_tags=tags_by_object_id.get(child.id, []),
+                            assignment=assignment_by_object_id.get(child.id),
+                        )
+                        if child_score > 0:
+                            local_search_scores[child.id] = child_score
                             items.append(child)
                             seen_item_ids.add(child.id)
                     continue
-                if not self._matches_search(content_object, normalized_search):
+                if local_search_score <= 0:
                     continue
                 if content_object.id in seen_item_ids:
                     continue
@@ -447,7 +478,18 @@ class ContentService:
             items.append(content_object)
 
         if search_rank is not None:
-            items.sort(key=lambda item: search_rank[item.id])
+            items.sort(
+                key=lambda item: (
+                    -local_search_scores.get(item.id, 0.0),
+                    search_rank.get(item.id, 10**9),
+                    -self._external_search_match_score(
+                        item.id,
+                        search_matches_by_object_id,
+                    ),
+                    item.sort_order if sort == "custom" else 0,
+                    -item.created_at.timestamp(),
+                )
+            )
         elif sort == "custom":
             items.sort(key=lambda item: (item.sort_order, item.created_at))
         elif folder_path:
@@ -622,7 +664,7 @@ class ContentService:
                 "is_favorite": content_object.is_favorite,
                 "content_created_at": content_object.created_at.isoformat(),
                 "content_updated_at": content_object.updated_at.isoformat(),
-                "content_source_provider": object_source.provider if object_source else None,
+                "content_source_provider": (object_source.provider if object_source else None),
                 "source_original_created_at": (
                     object_source.original_created_at.isoformat()
                     if object_source and object_source.original_created_at
@@ -1160,13 +1202,14 @@ class ContentService:
         *,
         owner_user_id: str,
         text: str,
+        title_source_text: str,
         links: list[str],
         title: str | None,
         folder_path: str | None,
         tag_names: list[str],
     ) -> NoteCardResponse:
         has_text = bool(text.strip())
-        normalized_title = await self._resolve_link_title(url=links[0], title=title)
+        normalized_title = _normalize_title(title, title_source_text, self._link_title(links[0]))
         slug = await self._unique_slug(owner_user_id, normalized_title)
         sort_order = await self._next_root_sort_order(owner_user_id=owner_user_id)
         content_object_id = str(uuid4())
@@ -1194,37 +1237,12 @@ class ContentService:
             sort_order=sort_order,
         )
 
-        for i, url in enumerate(links, start=1):
-            asset_id = str(uuid4())
-            filename = f"link-{i}.url"
-            stored_file = self.storage.write_binary_object(
-                content_object_id=content_object_id,
-                asset_id=asset_id,
-                filename=filename,
-                data=f"{url}\n".encode(),
-                content_type="text/uri-list",
-            )
-            self.storage_objects.add(
-                self._stored_object_from_file(stored_file),
-                owner_entity_type="content_asset",
-                owner_entity_id=asset_id,
-                metadata={"role": "original", "source_url": url},
-            )
+        for i, url in enumerate(links[:AUTO_LINK_SNAPSHOT_LIMIT], start=1):
             content_object.assets.append(
-                ContentAsset(
-                    id=asset_id,
-                    role="original",
-                    media_type="link",
-                    filename=filename,
-                    mime_type="text/uri-list",
-                    size_bytes=stored_file.size_bytes,
-                    storage_path=stored_file.relative_path,
-                    storage_backend=stored_file.storage_backend,
-                    bucket=stored_file.bucket,
-                    storage_key=stored_file.storage_key,
-                    storage_ref=stored_file.storage_ref,
-                    checksum=stored_file.checksum,
-                    text_content=url,
+                self._create_link_asset(
+                    content_object_id=content_object_id,
+                    url=url,
+                    index=i,
                 ),
             )
 
@@ -1447,6 +1465,38 @@ class ContentService:
         )
         await self.session.commit()
         return await self._reload_write_manifest_and_card(owner_user_id=owner_user_id, slug=slug)
+
+    def _create_link_asset(self, *, content_object_id: str, url: str, index: int) -> ContentAsset:
+        asset_id = str(uuid4())
+        filename = f"link-{index}.url"
+        stored_file = self.storage.write_binary_object(
+            content_object_id=content_object_id,
+            asset_id=asset_id,
+            filename=filename,
+            data=f"{url}\n".encode(),
+            content_type="text/uri-list",
+        )
+        self.storage_objects.add(
+            self._stored_object_from_file(stored_file),
+            owner_entity_type="content_asset",
+            owner_entity_id=asset_id,
+            metadata={"role": "original", "source_url": url},
+        )
+        return ContentAsset(
+            id=asset_id,
+            role="original",
+            media_type="link",
+            filename=filename,
+            mime_type="text/uri-list",
+            size_bytes=stored_file.size_bytes,
+            storage_path=stored_file.relative_path,
+            storage_backend=stored_file.storage_backend,
+            bucket=stored_file.bucket,
+            storage_key=stored_file.storage_key,
+            storage_ref=stored_file.storage_ref,
+            checksum=stored_file.checksum,
+            text_content=url,
+        )
 
     async def _create_from_uploaded_files(
         self,
@@ -1945,6 +1995,64 @@ class ContentService:
         await self.session.commit()
         return await self._to_card(loaded)
 
+    async def decide_deferred_link_snapshots(
+        self,
+        *,
+        owner_user_id: str,
+        slug: str,
+        decision: str,
+    ) -> NoteCardResponse:
+        content_object = await self._load_note(owner_user_id=owner_user_id, slug=slug)
+        if decision == "reject":
+            await self._set_link_snapshot_decision(
+                content_object=content_object,
+                status="rejected",
+            )
+            await self.session.commit()
+            return await self._to_card(content_object)
+
+        remaining = self._remaining_text_link_urls(content_object)
+        existing_link_count = len(self._link_asset_urls(content_object))
+        for index, url in enumerate(remaining, start=existing_link_count + 1):
+            content_object.assets.append(
+                self._create_link_asset(
+                    content_object_id=content_object.id,
+                    url=url,
+                    index=index,
+                ),
+            )
+        content_object.updated_at = datetime.now(UTC)
+        await self.session.flush()
+        await self._set_link_snapshot_decision(
+            content_object=content_object,
+            status="accepted",
+        )
+        await self._write_object_manifest(content_object)
+        if remaining:
+            envelope = self._enqueue_content_changed_event(
+                content_object,
+                event_name="content.object.updated",
+            )
+            await self._enqueue_automatic_processing(content_object, envelope=envelope)
+        await self.session.commit()
+        return await self._to_card(content_object)
+
+    async def _write_object_manifest(self, content_object: ContentObject) -> None:
+        assignment_by_object_id = await self._current_assignment_map(content_object.owner_user_id)
+        tags_by_object_id = await self.tag_service.list_active_tags_for_contents(
+            owner_user_id=content_object.owner_user_id,
+            content_object_ids=[content_object.id],
+        )
+        self.storage.write_manifest(
+            content_object_id=content_object.id,
+            manifest=self._manifest(
+                content_object,
+                items=[],
+                assignment=assignment_by_object_id.get(content_object.id),
+                tags=tags_by_object_id.get(content_object.id, []),
+            ),
+        )
+
     async def get_asset_thumbnail(
         self, *, owner_user_id: str, slug: str, asset_id: str
     ) -> tuple[Path, str]:
@@ -1982,7 +2090,10 @@ class ContentService:
                     for asset in content_object.assets
                     if asset.storage_ref is not None
                 ],
-                metadata={"kind": content_object.kind, "media_type": content_object.media_type},
+                metadata={
+                    "kind": content_object.kind,
+                    "media_type": content_object.media_type,
+                },
             ),
         )
         self.outbox.add(envelope, routing_key=event_name)
@@ -1994,7 +2105,10 @@ class ContentService:
         *,
         envelope: EventEnvelope,
     ) -> None:
-        if envelope.event_name not in {"content.object.created", "content.object.updated"}:
+        if envelope.event_name not in {
+            "content.object.created",
+            "content.object.updated",
+        }:
             return
         await self.snapshots.enqueue_for_content_object(
             content_object,
@@ -2118,6 +2232,7 @@ class ContentService:
                     content_object_ids=[content_object.id],
                 )
             ).get(content_object.id, [])
+        deferred_link_snapshots = await self._deferred_link_snapshots_for_object(content_object)
         current_assignment = await self.taxonomy.get_current_assignment(
             owner_user_id=content_object.owner_user_id,
             content_object_id=content_object.id,
@@ -2215,10 +2330,108 @@ class ContentService:
             download_url=f"{self.api_prefix}/notes/{content_object.slug}/download",
             collection=collection_parent,
             source=object_source,
+            deferred_link_snapshots=deferred_link_snapshots,
             search_matches=search_matches or [],
             assets=asset_responses,
             items=items,
         )
+
+    async def _deferred_link_snapshots_for_object(
+        self,
+        content_object: ContentObject,
+    ) -> DeferredLinkSnapshotsResponse | None:
+        if content_object.media_type != "link":
+            return None
+        decision = await self._get_link_snapshot_decision(content_object.id)
+        if decision is not None:
+            return None
+
+        expires_at = content_object.created_at + DEFERRED_LINK_SNAPSHOT_TTL
+        if datetime.now(UTC) >= expires_at:
+            return None
+
+        text_links = self._text_link_urls(content_object)
+        if len(text_links) <= AUTO_LINK_SNAPSHOT_LIMIT:
+            return None
+
+        remaining = self._remaining_text_link_urls(content_object)
+        if not remaining:
+            return None
+
+        processed_links = len(
+            [url for url in text_links if url in set(self._link_asset_urls(content_object))]
+        )
+        return DeferredLinkSnapshotsResponse(
+            total_links=len(text_links),
+            processed_links=processed_links,
+            remaining_links=len(remaining),
+            expires_at=expires_at,
+            status="pending",
+        )
+
+    async def _get_link_snapshot_decision(
+        self,
+        content_object_id: str,
+    ) -> ContentLinkSnapshotDecision | None:
+        return await self.session.scalar(
+            select(ContentLinkSnapshotDecision).where(
+                ContentLinkSnapshotDecision.content_object_id == content_object_id
+            )
+        )
+
+    async def _set_link_snapshot_decision(
+        self,
+        *,
+        content_object: ContentObject,
+        status: str,
+    ) -> None:
+        decision = await self._get_link_snapshot_decision(content_object.id)
+        if decision is None:
+            self.session.add(
+                ContentLinkSnapshotDecision(
+                    content_object_id=content_object.id,
+                    owner_user_id=content_object.owner_user_id,
+                    status=status,
+                )
+            )
+            return
+        decision.status = status
+        decision.updated_at = datetime.now(UTC)
+
+    def _text_link_urls(self, content_object: ContentObject) -> list[str]:
+        urls: list[str] = []
+        seen: set[str] = set()
+        for asset in content_object.assets:
+            if asset.media_type != "text":
+                continue
+            text_body = self._read_text_asset_user_body(asset) or asset.text_content or ""
+            links, _ = self._extract_links_from_text(text_body)
+            for url in links:
+                if self._is_generated_favicon_url(url):
+                    continue
+                if url in seen:
+                    continue
+                seen.add(url)
+                urls.append(url)
+        return urls
+
+    @staticmethod
+    def _link_asset_urls(content_object: ContentObject) -> list[str]:
+        urls: list[str] = []
+        for asset in content_object.assets:
+            if asset.media_type != "link" or not asset.text_content:
+                continue
+            urls.append(asset.text_content.strip())
+        return urls
+
+    def _remaining_text_link_urls(self, content_object: ContentObject) -> list[str]:
+        existing = set(self._link_asset_urls(content_object))
+        return [url for url in self._text_link_urls(content_object) if url not in existing]
+
+    @staticmethod
+    def _is_generated_favicon_url(url: str) -> bool:
+        parsed = urlparse(url)
+        return parsed.hostname == "favicon.yandex.net"
 
     async def _source_metadata_for_object(
         self,
@@ -2360,19 +2573,164 @@ class ContentService:
             "media_type": content_object.media_type,
             "title": content_object.title,
             "source_filename": content_object.source_filename,
-            "folder": assignment.category_path_snapshot if assignment is not None else None,
+            "folder": (assignment.category_path_snapshot if assignment is not None else None),
             "tags": [tag.slug for tag in tags],
             "items": [item.slug for item in items],
         }
 
     @staticmethod
-    def _matches_search(content_object: ContentObject, search: str) -> bool:
-        haystack = [
-            content_object.title,
-            content_object.source_filename or "",
-            *(asset.text_content or "" for asset in content_object.assets),
-        ]
-        return any(search in value.casefold() for value in haystack)
+    def _external_search_match_score(
+        content_object_id: str,
+        search_matches_by_object_id: dict[str, list[SearchContentMatch]] | None,
+    ) -> float:
+        if search_matches_by_object_id is None:
+            return 0.0
+        return max(
+            (match.score for match in search_matches_by_object_id.get(content_object_id, [])),
+            default=0.0,
+        )
+
+    @classmethod
+    def _local_search_score(
+        cls,
+        content_object: ContentObject,
+        search: str | None,
+        *,
+        active_tags: list[Tag],
+        assignment: TaxonomyContentAssignment | None,
+    ) -> float:
+        if not search:
+            return 0.0
+        term_groups = cls._search_term_groups(search)
+        if not term_groups:
+            return 0.0
+        parts = cls._local_search_parts(
+            content_object,
+            active_tags=active_tags,
+            assignment=assignment,
+        )
+        if not parts:
+            return 0.0
+
+        normalized_query = search.casefold().strip()
+        has_specific_query_term = any(not is_generic for _, is_generic in term_groups)
+        matched_specific = False
+        matched_groups = 0
+        score = 0.0
+
+        for variants, is_generic in term_groups:
+            group_score = 0.0
+            for text, weight in parts:
+                lowered = text.casefold()
+                if normalized_query and normalized_query in lowered:
+                    group_score = max(group_score, weight * 3)
+                for variant in variants:
+                    if variant and variant in lowered:
+                        group_score = max(group_score, weight)
+            if group_score <= 0:
+                continue
+            matched_groups += 1
+            score += group_score
+            if not is_generic:
+                matched_specific = True
+
+        if matched_groups == 0:
+            return 0.0
+        if has_specific_query_term and not matched_specific:
+            return 0.0
+        if matched_groups == len(term_groups):
+            score *= 2
+        return score
+
+    @staticmethod
+    def _local_search_parts(
+        content_object: ContentObject,
+        *,
+        active_tags: list[Tag],
+        assignment: TaxonomyContentAssignment | None,
+    ) -> list[tuple[str, float]]:
+        parts: list[tuple[str, float]] = []
+        if content_object.title:
+            parts.append((content_object.title, 8.0))
+        if content_object.source_filename:
+            parts.append((content_object.source_filename, 4.0))
+        if assignment is not None:
+            parts.append((assignment.category_path_snapshot, 5.0))
+            parts.append((assignment.category_name_snapshot, 5.0))
+        for tag in active_tags:
+            parts.append((tag.name, 10.0))
+            parts.append((tag.slug, 8.0))
+        for tag in content_object.tags:
+            parts.append((tag.name, 10.0))
+            parts.append((tag.slug, 8.0))
+        for asset in content_object.assets:
+            if asset.filename:
+                parts.append((asset.filename, 4.0))
+            if asset.text_content:
+                parts.append((asset.text_content, 3.0))
+        return parts
+
+    @classmethod
+    def _search_term_groups(cls, search: str) -> list[tuple[tuple[str, ...], bool]]:
+        groups: list[tuple[tuple[str, ...], bool]] = []
+        seen: set[str] = set()
+        for raw_term in re.findall(r"[0-9A-Za-zА-Яа-яЁё_]{2,}", search.casefold()):
+            term = raw_term.strip("_")
+            if not term or term in seen:
+                continue
+            seen.add(term)
+            variants, is_generic = cls._search_variants(term)
+            groups.append((tuple(sorted(variants, key=len, reverse=True)), is_generic))
+        return groups
+
+    @staticmethod
+    def _search_variants(term: str) -> tuple[set[str], bool]:
+        variants = {term}
+        is_generic = term in {"new", "latest", "fresh"} or term.startswith("нов")
+        if re.search(r"[а-яё]", term) and len(term) >= 4:
+            variants.add(term[:-1])
+
+        if term in {"new", "latest", "fresh"}:
+            variants.update(
+                {
+                    "new",
+                    "latest",
+                    "fresh",
+                    "нов",
+                    "анонс",
+                    "announc",
+                    "релиз",
+                    "release",
+                    "update",
+                    "обнов",
+                    "апдейт",
+                    "выйдет",
+                }
+            )
+            is_generic = True
+        if term.startswith("нов"):
+            variants.update(
+                {
+                    "нов",
+                    "new",
+                    "анонс",
+                    "announc",
+                    "релиз",
+                    "release",
+                    "update",
+                    "обнов",
+                    "апдейт",
+                    "выйдет",
+                }
+            )
+            is_generic = True
+        if term in {"game", "games", "gaming"}:
+            variants.update({"game", "games", "gaming", "video game", "игр"})
+            is_generic = False
+        if term.startswith("игр") or term in {"игра", "игры", "игру", "игре"}:
+            variants.update({"игр", "game", "games", "gaming", "video game"})
+            is_generic = False
+        return {variant for variant in variants if len(variant) >= 2}, is_generic
 
     @staticmethod
     def _telegram_chat_type(origin: dict[str, Any] | None) -> str | None:
@@ -2575,6 +2933,24 @@ class ContentService:
         if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
             return None
         return candidate
+
+    @staticmethod
+    def _link_only_url(value: str) -> str | None:
+        plain = ContentService._plain_url(value)
+        if plain is not None:
+            return plain
+
+        candidate = value.strip()
+        match = re.fullmatch(r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)", candidate)
+        if match is None:
+            return None
+
+        label = match.group(1).strip()
+        url = match.group(2).rstrip(".,;:!?\\'\">`")
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
+            return None
+        return url if label == url else None
 
     async def _resolve_link_title(self, *, url: str, title: str | None) -> str:
         if title and not self._title_is_url_placeholder(title, url):

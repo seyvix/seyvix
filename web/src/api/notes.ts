@@ -8,7 +8,10 @@ export interface ReorderNoteItem {
   position: number
 }
 
-export async function fetchNotes(params: NotesParams = {}): Promise<Note[]> {
+export async function fetchNotes(
+  params: NotesParams = {},
+  signal?: AbortSignal,
+): Promise<Note[]> {
   const origin = typeof window === 'undefined' ? 'http://localhost' : window.location.origin
   const url = new URL(BASE, origin)
   if (params.search) url.searchParams.set('search', params.search)
@@ -17,7 +20,7 @@ export async function fetchNotes(params: NotesParams = {}): Promise<Note[]> {
   params.tags?.forEach(t => url.searchParams.append('tags', t))
   params.folders?.forEach(f => url.searchParams.append('folders', f))
 
-  const res = await apiFetch(url.toString())
+  const res = await apiFetch(url.toString(), { signal })
   if (!res.ok) throw new Error('Failed to fetch notes')
   const data: unknown = await res.json()
   if (Array.isArray(data)) return data as Note[]
@@ -44,6 +47,19 @@ export async function fetchTrashNotes(): Promise<Note[]> {
 export async function fetchNote(noteRef: string): Promise<Note> {
   const res = await apiFetch(`${BASE}/${encodeURIComponent(noteRef)}`)
   if (!res.ok) throw new Error('Failed to fetch note')
+  return (await res.json()) as Note
+}
+
+export async function decideDeferredLinkSnapshots(
+  noteRef: string,
+  decision: 'accept' | 'reject',
+): Promise<Note> {
+  const res = await apiFetch(`${BASE}/${encodeURIComponent(noteRef)}/link-snapshots/decision`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ decision }),
+  })
+  if (!res.ok) throw new Error('Failed to update link snapshot decision')
   return (await res.json()) as Note
 }
 

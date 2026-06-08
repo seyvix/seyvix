@@ -51,7 +51,9 @@ class AppSourceMetadata(BaseModel):
         default_factory=list,
         serialization_alias="customEmojiIds",
     )
-    rawPayload: dict[str, Any] | None = Field(default=None, serialization_alias="rawPayload")
+    rawPayload: dict[str, Any] | None = Field(
+        default=None, serialization_alias="rawPayload"
+    )
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -75,6 +77,15 @@ class AppCollectionParent(BaseModel):
     id: str
     slug: str
     title: str
+
+
+class AppDeferredLinkSnapshots(BaseModel):
+    model_config = ConfigDict(serialize_by_alias=True)
+    totalLinks: int = Field(serialization_alias="totalLinks")
+    processedLinks: int = Field(serialization_alias="processedLinks")
+    remainingLinks: int = Field(serialization_alias="remainingLinks")
+    expiresAt: datetime = Field(serialization_alias="expiresAt")
+    status: str
 
 
 class AppNoteObject(BaseModel):
@@ -119,6 +130,10 @@ class AppNote(BaseModel):
     isFavorite: bool = Field(default=False, serialization_alias="isFavorite")
     collection: AppCollectionParent | None = None
     source: AppSourceMetadata | None = None
+    deferredLinkSnapshots: AppDeferredLinkSnapshots | None = Field(
+        default=None,
+        serialization_alias="deferredLinkSnapshots",
+    )
     searchMatches: list[SearchContentMatch] = Field(
         default_factory=list,
         serialization_alias="searchMatches",
@@ -170,6 +185,19 @@ def _source(source: object) -> AppSourceMetadata | None:
     )
 
 
+def _deferred_link_snapshots(card: NoteCardResponse) -> AppDeferredLinkSnapshots | None:
+    value = card.deferred_link_snapshots
+    if value is None:
+        return None
+    return AppDeferredLinkSnapshots(
+        totalLinks=value.total_links,
+        processedLinks=value.processed_links,
+        remainingLinks=value.remaining_links,
+        expiresAt=value.expires_at,
+        status=value.status,
+    )
+
+
 def _media_to_object_type(media_type: str | None) -> NoteObjectType:
     if media_type in ("text", "image", "link", "audio", "video"):
         return media_type  # type: ignore[return-value]
@@ -184,7 +212,9 @@ def _kind_to_app_kind(kind: str) -> NoteAppKind:
     return "simple"
 
 
-def _map_asset(asset: NoteAssetResponse, download_url: str, created_at: datetime) -> AppNoteObject:
+def _map_asset(
+    asset: NoteAssetResponse, download_url: str, created_at: datetime
+) -> AppNoteObject:
     ot = _media_to_object_type(asset.media_type)
     if ot in ("text", "link"):
         content = asset.text_content or asset.url or download_url
@@ -209,7 +239,9 @@ def _map_asset(asset: NoteAssetResponse, download_url: str, created_at: datetime
     )
 
 
-def _collection_asset_to_object(item: NoteCardResponse, asset: NoteAssetResponse) -> AppNoteObject:
+def _collection_asset_to_object(
+    item: NoteCardResponse, asset: NoteAssetResponse
+) -> AppNoteObject:
     obj = _map_asset(asset, item.download_url, item.created_at)
     obj.noteId = item.id
     obj.slug = item.slug
@@ -223,22 +255,26 @@ def _collection_item_to_objects(item: NoteCardResponse) -> list[AppNoteObject]:
         return [_collection_asset_to_object(item, asset) for asset in item.assets]
 
     ot = _media_to_object_type(item.media_type)
-    return [AppNoteObject(
-        id=item.id,
-        noteId=item.id,
-        object_type=ot,
-        content=item.download_url,
-        slug=item.slug,
-        source=_source(item.source),
-        createdAt=item.created_at,
-    )]
+    return [
+        AppNoteObject(
+            id=item.id,
+            noteId=item.id,
+            object_type=ot,
+            content=item.download_url,
+            slug=item.slug,
+            source=_source(item.source),
+            createdAt=item.created_at,
+        )
+    ]
 
 
 def note_card_to_app_note(card: NoteCardResponse) -> AppNote:
     if card.kind == "collection":
         objects = [obj for ch in card.items for obj in _collection_item_to_objects(ch)]
     elif card.assets:
-        objects = [_map_asset(a, card.download_url, card.created_at) for a in card.assets]
+        objects = [
+            _map_asset(a, card.download_url, card.created_at) for a in card.assets
+        ]
     elif card.media_type == "text" or card.media_type is None:
         objects = [
             AppNoteObject(
@@ -275,6 +311,7 @@ def note_card_to_app_note(card: NoteCardResponse) -> AppNote:
             else None
         ),
         source=_source(card.source),
+        deferredLinkSnapshots=_deferred_link_snapshots(card),
         searchMatches=card.search_matches,
     )
 

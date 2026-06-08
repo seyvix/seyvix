@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, Loader2 } from 'lucide-react'
+import { Check } from 'lucide-react'
 import {
   fetchTaxonomyInterestOptions,
   fetchTaxonomyTree,
   initializeTaxonomyFromInterests,
 } from '../../api/taxonomy'
+import { LoaderSpinner } from '../LoaderSpinner'
 import styles from './TaxonomyOnboarding.module.css'
 
 export function TaxonomyOnboarding() {
@@ -113,7 +114,7 @@ export function TaxonomyOnboarding() {
             onClick={submit}
             disabled={!canSubmit || initialize.isPending}
           >
-            {initialize.isPending ? <Loader2 size={16} className={styles.spinner} /> : <Check size={16} />}
+            {initialize.isPending ? <LoaderSpinner size="xs" className={styles.spinner} /> : <Check size={16} />}
             Создать категории
           </button>
         </div>
