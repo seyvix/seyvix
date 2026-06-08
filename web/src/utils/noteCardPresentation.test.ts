@@ -6,6 +6,7 @@ import {
   chooseCardRatioObject,
   chooseCompositeCardVisualObject,
   cleanDisplayTitle,
+  collectLinkChips,
   collectSourceChips,
   getCompositePreviewObjects,
   getNoteDisplayTitle,
@@ -131,6 +132,33 @@ test('source chips collapse same telegram origin into one readable chip', () => 
     providerLabel: 'Telegram',
     originLabel: 'Бэкдор',
     title: 'Telegram: Бэкдор',
+  }])
+})
+
+test('link chips expose domains for card metadata row', () => {
+  const note: Note = {
+    ...telegramNote,
+    type: 'composite',
+    title: 'Research bundle',
+    objects: [
+      noteObject({
+        id: 'link-1',
+        type: 'link',
+        content: 'https://habr.com/ru/articles/551948/',
+      }),
+      noteObject({
+        id: 'text-1',
+        type: 'text',
+        content: 'Saved context',
+      }),
+    ],
+  }
+
+  assert.deepEqual(collectLinkChips(note), [{
+    key: 'link-1',
+    url: 'https://habr.com/ru/articles/551948/',
+    label: 'habr.com',
+    title: 'https://habr.com/ru/articles/551948/',
   }])
 })
 

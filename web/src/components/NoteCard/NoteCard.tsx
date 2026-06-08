@@ -55,12 +55,14 @@ import { getObjectDisplayMarkdown, getObjectDisplayText, getObjectPreviewSource 
 import {
   chooseCardRatioObject,
   chooseCompositeCardVisualObject,
+  collectLinkChips,
   collectSourceChips,
   getCardObjectAspectRatio,
   getCompositePreviewObjects,
   getNoteDisplayTitle,
   getSavedDateLabel,
   isCardVisualObjectType,
+  type LinkChipModel,
 } from '../../utils/noteCardPresentation'
 import { normalizedHighlightRanges } from '../../utils/searchHighlight'
 import { htmlToMarkdown, makeMarkdownTitle, replaceBlobImageSources } from '../../utils/markdownPaste'
@@ -119,11 +121,13 @@ function TagList({ tags, onTagClick, max = 4 }: { tags: Tag[]; onTagClick?: (nam
 
 function CardMeta({ note, onTagClick, maxTags = 4 }: { note: Note; onTagClick?: (name: string) => void; maxTags?: number }) {
   const hasSources = collectSourceChips(note).length > 0
-  if (!hasSources && note.tags.length === 0) return null
+  const linkChips = collectLinkChips(note)
+  if (!hasSources && note.tags.length === 0 && linkChips.length === 0) return null
   return (
     <div className={styles.tags}>
       <SourceChipList note={note} />
       <TagList tags={note.tags} onTagClick={onTagClick} max={maxTags} />
+      {linkChips.map(chip => <LinkChip key={chip.key} chip={chip} />)}
     </div>
   )
 }
@@ -556,24 +560,20 @@ function CollectionCard({ note, onTagClick, titleNode }: { note: Note; onTagClic
 
 // ─── Composite ────────────────────────────────────────────────────────────────
 
-function LinkChip({ obj }: { obj: NoteObject }) {
-  const favicon = useFavicon(obj.content)
-  let domain = ''
-  try {
-    domain = new URL(obj.content).hostname.replace(/^www\./, '')
-  } catch { /* ignore */ }
+function LinkChip({ chip }: { chip: LinkChipModel }) {
+  const favicon = useFavicon(chip.url)
 
   return (
-    <div className={styles.linkChip}>
+    <span className={styles.linkChip} title={chip.title}>
       <div className={styles.linkChipIcon}>
         {favicon
           ? <img src={favicon} alt="" className={styles.linkChipFavicon} />
           : <ExternalLink size={12} />
         }
       </div>
-      <span className={styles.linkChipDomain}>{domain || obj.content}</span>
+      <span className={styles.linkChipDomain}>{chip.label}</span>
       <ExternalLink size={9} className={styles.linkChipArrow} />
-    </div>
+    </span>
   )
 }
 
@@ -613,7 +613,7 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
   const previewObjects = getCompositePreviewObjects(note.objects)
   const fallback = FALLBACK_COLORS[note.id.charCodeAt(0) % FALLBACK_COLORS.length]
   const text = textObj ? getObjectDisplayMarkdown(textObj) : null
-  const hasAttachmentFooter = links.length > 0 || docs.length > 0
+  const hasAttachmentFooter = docs.length > 0
   const shouldOverlayText = Boolean(visualObject && text && !/^https?:\/\//.test(textObj?.content ?? ''))
 
   return (
@@ -673,13 +673,6 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
 
       {hasAttachmentFooter && (
       <div className={`${styles.cardFooter} ${styles.attachmentFooter}`}>
-        {links.length > 0 && (
-          <div className={styles.compositeChips}>
-            {links.slice(0, 2).map(o => <LinkChip key={o.id} obj={o} />)}
-            {links.length > 2 && <span className={styles.moreTag}>+{links.length - 2}</span>}
-          </div>
-        )}
-
         {docs.length > 0 && (
           <div className={styles.compositeChips}>
             {docs.slice(0, 2).map(o => <DocChip key={o.id} obj={o} />)}

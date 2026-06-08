@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import type { ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import PDFViewer from '../components/PDFViewer/PDFViewer'
 import { useFavicon } from '../hooks/useFavicon'
 import { Link, useParams, useNavigate } from 'react-router'
@@ -14,6 +15,7 @@ import {
   FileDown,
   Globe,
   Download,
+  Maximize2,
   RefreshCw,
   X,
   Check,
@@ -269,6 +271,52 @@ function isProtectedAssetUrl(url: string): boolean {
 
 function openProtectedAsset(url: string) {
   void openAuthenticatedAsset(url).catch(() => {})
+}
+
+function FullscreenDialog({
+  title,
+  children,
+  onClose,
+}: {
+  title: string
+  children: ReactNode
+  onClose: () => void
+}) {
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [onClose])
+
+  if (typeof document === 'undefined') return null
+
+  return createPortal(
+    <div
+      className={styles.fullscreenBackdrop}
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      onClick={onClose}
+    >
+      <div className={styles.fullscreenShell} onClick={event => event.stopPropagation()}>
+        <div className={styles.fullscreenChrome}>
+          <strong>{title}</strong>
+          <button type="button" onClick={onClose} title="Закрыть">
+            <X size={16} />
+          </button>
+        </div>
+        <div className={styles.fullscreenBody}>{children}</div>
+      </div>
+    </div>,
+    document.body,
+  )
 }
 
 // ─── Doc blob cache (preload before DocViewer mounts) ──────────────────────────
@@ -896,14 +944,19 @@ function ImageObj({
   onOpen: () => void
   onDelete: () => void
 }) {
+  const [fullscreenOpen, setFullscreenOpen] = useState(false)
+  const imageTitle = obj.caption?.trim() || obj.filename || 'Изображение'
+
   return (
     <div className={`${styles.objWrapper} ${styles.objImage} ${obj.caption ? styles.objImageWithCaption : ''}`}>
-      <AuthImage
-        src={obj.content}
-        alt=""
-        style={{ cursor: 'zoom-in' }}
-        onClick={() => openProtectedAsset(obj.content)}
-      />
+      <button
+        type="button"
+        className={styles.imagePreviewButton}
+        onClick={() => setFullscreenOpen(true)}
+        title="Открыть на весь экран"
+      >
+        <AuthImage src={obj.content} alt={imageTitle} />
+      </button>
       {obj.caption && <MarkdownText className={styles.objImageCaption} text={obj.caption} source={obj.source} />}
       <div className={styles.extractionCompanion}>
         <AssetViewer
@@ -915,6 +968,11 @@ function ImageObj({
           onDelete={onDelete}
         />
       </div>
+      {fullscreenOpen && (
+        <FullscreenDialog title={imageTitle} onClose={() => setFullscreenOpen(false)}>
+          <AuthImage src={obj.content} alt={imageTitle} className={styles.fullscreenImage} />
+        </FullscreenDialog>
+      )}
       {isEditing && <button className={styles.objDeleteBtn} onClick={onDelete}><X size={12} /></button>}
     </div>
   )
@@ -1000,7 +1058,7 @@ function PdfSnapshotView({ src }: { src: string }) {
   return <PDFViewer src={blobUrl} />
 }
 
-function MarkdownSnapshotView({ src }: { src: string }) {
+function MarkdownSnapshotView({ src, className }: { src: string; className?: string }) {
   const [text, setText] = useState<string | null>(null)
   const [error, setError] = useState(false)
 
@@ -1028,12 +1086,22 @@ function MarkdownSnapshotView({ src }: { src: string }) {
       </div>
     )
   }
-  return <pre className={styles.assetMarkdown}>{text}</pre>
+  return <pre className={`${styles.assetMarkdown}${className ? ` ${className}` : ''}`}>{text}</pre>
 }
 
-function LinkSnapshotPending({ obj, favicon, domain }: { obj: NoteObject; favicon: string | null; domain: string }) {
+function LinkSnapshotPending({
+  obj,
+  favicon,
+  domain,
+  fullscreen = false,
+}: {
+  obj: NoteObject
+  favicon: string | null
+  domain: string
+  fullscreen?: boolean
+}) {
   return (
-    <div className={styles.objLinkSnapshotPending}>
+    <div className={`${styles.objLinkSnapshotPending}${fullscreen ? ` ${styles.objLinkSnapshotPendingFullscreen}` : ''}`}>
       {favicon && <img src={favicon} alt="" className={styles.objLinkSnapshotIcon} />}
       <div className={styles.objLinkSnapshotDomain}>{domain}</div>
       <div className={styles.objLinkSnapshotUrl}>{obj.content}</div>
@@ -1062,6 +1130,7 @@ function AssetViewer({
   const baseViews = (obj.snapshotViews ?? []).filter(isAssetMode)
   const canExtractText = obj.type !== 'text'
   const [activeKind, setActiveKind] = useState<SnapshotView['kind'] | null>(() => baseViews[0]?.kind ?? null)
+  const [fullscreenOpen, setFullscreenOpen] = useState(false)
   const favicon = useFavicon(obj.type === 'link' ? obj.content : null)
   let domain = obj.content
   if (obj.type === 'link') {
@@ -1141,6 +1210,45 @@ function AssetViewer({
     : obj.type === 'image' || obj.type === 'audio' || obj.type === 'video'
       ? `Оцифровка · ${obj.filename ?? getBaseName(obj.filename)}`
       : getBaseName(obj.filename)
+  const canOpenFullscreen = Boolean(activeView) || obj.type === 'link' || Boolean(markdownJob)
+
+  function renderAssetPreview(fullscreen = false): ReactNode {
+    const emptyClassName = `${styles.assetEmpty}${fullscreen ? ` ${styles.assetEmptyFullscreen}` : ''}`
+
+    if (activeView?.kind === 'webpage_html') {
+      return (
+        <HtmlSnapshotViewer
+          src={activeView.url}
+          className={`${styles.assetWebsiteFrame}${fullscreen ? ` ${styles.assetWebsiteFrameFullscreen}` : ''}`}
+        />
+      )
+    }
+    if (activeView?.kind === 'pdf') {
+      return <PdfSnapshotView src={activeView.url} />
+    }
+    if (activeView?.kind === 'markdown') {
+      return (
+        <MarkdownSnapshotView
+          src={activeView.url}
+          className={fullscreen ? styles.assetMarkdownFullscreen : undefined}
+        />
+      )
+    }
+    if (obj.type === 'link') {
+      return <LinkSnapshotPending obj={obj} favicon={favicon} domain={domain} fullscreen={fullscreen} />
+    }
+    if (markdownJob?.status === 'failed') {
+      return (
+        <div className={emptyClassName}>
+          Оцифровка завершилась ошибкой: {markdownJob.error_message ?? 'нет деталей'}
+        </div>
+      )
+    }
+    if (markdownJob && isActiveJob(markdownJob)) {
+      return <div className={emptyClassName}>Оцифровка готовится</div>
+    }
+    return <div className={emptyClassName}>Оцифровка еще не запускалась. Нажмите кнопку обновления выше.</div>
+  }
 
   return (
     <div className={styles.objWrapper}>
@@ -1239,6 +1347,20 @@ function AssetViewer({
               <Download size={13} />
             </button>
           )}
+          {canOpenFullscreen && (
+            <button
+              type="button"
+              className={styles.assetAction}
+              onClick={event => {
+                event.stopPropagation()
+                onOpen()
+                setFullscreenOpen(true)
+              }}
+              title="На весь экран"
+            >
+              <Maximize2 size={13} />
+            </button>
+          )}
           {obj.type === 'link' && (
             <a
               className={styles.assetAction}
@@ -1268,25 +1390,21 @@ function AssetViewer({
               className={styles.assetBodyInner}
               key={activeView ? `${activeKind}:${activeView.url}` : 'asset-view'}
             >
-              {activeView?.kind === 'webpage_html' ? (
-                <HtmlSnapshotViewer src={activeView.url} className={styles.assetWebsiteFrame} />
-              ) : activeView?.kind === 'pdf' ? (
-                <PdfSnapshotView src={activeView.url} />
-              ) : activeView?.kind === 'markdown' ? (
-                <MarkdownSnapshotView src={activeView.url} />
-              ) : obj.type === 'link' ? (
-                <LinkSnapshotPending obj={obj} favicon={favicon} domain={domain} />
-              ) : markdownJob?.status === 'failed' ? (
-                <div className={styles.assetEmpty}>Оцифровка завершилась ошибкой: {markdownJob.error_message ?? 'нет деталей'}</div>
-              ) : markdownJob && isActiveJob(markdownJob) ? (
-                <div className={styles.assetEmpty}>Оцифровка готовится</div>
-              ) : (
-                <div className={styles.assetEmpty}>Оцифровка еще не запускалась. Нажмите кнопку обновления выше.</div>
-              )}
+              {renderAssetPreview()}
             </div>
           </div>
         )}
       </div>
+      {fullscreenOpen && (
+        <FullscreenDialog title={title} onClose={() => setFullscreenOpen(false)}>
+          <div
+            className={styles.assetFullscreenPreview}
+            key={activeView ? `fullscreen-${activeKind}:${activeView.url}` : 'fullscreen-asset-view'}
+          >
+            {renderAssetPreview(true)}
+          </div>
+        </FullscreenDialog>
+      )}
       {isEditing && <button type="button" className={styles.objDeleteBtn} onClick={onDelete}><X size={12} /></button>}
     </div>
   )
@@ -1330,7 +1448,10 @@ function MediaObj({
   showExtraction?: boolean
 }) {
   const [mediaReady, setMediaReady] = useState(false)
+  const [fullscreenOpen, setFullscreenOpen] = useState(false)
   const media = useAuthenticatedObjectUrl(obj.content)
+  const mediaTitle = obj.filename ?? (obj.type === 'audio' ? 'Аудио' : 'Видео')
+
   useEffect(() => {
     setMediaReady(false)
   }, [media.url, obj.type])
@@ -1362,10 +1483,34 @@ function MediaObj({
           ) : null}
         </div>
         <div className={styles.mediaMeta}>
-          <span>{obj.filename ?? (obj.type === 'audio' ? 'Аудио' : 'Видео')}</span>
-          {obj.sizeBytes !== undefined && <small>{formatBytes(obj.sizeBytes)}</small>}
+          <span>{mediaTitle}</span>
+          <div className={styles.mediaMetaActions}>
+            {obj.sizeBytes !== undefined && <small>{formatBytes(obj.sizeBytes)}</small>}
+            <button
+              type="button"
+              className={styles.mediaFullscreenBtn}
+              disabled={!media.url}
+              onClick={() => setFullscreenOpen(true)}
+              title="На весь экран"
+            >
+              <Maximize2 size={14} />
+            </button>
+          </div>
         </div>
       </div>
+      {fullscreenOpen && (
+        <FullscreenDialog title={mediaTitle} onClose={() => setFullscreenOpen(false)}>
+          <div className={obj.type === 'audio' ? styles.fullscreenAudioStage : styles.fullscreenMediaStage}>
+            {media.url && obj.type === 'audio' ? (
+              <audio className={styles.fullscreenAudio} controls src={media.url} autoPlay />
+            ) : media.url ? (
+              <video className={styles.fullscreenVideo} controls src={media.url} autoPlay />
+            ) : (
+              <div className={styles.assetEmptyFullscreen}>Не удалось загрузить медиа</div>
+            )}
+          </div>
+        </FullscreenDialog>
+      )}
       {showExtraction && (
         <div className={styles.extractionCompanion}>
           <AssetViewer

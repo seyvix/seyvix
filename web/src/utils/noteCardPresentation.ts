@@ -7,6 +7,13 @@ export type SourceChip = {
   title: string
 }
 
+export type LinkChipModel = {
+  key: string
+  url: string
+  label: string
+  title: string
+}
+
 export type NoteDetailSourceModel = {
   provider: string
   providerLabel: string
@@ -193,6 +200,26 @@ export function collectSourceChips(note: Note): SourceChip[] {
   }
 
   return Array.from(chips.values()).slice(0, 3)
+}
+
+export function collectLinkChips(note: Note): LinkChipModel[] {
+  return note.objects
+    .filter(obj => obj.type === 'link')
+    .slice(0, 3)
+    .map(obj => {
+      let label = obj.content
+      try {
+        label = new URL(obj.content).hostname.replace(/^www\./, '')
+      } catch {
+        // keep original content as label
+      }
+      return {
+        key: obj.id,
+        url: obj.content,
+        label,
+        title: obj.content,
+      }
+    })
 }
 
 function firstSource(note: Note): SourceMetadata | null {

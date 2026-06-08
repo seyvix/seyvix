@@ -4,12 +4,14 @@ import importlib
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from html import unescape
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
 from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
+import httpx
 from sqlalchemy import delete as sql_delete
 from sqlalchemy import or_, select
 from sqlalchemy import update as sql_update
@@ -71,6 +73,8 @@ def _note_path_ref_as_uuid(ref: str) -> str | None:
 
 
 logger = get_logger(__name__)
+LINK_TITLE_FETCH_TIMEOUT_SECONDS = 2.5
+LINK_TITLE_FETCH_MAX_CHARS = 200_000
 
 
 def _optional_string(value: Any) -> str | None:
@@ -1066,7 +1070,7 @@ class ContentService:
         folder_path: str | None,
         tag_names: list[str],
     ) -> NoteCardResponse:
-        normalized_title = _strip_title_markdown(title)[:80] if title else self._link_title(url)
+        normalized_title = await self._resolve_link_title(url=url, title=title)
         slug = await self._unique_slug(owner_user_id, normalized_title)
         sort_order = await self._next_root_sort_order(owner_user_id=owner_user_id)
         content_object_id = str(uuid4())
@@ -1162,9 +1166,7 @@ class ContentService:
         tag_names: list[str],
     ) -> NoteCardResponse:
         has_text = bool(text.strip())
-        normalized_title = (
-            _strip_title_markdown(title)[:80] if title else self._link_title(links[0])
-        )
+        normalized_title = await self._resolve_link_title(url=links[0], title=title)
         slug = await self._unique_slug(owner_user_id, normalized_title)
         sort_order = await self._next_root_sort_order(owner_user_id=owner_user_id)
         content_object_id = str(uuid4())
@@ -2573,6 +2575,63 @@ class ContentService:
         if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
             return None
         return candidate
+
+    async def _resolve_link_title(self, *, url: str, title: str | None) -> str:
+        if title and not self._title_is_url_placeholder(title, url):
+            explicit_title = _normalize_title(title)
+            if explicit_title:
+                return explicit_title
+
+        fetched_title = await self._fetch_link_page_title(url)
+        return _normalize_title(fetched_title, self._link_title(url))
+
+    @staticmethod
+    def _title_is_url_placeholder(title: str, url: str) -> bool:
+        cleaned = _strip_title_markdown(title)
+        if not cleaned.startswith(("http://", "https://")):
+            return False
+        parsed = urlparse(cleaned)
+        if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
+            return False
+        return cleaned == url or url.startswith(cleaned) or cleaned.startswith(url)
+
+    @staticmethod
+    async def _fetch_link_page_title(url: str) -> str | None:
+        try:
+            async with httpx.AsyncClient(
+                follow_redirects=True,
+                timeout=LINK_TITLE_FETCH_TIMEOUT_SECONDS,
+                headers={
+                    "Accept": "text/html,application/xhtml+xml",
+                    "User-Agent": "Seyvix link title fetcher",
+                },
+            ) as client:
+                response = await client.get(url)
+        except httpx.HTTPError as exc:
+            logger.info("content.note.link_title_fetch_failed", url=url, error=str(exc))
+            return None
+
+        if response.status_code >= 400:
+            logger.info(
+                "content.note.link_title_fetch_bad_status",
+                url=url,
+                status_code=response.status_code,
+            )
+            return None
+
+        content_type = response.headers.get("content-type", "")
+        if content_type and "html" not in content_type.lower():
+            return None
+
+        return ContentService._title_from_html(response.text[:LINK_TITLE_FETCH_MAX_CHARS])
+
+    @staticmethod
+    def _title_from_html(html: str) -> str | None:
+        match = re.search(r"<title\b[^>]*>(.*?)</title>", html, flags=re.IGNORECASE | re.DOTALL)
+        if match is None:
+            return None
+        title = re.sub(r"\s+", " ", unescape(match.group(1))).strip()
+        return title or None
 
     @staticmethod
     def _link_title(url: str) -> str:

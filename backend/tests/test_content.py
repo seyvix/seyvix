@@ -263,6 +263,61 @@ def test_create_plain_url_note_creates_link_object_and_content_event(
     assert taxonomy_jobs == []
 
 
+def test_create_plain_url_note_uses_fetched_page_title(
+    content_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers = _auth_headers(content_client)
+
+    async def fake_fetch_title(url: str) -> str | None:
+        assert url == "https://example.com/research?item=1"
+        return "Research Page Title"
+
+    monkeypatch.setattr(
+        ContentService,
+        "_fetch_link_page_title",
+        staticmethod(fake_fetch_title),
+        raising=False,
+    )
+
+    response = content_client.post(
+        "/api/v1/notes",
+        headers=headers,
+        json={"text": "https://example.com/research?item=1"},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["title"] == "Research Page Title"
+
+
+def test_create_plain_url_note_ignores_url_payload_title_for_page_title(
+    content_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers = _auth_headers(content_client)
+    url = "https://example.com/research?item=1"
+
+    async def fake_fetch_title(fetch_url: str) -> str | None:
+        assert fetch_url == url
+        return "Research Page Title"
+
+    monkeypatch.setattr(
+        ContentService,
+        "_fetch_link_page_title",
+        staticmethod(fake_fetch_title),
+        raising=False,
+    )
+
+    response = content_client.post(
+        "/api/v1/notes",
+        headers=headers,
+        json={"title": url, "text": url},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["title"] == "Research Page Title"
+
+
 def test_concurrent_notes_reuse_folder_and_tags_and_allocate_unique_slugs(
     tmp_path: Path,
 ) -> None:
