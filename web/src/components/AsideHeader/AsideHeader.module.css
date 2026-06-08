@@ -538,6 +538,11 @@
     height: 40px;
   }
 
+  .colsBtn:hover {
+          color: var(--color-text-secondary);
+          background: var(--color-border);
+    }
+
   .mobileLogoutCard {
     display: flex;
     color: #fca5a5;
