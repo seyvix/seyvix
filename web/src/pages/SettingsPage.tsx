@@ -146,24 +146,24 @@ export default function SettingsPage() {
                 Профиль подтягивается из Telegram. Параметры отображения сохраняются локально на устройстве.
               </p>
 
-              <div className={styles.settingBlock}>
-                <div>
-                  <h3>Колонки в сетке</h3>
-                  <p>Настройка плотности ленты. На телефоне применяется компактный режим: одна, две или три читаемые колонки, если экран позволяет.</p>
-                </div>
-                <div className={styles.segmented} aria-label="Количество колонок">
-                  {[1, 2, 3, 4, 5, 6, 7].map((value) => (
-                    <button
-                      key={value}
-                      className={cols === value ? styles.segmentActive : ''}
-                      onClick={() => setCols(value)}
-                      aria-pressed={cols === value}
-                    >
-                      {value}
-                    </button>
-                  ))}
-                </div>
-              </div>
+              {/*<div className={styles.settingBlock}>*/}
+              {/*  <div>*/}
+              {/*    <h3>Колонки в сетке</h3>*/}
+              {/*    <p>Настройка плотности ленты. На телефоне применяется компактный режим: одна, две или три читаемые колонки, если экран позволяет.</p>*/}
+              {/*  </div>*/}
+              {/*  <div className={styles.segmented} aria-label="Количество колонок">*/}
+              {/*    {[1, 2, 3, 4, 5, 6, 7].map((value) => (*/}
+              {/*      <button*/}
+              {/*        key={value}*/}
+              {/*        className={cols === value ? styles.segmentActive : ''}*/}
+              {/*        onClick={() => setCols(value)}*/}
+              {/*        aria-pressed={cols === value}*/}
+              {/*      >*/}
+              {/*        {value}*/}
+              {/*      </button>*/}
+              {/*    ))}*/}
+              {/*  </div>*/}
+              {/*</div>*/}
             </div>
           )}
 
