@@ -318,6 +318,64 @@ def test_create_plain_url_note_ignores_url_payload_title_for_page_title(
     assert response.json()["title"] == "Research Page Title"
 
 
+def test_create_text_with_link_keeps_text_title_instead_of_page_title(
+    content_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers = _auth_headers(content_client)
+
+    async def fake_fetch_title(url: str) -> str | None:
+        return "Research Page Title"
+
+    monkeypatch.setattr(
+        ContentService,
+        "_fetch_link_page_title",
+        staticmethod(fake_fetch_title),
+        raising=False,
+    )
+
+    response = content_client.post(
+        "/api/v1/notes",
+        headers=headers,
+        json={"text": "Read later https://example.com/research?item=1"},
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["title"] == "Read later https://example.com/research?item=1"
+    assert {obj["type"] for obj in payload["objects"]} == {"link", "text"}
+
+
+def test_markdown_url_equal_to_label_is_saved_as_plain_link_note(
+    content_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers = _auth_headers(content_client)
+    url = "https://example.com/research?item=1"
+
+    async def fake_fetch_title(fetch_url: str) -> str | None:
+        assert fetch_url == url
+        return "Research Page Title"
+
+    monkeypatch.setattr(
+        ContentService,
+        "_fetch_link_page_title",
+        staticmethod(fake_fetch_title),
+        raising=False,
+    )
+
+    response = content_client.post(
+        "/api/v1/notes",
+        headers=headers,
+        json={"title": url, "text": f"[{url}]({url})"},
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["title"] == "Research Page Title"
+    assert [(obj["type"], obj["content"]) for obj in payload["objects"]] == [("link", url)]
+
+
 def test_concurrent_notes_reuse_folder_and_tags_and_allocate_unique_slugs(
     tmp_path: Path,
 ) -> None:

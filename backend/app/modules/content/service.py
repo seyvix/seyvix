@@ -272,10 +272,11 @@ class ContentService:
                 links=links,
             )
             if links:
-                if self._plain_url(text) is not None and len(links) == 1:
+                link_only_url = self._link_only_url(text)
+                if link_only_url is not None and len(links) == 1:
                     return await self._create_link_note(
                         owner_user_id=owner_user_id,
-                        url=links[0],
+                        url=link_only_url,
                         title=title,
                         folder_path=folder_path,
                         tag_names=tag_names,
@@ -283,6 +284,7 @@ class ContentService:
                 return await self._create_note_from_text_and_links(
                     owner_user_id=owner_user_id,
                     text=text_with_markdown_links,
+                    title_source_text=text,
                     links=links,
                     title=title,
                     folder_path=folder_path,
@@ -1160,13 +1162,14 @@ class ContentService:
         *,
         owner_user_id: str,
         text: str,
+        title_source_text: str,
         links: list[str],
         title: str | None,
         folder_path: str | None,
         tag_names: list[str],
     ) -> NoteCardResponse:
         has_text = bool(text.strip())
-        normalized_title = await self._resolve_link_title(url=links[0], title=title)
+        normalized_title = _normalize_title(title, title_source_text, self._link_title(links[0]))
         slug = await self._unique_slug(owner_user_id, normalized_title)
         sort_order = await self._next_root_sort_order(owner_user_id=owner_user_id)
         content_object_id = str(uuid4())
@@ -2575,6 +2578,24 @@ class ContentService:
         if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
             return None
         return candidate
+
+    @staticmethod
+    def _link_only_url(value: str) -> str | None:
+        plain = ContentService._plain_url(value)
+        if plain is not None:
+            return plain
+
+        candidate = value.strip()
+        match = re.fullmatch(r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)", candidate)
+        if match is None:
+            return None
+
+        label = match.group(1).strip()
+        url = match.group(2).rstrip(".,;:!?\\'\">`")
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
+            return None
+        return url if label == url else None
 
     async def _resolve_link_title(self, *, url: str, title: str | None) -> str:
         if title and not self._title_is_url_placeholder(title, url):
