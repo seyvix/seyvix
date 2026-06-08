@@ -1,9 +1,12 @@
 import { useState } from 'react'
 import { NavLink } from 'react-router'
 import { Tags, Trash2 } from 'lucide-react'
+import { useLocalStorage } from '../../hooks/useLocalStorage'
 import { useSettings } from '../../contexts/SettingsContext'
 import { useAuth } from '../../contexts/AuthContext'
 import styles from './AsideHeader.module.css'
+
+const STORAGE_KEY = 'seyvix:sidebar-expanded'
 
 function IconNotes() {
   return (
@@ -45,12 +48,29 @@ function IconLogout() {
   )
 }
 
+function IconChevronRight() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="4,2 8,6 4,10"/>
+    </svg>
+  )
+}
+
+function IconChevronLeft() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="8,2 4,6 8,10"/>
+    </svg>
+  )
+}
+
 export default function AsideHeader() {
+  const [expanded, setExpanded] = useLocalStorage(STORAGE_KEY, false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const { cols, setCols } = useSettings()
   const { user, logout } = useAuth()
 
-  const sidebarClass = [styles.sidebar, styles.expanded].join(' ')
+  const sidebarClass = [styles.sidebar, expanded ? styles.expanded : ''].filter(Boolean).join(' ')
   const initials = user?.display_name
     ? user.display_name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
     : 'U'
@@ -171,7 +191,10 @@ export default function AsideHeader() {
           type="button"
           className={[styles.navItem, settingsOpen ? styles.active : ''].filter(Boolean).join(' ')}
           aria-expanded={settingsOpen}
-          onClick={() => setSettingsOpen(v => !v)}
+          onClick={() => {
+            if (!expanded) setExpanded(true)
+            setSettingsOpen(v => !v)
+          }}
         >
           <span className={styles.navIcon}><IconMore /></span>
           <span className={styles.navLabel}>Ещё</span>
@@ -182,6 +205,19 @@ export default function AsideHeader() {
           <span className={styles.navLabel}>Выйти</span>
         </button>
       </div>
+
+      <button
+        type="button"
+        className={styles.toggleBtn}
+        onClick={() => {
+          const next = !expanded
+          setExpanded(next)
+          if (!next) setSettingsOpen(false)
+        }}
+        aria-label={expanded ? 'Свернуть меню' : 'Развернуть меню'}
+      >
+        {expanded ? <IconChevronLeft /> : <IconChevronRight />}
+      </button>
     </aside>
   )
 }

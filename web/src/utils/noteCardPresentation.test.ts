@@ -12,8 +12,8 @@ import {
   getNoteDetailModel,
   getSavedDateLabel,
   getTelegramCardModel,
-  isRedundantTextTitle,
   isCardVisualObjectType,
+  isRedundantTextTitle,
   truncateMarkdownInline,
 } from './noteCardPresentation.ts'
 

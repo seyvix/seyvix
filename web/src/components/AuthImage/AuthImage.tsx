@@ -9,7 +9,7 @@ interface AuthImageProps extends React.ImgHTMLAttributes<HTMLImageElement> {
 
 export default function AuthImage({ src, className, style, ...rest }: AuthImageProps) {
   const [blobUrl, setBlobUrl] = useState<string | null>(() => cachedAuthenticatedBlobUrl(src))
-  const [imgReady, setImgReady] = useState(false)
+  const [imgReady, setImgReady] = useState(() => Boolean(cachedAuthenticatedBlobUrl(src)))
   const wrapperClassName = [styles.imageWrap, className].filter(Boolean).join(' ')
 
   useEffect(() => {
@@ -17,11 +17,12 @@ export default function AuthImage({ src, className, style, ...rest }: AuthImageP
     const cached = cachedAuthenticatedBlobUrl(src)
     if (cached) {
       setBlobUrl(cached)
-      setImgReady(false)
+      setImgReady(true)
       return
     }
 
     let cancelled = false
+    setBlobUrl(null)
     setImgReady(false)
     authenticatedBlobUrl(src)
       .then(url => {

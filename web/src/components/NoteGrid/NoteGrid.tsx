@@ -1,4 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
+} from 'react'
 import { flushSync } from 'react-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import type { Note } from '../../types'
@@ -17,6 +24,7 @@ import styles from './NoteGrid.module.css'
 
 const GRID_GAP = 8
 const MOBILE_GRID_QUERY = '(max-width: 760px), (pointer: coarse)'
+const DRAG_CLICK_SUPPRESSION_MS = 350
 
 type MuuriGrid = InstanceType<(typeof import('muuri'))['default']>
 type MuuriItem = import('muuri').Item
@@ -40,6 +48,8 @@ export function NoteGrid({ notes, emptyState, onAddNote, onTagClick }: NoteGridP
   const itemResizeObserverRef = useRef<ResizeObserver | null>(null)
   const dragStartOrderRef = useRef<Note[] | null>(null)
   const isDraggingRef = useRef(false)
+  const suppressDragClickRef = useRef(false)
+  const suppressDragClickTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingNotesRef = useRef<Note[] | null>(null)
   const orderedNotesRef = useRef<Note[]>(notes)
   const gridMetricsRef = useRef<MasonryGridMetrics | null>(null)
@@ -95,6 +105,36 @@ export function NoteGrid({ notes, emptyState, onAddNote, onTagClick }: NoteGridP
   useEffect(() => {
     orderedNotesRef.current = orderedNotes
   }, [orderedNotes])
+
+  useEffect(() => {
+    return () => {
+      if (suppressDragClickTimeoutRef.current) {
+        clearTimeout(suppressDragClickTimeoutRef.current)
+      }
+    }
+  }, [])
+
+  function suppressNextDragClick() {
+    suppressDragClickRef.current = true
+    if (suppressDragClickTimeoutRef.current) {
+      clearTimeout(suppressDragClickTimeoutRef.current)
+      suppressDragClickTimeoutRef.current = null
+    }
+  }
+
+  function releaseDragClickSuppression() {
+    if (suppressDragClickTimeoutRef.current) clearTimeout(suppressDragClickTimeoutRef.current)
+    suppressDragClickTimeoutRef.current = setTimeout(() => {
+      suppressDragClickRef.current = false
+      suppressDragClickTimeoutRef.current = null
+    }, DRAG_CLICK_SUPPRESSION_MS)
+  }
+
+  function handleGridClickCapture(event: ReactMouseEvent<HTMLDivElement>) {
+    if (!suppressDragClickRef.current) return
+    event.preventDefault()
+    event.stopPropagation()
+  }
 
   useLayoutEffect(() => {
     const scrollArea = scrollRef.current
@@ -157,7 +197,7 @@ export function NoteGrid({ notes, emptyState, onAddNote, onTagClick }: NoteGridP
         layoutDuration: 180,
         layoutEasing: 'ease',
         dragEnabled: !isMobileGrid,
-        dragContainer: document.body,
+        dragContainer: gridElement,
         dragStartPredicate: (item, event) => {
           if (isMobileGrid) return false
           const element = item.getElement()
@@ -214,6 +254,7 @@ export function NoteGrid({ notes, emptyState, onAddNote, onTagClick }: NoteGridP
 
       const handleDragStart = () => {
         isDraggingRef.current = true
+        suppressNextDragClick()
         dragStartOrderRef.current = orderedNotesRef.current
       }
 
@@ -229,6 +270,7 @@ export function NoteGrid({ notes, emptyState, onAddNote, onTagClick }: NoteGridP
             pendingNotesRef.current = null
             if (pendingNotes) mergeIncomingNotes(pendingNotes)
             if (muuriRef.current === grid) grid.refreshItems().layout()
+            releaseDragClickSuppression()
           })
         }
 
@@ -310,6 +352,7 @@ export function NoteGrid({ notes, emptyState, onAddNote, onTagClick }: NoteGridP
           ref={gridRef}
           className={`${styles.grid} ${isMobileGrid ? styles.mobileGrid : ''}`}
           style={gridStyle}
+          onClickCapture={handleGridClickCapture}
           data-masonry-ready={isMasonryReady ? 'true' : undefined}
           data-mobile-grid={isMobileGrid ? 'true' : undefined}
         >

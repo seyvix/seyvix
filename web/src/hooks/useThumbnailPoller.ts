@@ -12,12 +12,6 @@ export function useThumbnailPoller(notes: Note[]) {
     !n.isLocal &&
     n.objects.some(o => {
       if (o.type === 'document') return o.thumbnailUrl === null
-      if (o.type === 'link') {
-        return (
-          o.thumbnailUrl === null ||
-          !(o.snapshotViews ?? []).some(view => view.kind === 'webpage_html')
-        )
-      }
       return false
     })
   )

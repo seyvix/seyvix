@@ -42,7 +42,6 @@ import { useBulkSelect } from '../../contexts/BulkSelectContext'
 import { dropTargetForExternal } from '@atlaskit/pragmatic-drag-and-drop/external/adapter'
 import { containsFiles, getFiles } from '@atlaskit/pragmatic-drag-and-drop/external/file'
 import AuthImage from '../AuthImage/AuthImage'
-import { LoaderSpinner } from '../LoaderSpinner'
 import type { Note, NoteObject, Tag } from '../../types'
 import { getTagColor } from '../../utils/tagColor'
 import { useUploadFiles } from '../../hooks/useUploadFiles'
@@ -408,7 +407,6 @@ function LayerContent({ obj, fallback }: { obj: NoteObject | undefined; fallback
       <div className={`${styles.collectionLayerBg} ${styles.collectionLayerLink}`} style={{ background: fallback }}>
         <div className={styles.linkCoverInner}>
           <LinkFaviconItem url={obj.content} />
-          <LoaderSpinner size="md" />
         </div>
       </div>
     )
@@ -651,7 +649,6 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
                         <div className={styles.linkFaviconRow}>
                           {links.slice(0, 4).map(l => <LinkFaviconItem key={l.id} url={l.content} />)}
                         </div>
-                        {firstLink.thumbnailUrl === null && <LoaderSpinner size="md" />}
                       </div>
                     </div>
                   )
