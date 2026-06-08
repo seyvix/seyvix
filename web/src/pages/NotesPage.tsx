@@ -148,6 +148,21 @@ export default function NotesPage() {
   )
   const hasActiveSearchOrFilters = hasActiveFilters(filters)
   const isSearchUpdating = hasActiveSearchOrFilters && notesQuery.isFetching && !notesQuery.isFetchingNextPage
+  const emptyState = useMemo(() => {
+    if (notesQuery.isError) {
+      return {
+        title: 'Не удалось загрузить заметки',
+        description: 'Обнови страницу или попробуй позже.',
+      }
+    }
+    if (hasActiveSearchOrFilters && !notesQuery.isFetching && notes.length === 0) {
+      return {
+        title: 'Ничего не найдено',
+        description: 'Попробуй изменить запрос или убрать часть фильтров.',
+      }
+    }
+    return undefined
+  }, [hasActiveSearchOrFilters, notes.length, notesQuery.isError, notesQuery.isFetching])
 
   useThumbnailPoller(notes, { enabled: !hasActiveSearchOrFilters })
 
@@ -257,6 +272,7 @@ export default function NotesPage() {
         showAddCard={!hasActiveSearchOrFilters}
         isUpdating={isSearchUpdating}
         updatingLabel="Ищем материалы"
+        emptyState={emptyState}
         onTagClick={handleTagClick}
       />
       {notesQuery.hasNextPage && (

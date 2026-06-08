@@ -54,6 +54,7 @@ from app.modules.content.schemas import (
 )
 from app.modules.content.storage import ContentStorage, StoredFile, slugify
 from app.modules.search.schemas import SearchContentMatch
+from app.modules.snapshots.models import SnapshotArtifact
 from app.modules.snapshots.service import SnapshotArtifactReference, SnapshotService
 from app.modules.tags.models import Tag
 from app.modules.tags.service import TagsService
@@ -93,6 +94,12 @@ AUDIO_SUFFIXES = {
     ".weba",
 }
 VIDEO_SUFFIXES = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm"}
+
+
+@dataclass(slots=True)
+class CardAssetPreview:
+    has_thumbnail: bool = False
+    thumbnail_text: str | None = None
 
 
 def _optional_string(value: Any) -> str | None:
@@ -585,6 +592,10 @@ class ContentService:
                 next_offset = end
 
         if card_view:
+            card_previews = await self._card_asset_previews(
+                owner_user_id=owner_user_id,
+                content_objects=page_items,
+            )
             return NoteListResponse(
                 items=[
                     self._to_card_summary(
@@ -596,6 +607,7 @@ class ContentService:
                             if search_matches_by_object_id is not None
                             else None
                         ),
+                        preview_artifacts_by_asset_id=card_previews,
                     )
                     for item in page_items
                 ],
@@ -2573,7 +2585,9 @@ class ContentService:
         active_tags: list[Tag],
         assignment: TaxonomyContentAssignment | None,
         search_matches: list[SearchContentMatch] | None = None,
+        preview_artifacts_by_asset_id: dict[str, CardAssetPreview] | None = None,
     ) -> NoteCardResponse:
+        preview_artifacts_by_asset_id = preview_artifacts_by_asset_id or {}
         collection_parent = None
         if content_object.collection_memberships:
             collection = content_object.collection_memberships[0].collection
@@ -2598,6 +2612,7 @@ class ContentService:
                     item.content_object,
                     active_tags=[],
                     assignment=None,
+                    preview_artifacts_by_asset_id=preview_artifacts_by_asset_id,
                 )
                 for item in collection_items[:CARD_LIST_COLLECTION_ITEM_LIMIT]
             ]
@@ -2621,11 +2636,70 @@ class ContentService:
             deferred_link_snapshots=None,
             search_matches=search_matches or [],
             assets=[
-                self._asset_card_summary(asset, content_object)
+                self._asset_card_summary(
+                    asset,
+                    content_object,
+                    preview_artifacts_by_asset_id=preview_artifacts_by_asset_id,
+                )
                 for asset in self._card_preview_assets(content_object.assets)
             ],
             items=items,
         )
+
+    async def _card_asset_previews(
+        self,
+        *,
+        owner_user_id: str,
+        content_objects: list[ContentObject],
+    ) -> dict[str, CardAssetPreview]:
+        asset_ids = self._card_preview_asset_ids(content_objects)
+        if not asset_ids:
+            return {}
+        artifacts = list(
+            await self.session.scalars(
+                select(SnapshotArtifact)
+                .where(
+                    SnapshotArtifact.owner_user_id == owner_user_id,
+                    SnapshotArtifact.source_asset_id.in_(asset_ids),
+                    SnapshotArtifact.status == "ready",
+                    SnapshotArtifact.artifact_type.in_(("thumbnail", "thumbnail_text")),
+                )
+                .order_by(SnapshotArtifact.created_at.asc())
+            )
+        )
+        previews: dict[str, CardAssetPreview] = {}
+        for artifact in artifacts:
+            if artifact.source_asset_id is None:
+                continue
+            preview = previews.setdefault(artifact.source_asset_id, CardAssetPreview())
+            if artifact.artifact_type == "thumbnail":
+                preview.has_thumbnail = True
+            elif artifact.artifact_type == "thumbnail_text":
+                preview.thumbnail_text = self._read_snapshot_artifact_text(artifact, max_chars=500)
+        return previews
+
+    def _card_preview_asset_ids(self, content_objects: list[ContentObject]) -> set[str]:
+        asset_ids: set[str] = set()
+
+        def collect(content_object: ContentObject) -> None:
+            for asset in self._card_preview_assets(content_object.assets):
+                asset_ids.add(asset.id)
+            if content_object.kind != "collection":
+                return
+            collection_items = sorted(
+                (
+                    item
+                    for item in content_object.collection_items
+                    if item.content_object is not None and item.content_object.deleted_at is None
+                ),
+                key=lambda item: item.position,
+            )
+            for item in collection_items[:CARD_LIST_COLLECTION_ITEM_LIMIT]:
+                collect(item.content_object)
+
+        for content_object in content_objects:
+            collect(content_object)
+        return asset_ids
 
     @staticmethod
     def _card_preview_assets(assets: list[ContentAsset]) -> list[ContentAsset]:
@@ -2638,8 +2712,22 @@ class ContentService:
         self,
         asset: ContentAsset,
         content_object: ContentObject,
+        *,
+        preview_artifacts_by_asset_id: dict[str, CardAssetPreview],
     ) -> NoteAssetResponse:
         asset_url = f"{self.api_prefix}/notes/{content_object.slug}/asset/{asset.id}"
+        preview = preview_artifacts_by_asset_id.get(asset.id)
+        is_text_asset = asset.media_type == "text"
+        thumbnail_url = (
+            f"{asset_url}/thumbnail"
+            if preview is not None and preview.has_thumbnail and not is_text_asset
+            else None
+        )
+        thumbnail_text = (
+            preview.thumbnail_text
+            if preview is not None and preview.thumbnail_text and not is_text_asset
+            else None
+        )
         return NoteAssetResponse(
             id=asset.id,
             role=asset.role,
@@ -2649,8 +2737,8 @@ class ContentService:
             size_bytes=asset.size_bytes,
             url=asset_url,
             text_content=asset.text_content,
-            thumbnail_url=None,
-            thumbnail_text=None,
+            thumbnail_url=thumbnail_url,
+            thumbnail_text=thumbnail_text,
             markdown_url=None,
             pdf_url=None,
             html_url=None,
@@ -2659,6 +2747,28 @@ class ContentService:
             image_height=asset.image_height,
             source=None,
         )
+
+    def _read_snapshot_artifact_text(
+        self,
+        artifact: SnapshotArtifact,
+        *,
+        max_chars: int,
+    ) -> str | None:
+        try:
+            path = self.storage.root / artifact.storage_path
+            if path.exists():
+                data = path.read_bytes()
+            else:
+                data = self.storage.backend.get_bytes(artifact.storage_key or artifact.storage_path)
+        except Exception:
+            logger.warning(
+                "content.card_preview.thumbnail_text_read_failed",
+                artifact_id=artifact.id,
+                source_asset_id=artifact.source_asset_id,
+                exc_info=True,
+            )
+            return None
+        return data.decode("utf-8", errors="replace")[:max_chars]
 
     async def _deferred_link_snapshots_for_object(
         self,

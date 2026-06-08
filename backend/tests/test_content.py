@@ -19,7 +19,7 @@ from app.main import app
 from app.modules.auth.models import User
 from app.modules.content.models import ContentObject, ContentTag
 from app.modules.content.service import ContentService
-from app.modules.snapshots.models import SnapshotJob
+from app.modules.snapshots.models import SnapshotArtifact, SnapshotJob
 from app.modules.tags.models import TaggingJob
 from app.modules.taxonomy.models import (
     TaxonomyCategory,
@@ -986,6 +986,127 @@ def test_card_note_list_supports_limit_offset_pagination(
     assert second_page.status_code == 200
     assert [item["slug"] for item in second_page.json()["items"]] == [third["slug"]]
     assert "nextOffset" not in second_page.json()
+
+
+def test_card_note_list_keeps_video_preview_thumbnail_without_snapshot_views(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client)
+    upload_response = content_client.post(
+        "/api/v1/notes/file/upload",
+        headers=headers,
+        data={"create_object": "true", "title": "Preview video"},
+        files={"file": ("clip.mp4", b"not a real video", "video/mp4")},
+    )
+    assert upload_response.status_code == 201
+    upload_payload = upload_response.json()
+    note = upload_payload.get("object") or upload_payload
+    asset_id = note["objects"][0]["id"]
+
+    async def add_thumbnail_artifact() -> None:
+        async with content_client.app.state.session_factory() as session:
+            content_object = await session.scalar(
+                select(ContentObject).where(ContentObject.id == note["id"])
+            )
+            assert content_object is not None
+            session.add(
+                SnapshotArtifact(
+                    owner_user_id=content_object.owner_user_id,
+                    content_object_id=content_object.id,
+                    source_asset_id=asset_id,
+                    artifact_type="thumbnail",
+                    filename="clip-thumbnail.jpg",
+                    mime_type="image/jpeg",
+                    size_bytes=128,
+                    storage_path="snapshots/clip-thumbnail.jpg",
+                    status="ready",
+                )
+            )
+            await session.commit()
+
+    content_client.portal.call(add_thumbnail_artifact)
+
+    list_response = content_client.get("/api/v1/notes?view=card", headers=headers)
+
+    assert list_response.status_code == 200
+    video_object = list_response.json()["items"][0]["objects"][0]
+    assert video_object["type"] == "video"
+    assert video_object["thumbnailUrl"] == (
+        f"/api/v1/notes/{note['slug']}/asset/{asset_id}/thumbnail"
+    )
+    assert "snapshotViews" not in video_object
+
+
+def test_card_note_list_keeps_link_preview_thumbnail_and_text_without_heavy_fields(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client)
+    create_response = content_client.post(
+        "/api/v1/notes",
+        headers=headers,
+        json={
+            "media_type": "link",
+            "title": "Example link",
+            "text": "https://example.com/article",
+        },
+    )
+    assert create_response.status_code == 201
+    note = create_response.json()
+    asset_id = note["objects"][0]["id"]
+    thumbnail_text_path = (
+        content_client.app.state.content_storage_root / "snapshots" / "link-preview.txt"
+    )
+    thumbnail_text_path.parent.mkdir(parents=True, exist_ok=True)
+    thumbnail_text_path.write_text("Readable website preview", encoding="utf-8")
+
+    async def add_link_artifacts() -> None:
+        async with content_client.app.state.session_factory() as session:
+            content_object = await session.scalar(
+                select(ContentObject).where(ContentObject.id == note["id"])
+            )
+            assert content_object is not None
+            for artifact_type, filename, mime_type, storage_path in [
+                (
+                    "thumbnail",
+                    "link-thumbnail.jpg",
+                    "image/jpeg",
+                    "snapshots/link-thumbnail.jpg",
+                ),
+                (
+                    "thumbnail_text",
+                    "link-preview.txt",
+                    "text/plain",
+                    "snapshots/link-preview.txt",
+                ),
+            ]:
+                session.add(
+                    SnapshotArtifact(
+                        owner_user_id=content_object.owner_user_id,
+                        content_object_id=content_object.id,
+                        source_asset_id=asset_id,
+                        artifact_type=artifact_type,
+                        filename=filename,
+                        mime_type=mime_type,
+                        size_bytes=64,
+                        storage_path=storage_path,
+                        status="ready",
+                    )
+                )
+            await session.commit()
+
+    content_client.portal.call(add_link_artifacts)
+
+    list_response = content_client.get("/api/v1/notes?view=card", headers=headers)
+
+    assert list_response.status_code == 200
+    link_object = list_response.json()["items"][0]["objects"][0]
+    assert link_object["type"] == "link"
+    assert link_object["thumbnailUrl"] == (
+        f"/api/v1/notes/{note['slug']}/asset/{asset_id}/thumbnail"
+    )
+    assert link_object["thumbnailText"] == "Readable website preview"
+    assert "source" not in link_object
+    assert "snapshotViews" not in link_object
 
 
 def test_favorite_and_custom_order_are_exposed_in_note_list(

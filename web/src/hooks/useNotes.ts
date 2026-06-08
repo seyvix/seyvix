@@ -1,6 +1,9 @@
-import { useInfiniteQuery } from '@tanstack/react-query'
+import { useEffect, useRef } from 'react'
+import { type InfiniteData, useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
 import { fetchNotesPage, NOTES_PAGE_SIZE } from '../api/notes.ts'
-import type { NotesParams } from '../types/index.ts'
+import type { Note, NotesPageResult, NotesParams } from '../types/index.ts'
+
+const HOME_NOTES_POLL_INTERVAL_MS = 2_000
 
 export function notesQueryKey(params: NotesParams = {}) {
   return ['notes', {
@@ -35,14 +38,44 @@ export function notesRefetchInterval(
   visibilityState: DocumentVisibilityState = 'visible',
 ) {
   if (hasNotesSearchOrFilters(params)) return false
-  return visibilityState === 'visible' ? 5_000 : false
+  return visibilityState === 'visible' ? HOME_NOTES_POLL_INTERVAL_MS : false
+}
+
+type NotesQueryParams = ReturnType<typeof notesQueryKey>[1]
+
+function notesParamsFromQueryParams(params: NotesQueryParams): NotesParams {
+  return {
+    search: params.search ?? undefined,
+    searchMode: params.searchMode ?? undefined,
+    sort: params.sort ?? undefined,
+    tags: params.tags.length ? [...params.tags] : undefined,
+    folders: params.folders.length ? [...params.folders] : undefined,
+    contentTypes: params.contentTypes.length ? [...params.contentTypes] : undefined,
+    sources: params.sources.length ? [...params.sources] : undefined,
+    favorite: params.favorite,
+    createdAfter: params.createdAfter,
+    createdBefore: params.createdBefore,
+  }
+}
+
+export function dedupeNotes(notes: Note[]) {
+  const seen = new Set<string>()
+  return notes.filter(note => {
+    if (seen.has(note.id)) return false
+    seen.add(note.id)
+    return true
+  })
 }
 
 export function useNotes(params: NotesParams = {}) {
   const hasSearchOrFilters = hasNotesSearchOrFilters(params)
-  const stableParams = notesQueryKey(params)[1]
+  const queryClient = useQueryClient()
+  const queryKey = notesQueryKey(params)
+  const stableParams = queryKey[1]
+  const stableParamsKey = JSON.stringify(stableParams)
+  const refreshInFlightRef = useRef(false)
   const query = useInfiniteQuery({
-    queryKey: notesQueryKey(params),
+    queryKey,
     queryFn: ({ pageParam, signal }) => fetchNotesPage(params, signal, {
       limit: NOTES_PAGE_SIZE,
       offset: pageParam,
@@ -51,15 +84,61 @@ export function useNotes(params: NotesParams = {}) {
     getNextPageParam: page => page.nextOffset ?? undefined,
     staleTime: hasSearchOrFilters ? 5_000 : 10_000,
     placeholderData: previousData => previousData,
-    refetchInterval: () => notesRefetchInterval(
-      stableParams,
-      typeof document !== 'undefined' ? document.visibilityState : 'visible',
-    ),
-    refetchOnWindowFocus: 'always',
+    refetchOnWindowFocus: hasSearchOrFilters ? 'always' : false,
   })
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return
+
+    const queryParams = JSON.parse(stableParamsKey) as NotesQueryParams
+    const interval = notesRefetchInterval(queryParams, document.visibilityState)
+    if (interval === false) return
+
+    const pollParams = notesParamsFromQueryParams(queryParams)
+    const pollQueryKey = notesQueryKey(pollParams)
+    let cancelled = false
+
+    async function refreshFirstPage() {
+      if (document.visibilityState !== 'visible' || refreshInFlightRef.current) return
+      refreshInFlightRef.current = true
+      try {
+        const firstPage = await fetchNotesPage(pollParams, undefined, {
+          limit: NOTES_PAGE_SIZE,
+          offset: 0,
+        })
+        if (cancelled) return
+        queryClient.setQueryData<InfiniteData<NotesPageResult, number>>(
+          pollQueryKey,
+          current => {
+            if (!current) return { pages: [firstPage], pageParams: [0] }
+            return {
+              pages: [firstPage, ...current.pages.slice(1)],
+              pageParams: [0, ...current.pageParams.slice(1)],
+            }
+          },
+        )
+      } finally {
+        refreshInFlightRef.current = false
+      }
+    }
+
+    const intervalId = window.setInterval(() => {
+      void refreshFirstPage()
+    }, interval)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') void refreshFirstPage()
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [queryClient, stableParamsKey])
 
   return {
     ...query,
-    data: query.data?.pages.flatMap(page => page.items),
+    data: query.data ? dedupeNotes(query.data.pages.flatMap(page => page.items)) : undefined,
   }
 }
