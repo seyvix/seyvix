@@ -1293,7 +1293,7 @@ def test_list_notes_hybrid_falls_back_to_local_tag_matches_when_meilisearch_is_e
 
     assert response.status_code == 200
     items = response.json()["items"]
-    assert [item["id"] for item in items] == [valheim["id"], stronghold["id"]]
+    assert [item["id"] for item in items] == [stronghold["id"], valheim["id"]]
 
 
 def test_list_notes_hybrid_prioritizes_local_matches_before_semantic_only_results(
@@ -1348,3 +1348,50 @@ def test_list_notes_hybrid_prioritizes_local_matches_before_semantic_only_result
     assert response.status_code == 200
     items = response.json()["items"]
     assert [item["id"] for item in items] == [game_note["id"], semantic_only["id"]]
+
+
+def test_list_notes_passes_extended_filter_params_to_search_service(
+    content_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers = _auth_headers(content_client)
+    settings = get_settings()
+    settings.search_vector_modes_min_notes = 0
+    settings.search_engine = "meilisearch"
+    settings.search_meilisearch_url = "http://meilisearch:7700"
+
+    captured_filters: list[SearchFilters] = []
+
+    async def fake_search(self, *, owner_user_id, query, limit, mode, filters):  # type: ignore[no-untyped-def]
+        captured_filters.append(filters)
+        return {}
+
+    monkeypatch.setattr(
+        "app.modules.search.service.SemanticSearchService." "search_content_object_matches",
+        fake_search,
+    )
+
+    _create_text_note(content_client, headers, title="A", text="alpha")
+
+    response = content_client.get(
+        "/api/v1/notes",
+        headers=headers,
+        params={
+            "search": "alpha",
+            "search_mode": "hybrid",
+            "types": ["video", "pdf"],
+            "sources": ["telegram"],
+            "favorite": "true",
+            "created_after": "2026-05-01T00:00:00+00:00",
+            "created_before": "2026-06-01T00:00:00+00:00",
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(captured_filters) == 1
+    filters = captured_filters[0]
+    assert filters.content_types == ["video", "pdf"]
+    assert filters.source_provider == "telegram"
+    assert filters.is_favorite is True
+    assert filters.created_at_from == datetime(2026, 5, 1, tzinfo=UTC)
+    assert filters.created_at_to == datetime(2026, 6, 1, tzinfo=UTC)
