@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { NavLink } from 'react-router'
 import { Tags, Trash2 } from 'lucide-react'
 import { useLocalStorage } from '../../hooks/useLocalStorage'
@@ -77,6 +77,8 @@ function readViewportWidth(): number {
 }
 
 export default function AsideHeader() {
+  const moreMenuRef = useRef<HTMLDivElement>(null)
+  const moreButtonRef = useRef<HTMLButtonElement>(null)
   const [expanded, setExpanded] = useLocalStorage(STORAGE_KEY, false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [isMobileColumns, setIsMobileColumns] = useState(false)
@@ -114,6 +116,21 @@ export default function AsideHeader() {
       window.visualViewport?.removeEventListener('resize', handleChange)
     }
   }, [])
+
+  useEffect(() => {
+    if (!settingsOpen || !isMobileColumns) return
+
+    function handleOutsidePointerDown(event: PointerEvent) {
+      const target = event.target
+      if (!(target instanceof Node)) return
+      if (moreMenuRef.current?.contains(target)) return
+      if (moreButtonRef.current?.contains(target)) return
+      setSettingsOpen(false)
+    }
+
+    document.addEventListener('pointerdown', handleOutsidePointerDown)
+    return () => document.removeEventListener('pointerdown', handleOutsidePointerDown)
+  }, [isMobileColumns, settingsOpen])
 
   return (
     <aside className={sidebarClass}>
@@ -177,7 +194,7 @@ export default function AsideHeader() {
       </nav>
 
       <div className={styles.bottom}>
-        <div className={[styles.moreMenu, settingsOpen ? styles.moreMenuOpen : ''].filter(Boolean).join(' ')}>
+        <div ref={moreMenuRef} className={[styles.moreMenu, settingsOpen ? styles.moreMenuOpen : ''].filter(Boolean).join(' ')}>
           <div className={styles.mobileProfileCard}>
             <div className={styles.avatar}>
               <span className={styles.avatarInitials}>{initials}</span>
@@ -230,6 +247,7 @@ export default function AsideHeader() {
         </div>
 
         <button
+          ref={moreButtonRef}
           type="button"
           className={[styles.navItem, settingsOpen ? styles.active : ''].filter(Boolean).join(' ')}
           aria-expanded={settingsOpen}
