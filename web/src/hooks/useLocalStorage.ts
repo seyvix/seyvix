@@ -1,16 +1,17 @@
-import { useEffect, useState } from 'react'
+import { useLayoutEffect, useState } from 'react'
 
 export function useLocalStorage<T>(key: string, initialValue: T) {
   const [value, setValue] = useState<T>(initialValue)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     try {
+      if (typeof window === 'undefined') return
       const item = localStorage.getItem(key)
       if (item !== null) setValue(JSON.parse(item) as T)
     } catch {
       // ignore unavailable storage
     }
-  }, [key])
+  }, [initialValue, key])
 
   const set = (newValue: T) => {
     setValue(newValue)

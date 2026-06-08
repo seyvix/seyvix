@@ -13,6 +13,7 @@ import { reorderNotes } from '../../api/notes'
 import { NoteCard, AddNoteCard } from '../NoteCard/NoteCard'
 import { DragProvider } from '../../contexts/DragContext'
 import { useSettings } from '../../contexts/SettingsContext'
+import { LoaderSpinner } from '../LoaderSpinner'
 import {
   buildMasonryLayoutSlots,
   calculateMasonryGridMetrics,
@@ -70,7 +71,7 @@ export function NoteGrid({
 
   gridMetricsRef.current = gridMetrics
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia === 'undefined') return
     const media = window.matchMedia(MOBILE_GRID_QUERY)
     const handleChange = () => setIsMobileGrid(media.matches)
@@ -183,8 +184,6 @@ export function NoteGrid({
     void import('muuri').then(({ default: Muuri }) => {
       if (disposed) return
 
-      flushSync(() => setIsMasonryReady(true))
-
       const grid = new Muuri(gridElement, {
         items: `.${styles.item}`,
         layout: (_grid, id, items, _width, _height, callback) => {
@@ -254,6 +253,8 @@ export function NoteGrid({
       }
 
       muuriRef.current = grid
+      grid.refreshItems(undefined, true).layout(true)
+      flushSync(() => setIsMasonryReady(true))
 
       if (typeof ResizeObserver !== 'undefined') {
         itemResizeObserverRef.current = new ResizeObserver(() => {
@@ -352,19 +353,28 @@ export function NoteGrid({
   const gridStyle = {
     '--note-grid-content-width': `${visibleMetrics.contentWidth}px`,
     '--note-grid-item-width': `${visibleMetrics.itemWidth}px`,
+    '--note-grid-cols': visibleMetrics.cols,
   } as CSSProperties
-  const itemStyle = isMasonryReady
+  const itemStyle = hasGridMetrics
     ? ({ width: `${visibleMetrics.itemWidth}px` } as CSSProperties)
     : undefined
+  const isMasonryBootstrapping = !isMasonryReady
 
   return (
     <DragProvider>
       <div ref={scrollRef} className={styles.scrollArea}>
+        {isMasonryBootstrapping && (
+          <div className={styles.gridBootLoader} role="status" aria-label="Загрузка заметок">
+            <LoaderSpinner size="md" />
+          </div>
+        )}
         <div
           ref={gridRef}
           className={`${styles.grid} ${isMobileGrid ? styles.mobileGrid : ''}`}
           style={gridStyle}
           onClickCapture={handleGridClickCapture}
+          data-grid-measured={hasGridMetrics ? 'true' : undefined}
+          data-masonry-bootstrapping={isMasonryBootstrapping ? 'true' : undefined}
           data-masonry-ready={isMasonryReady ? 'true' : undefined}
           data-mobile-grid={isMobileGrid ? 'true' : undefined}
           data-mobile-cols={isMobileGrid ? String(visibleMetrics.cols) : undefined}

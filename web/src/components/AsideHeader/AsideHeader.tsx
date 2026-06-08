@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { NavLink } from 'react-router'
 import { Tags, Trash2 } from 'lucide-react'
 import { useLocalStorage } from '../../hooks/useLocalStorage'
@@ -98,7 +98,7 @@ export default function AsideHeader() {
     : 'U'
   const avatarSrc = user?.telegram_photo_url ?? user?.avatar_url ?? null
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia === 'undefined') return
     const media = window.matchMedia(MOBILE_COLUMNS_QUERY)
     const handleChange = () => {
