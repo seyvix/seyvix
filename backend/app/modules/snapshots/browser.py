@@ -3,12 +3,14 @@ from __future__ import annotations
 import importlib
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from typing import Protocol
 
 from app.core.logging import get_logger
 
 BROWSER_VIEWPORT_WIDTH = 1280
 BROWSER_VIEWPORT_HEIGHT = 800
 BROWSER_TIMEOUT_MS = 20_000
+BROWSER_LOAD_STATE_TIMEOUT_MS = 5_000
 
 logger = get_logger(__name__)
 
@@ -35,6 +37,12 @@ class ArchivedResource:
 class WebArchive:
     html: str
     resources: list[ArchivedResource]
+
+
+class _RenderablePage(Protocol):
+    def goto(self, url: str, *, timeout: int, wait_until: str) -> object: ...
+
+    def wait_for_load_state(self, state: str, *, timeout: int) -> object: ...
 
 
 def render_url(url: str) -> BrowserSnapshot:
@@ -126,7 +134,7 @@ def _render_archive_in_thread(url: str) -> WebArchive:
 
                 page.on("response", handle_response)
                 logger.info("snapshot.browser.archive.goto", url=url)
-                page.goto(url, timeout=BROWSER_TIMEOUT_MS, wait_until="networkidle")
+                _navigate_for_render(page, url)
                 html_content: str = page.content()
                 logger.info(
                     "snapshot.browser.archive.complete",
@@ -161,7 +169,7 @@ def _render_pdf_in_thread(url: str) -> bytes:
                 page = browser.new_page(
                     viewport={"width": BROWSER_VIEWPORT_WIDTH, "height": BROWSER_VIEWPORT_HEIGHT},
                 )
-                page.goto(url, timeout=BROWSER_TIMEOUT_MS, wait_until="networkidle")
+                _navigate_for_render(page, url)
                 pdf_bytes: bytes = page.pdf(format="A4", print_background=True)
                 return pdf_bytes
             finally:
@@ -188,7 +196,7 @@ def _render_in_thread(url: str) -> BrowserSnapshot:
                 page = browser.new_page(
                     viewport={"width": BROWSER_VIEWPORT_WIDTH, "height": BROWSER_VIEWPORT_HEIGHT},
                 )
-                page.goto(url, timeout=BROWSER_TIMEOUT_MS, wait_until="networkidle")
+                _navigate_for_render(page, url)
                 html_content: str = page.content()
                 screenshot: bytes = page.screenshot(type="jpeg", quality=85, full_page=False)
                 return BrowserSnapshot(html=html_content, screenshot_bytes=screenshot)
@@ -198,3 +206,11 @@ def _render_in_thread(url: str) -> BrowserSnapshot:
         raise
     except Exception as exc:  # noqa: BLE001
         raise BrowserRenderError(f"Browser rendering failed: {exc}") from exc
+
+
+def _navigate_for_render(page: _RenderablePage, url: str) -> None:
+    page.goto(url, timeout=BROWSER_TIMEOUT_MS, wait_until="domcontentloaded")
+    try:
+        page.wait_for_load_state("load", timeout=BROWSER_LOAD_STATE_TIMEOUT_MS)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("snapshot.browser.load_state_timeout", url=url, error=str(exc))

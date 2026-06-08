@@ -1712,7 +1712,7 @@ class ContentService:
                     continue
                 if index + 2 > len(data):
                     return None
-                segment_length = int.from_bytes(data[index:index + 2], "big")
+                segment_length = int.from_bytes(data[index : index + 2], "big")
                 if segment_length < 2 or index + segment_length > len(data):
                     return None
                 if marker in {
@@ -1730,8 +1730,8 @@ class ContentService:
                     0xCE,
                     0xCF,
                 }:
-                    height = int.from_bytes(data[index + 3:index + 5], "big")
-                    width = int.from_bytes(data[index + 5:index + 7], "big")
+                    height = int.from_bytes(data[index + 3 : index + 5], "big")
+                    width = int.from_bytes(data[index + 5 : index + 7], "big")
                     return (width, height) if width > 0 and height > 0 else None
                 index += segment_length
 
@@ -2532,33 +2532,37 @@ class ContentService:
     @staticmethod
     def _extract_links_from_text(text: str) -> tuple[list[str], str]:
         """Extract HTTP/HTTPS URLs and preserve text with markdown link previews."""
-        url_re = re.compile(r"https?://\S+")
+        link_re = re.compile(r"(?<!!)\[([^\]\n]+)\]\((https?://[^\s)]+)\)|(https?://\S+)")
         links: list[str] = []
         seen: set[str] = set()
         formatted_parts: list[str] = []
         last_end = 0
-        for match in url_re.finditer(text):
-            raw = match.group(0)
-            url = raw.rstrip(".,;:!?)]\\'\">`")
+        for match in link_re.finditer(text):
+            label = match.group(1)
+            markdown_url = match.group(2)
+            bare_url = match.group(3)
+            raw = markdown_url or bare_url or ""
+            url = raw.rstrip(".,;:!?)]\\'\">`") if bare_url else raw.rstrip(".,;:!?\\'\">`")
             parsed = urlparse(url)
             if parsed.scheme not in {"http", "https"} or not parsed.hostname:
                 formatted_parts.append(text[last_end : match.end()])
                 last_end = match.end()
                 continue
             formatted_parts.append(text[last_end : match.start()])
-            formatted_parts.append(ContentService._markdown_link_with_favicon(url))
+            formatted_parts.append(ContentService._markdown_link_with_favicon(url, label=label))
             if url not in seen:
                 seen.add(url)
                 links.append(url)
-            last_end = match.start() + len(url)
+            last_end = match.end() if markdown_url else match.start() + len(url)
         formatted_parts.append(text[last_end:])
         return links, "".join(formatted_parts)
 
     @staticmethod
-    def _markdown_link_with_favicon(url: str) -> str:
+    def _markdown_link_with_favicon(url: str, *, label: str | None = None) -> str:
         parsed = urlparse(url)
         favicon_url = f"https://favicon.yandex.net/favicon/{parsed.hostname or url}"
-        return f"![favicon]({favicon_url}) [{url}]({url})"
+        link_label = label.strip() if label and label.strip() else url
+        return f"![favicon]({favicon_url}) [{link_label}]({url})"
 
     @staticmethod
     def _plain_url(value: str) -> str | None:

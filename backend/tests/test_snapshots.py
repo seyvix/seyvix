@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.modules.content.models import ContentAsset, ContentObject
+from app.modules.snapshots import browser as snapshot_browser
 from app.modules.snapshots.artifacts import (
     FetchedWebpage,
     GeneratedArtifact,
@@ -18,6 +19,7 @@ from app.modules.snapshots.artifacts import (
     UnsupportedSnapshotError,
 )
 from app.modules.snapshots.browser import BrowserSnapshot
+from app.modules.snapshots.extraction.html import html_to_markdown
 from app.modules.snapshots.extraction.providers import (
     HttpVisionProvider,
     LocalWhisperSttProvider,
@@ -64,6 +66,61 @@ def _png_bytes(width: int, height: int, color: tuple[int, int, int]) -> bytes:
         + chunk(b"IDAT", image_data)
         + chunk(b"IEND", b"")
     )
+
+
+def test_html_to_markdown_skips_children_of_removed_boilerplate() -> None:
+    result = html_to_markdown(
+        """
+        <html>
+          <body>
+            <main>
+              <div class="advertisement">
+                <span data-kind="nested">Ad text</span>
+              </div>
+              <article>
+                <h1>Research article</h1>
+                <p>Useful paragraph.</p>
+              </article>
+            </main>
+          </body>
+        </html>
+        """,
+        source_url="https://example.com/research",
+        source_kind="webpage",
+    )
+
+    assert "Research article" in result.markdown
+    assert "Useful paragraph." in result.markdown
+    assert "Ad text" not in result.markdown
+
+
+def test_browser_navigation_does_not_fail_when_load_state_times_out() -> None:
+    class SlowLoadPage:
+        def __init__(self) -> None:
+            self.goto_calls: list[dict[str, object]] = []
+            self.load_state_calls: list[dict[str, object]] = []
+
+        def goto(self, url: str, *, timeout: int, wait_until: str) -> None:
+            self.goto_calls.append({"url": url, "timeout": timeout, "wait_until": wait_until})
+
+        def wait_for_load_state(self, state: str, *, timeout: int) -> None:
+            self.load_state_calls.append({"state": state, "timeout": timeout})
+            raise RuntimeError("still loading")
+
+    page = SlowLoadPage()
+
+    snapshot_browser._navigate_for_render(page, "https://example.com/research")
+
+    assert page.goto_calls == [
+        {
+            "url": "https://example.com/research",
+            "timeout": snapshot_browser.BROWSER_TIMEOUT_MS,
+            "wait_until": "domcontentloaded",
+        }
+    ]
+    assert page.load_state_calls == [
+        {"state": "load", "timeout": snapshot_browser.BROWSER_LOAD_STATE_TIMEOUT_MS}
+    ]
 
 
 def test_snapshot_settings_defaults_and_user_overrides(content_client: TestClient) -> None:
@@ -565,6 +622,11 @@ def test_snapshot_generator_extracts_clean_structured_markdown_from_webpage(
         assert url == "https://example.com/research"
         return FetchedWebpage(url=url, html=webpage)
 
+    monkeypatch.setattr(
+        SnapshotArtifactGenerator,
+        "_validate_fetchable_url",
+        classmethod(lambda cls, url: None),
+    )
     monkeypatch.setattr(SnapshotArtifactGenerator, "_fetch_webpage", fake_fetch)
     monkeypatch.setattr(
         "app.modules.snapshots.browser.render_url",

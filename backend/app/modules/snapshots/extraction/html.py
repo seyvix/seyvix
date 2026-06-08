@@ -6,14 +6,15 @@ from html import unescape
 from typing import Any
 from urllib.parse import urljoin
 
+from bs4 import BeautifulSoup
+from bs4.element import NavigableString, Tag
+
 from app.modules.snapshots.extraction.core import (
     ExtractionResult,
     ExtractionSection,
     normalize_blank_lines,
     plain_text_from_markdown,
 )
-from bs4 import BeautifulSoup
-from bs4.element import NavigableString, Tag
 
 BOILERPLATE_PATTERN = re.compile(
     r"(?:^|[-_\s])("
@@ -107,6 +108,8 @@ def _main_content_root(soup: BeautifulSoup) -> Tag:
 
 
 def _attribute_values(tag: Tag, *names: str) -> list[str]:
+    if tag.attrs is None:
+        return []
     values: list[str] = []
     for name in names:
         raw = tag.get(name)

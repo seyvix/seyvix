@@ -21,13 +21,11 @@ RUN apt-get update \
         libreoffice \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Playwright Chromium and its OS dependencies
-RUN pip install playwright && playwright install --with-deps chromium
-
 FROM base AS production-deps
 
 COPY backend/pyproject.toml backend/uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
+RUN python -m playwright install --with-deps chromium
 
 FROM production-deps AS production
 
@@ -41,6 +39,7 @@ FROM base AS development
 
 COPY backend/pyproject.toml backend/uv.lock ./
 RUN uv sync --frozen --no-install-project
+RUN python -m playwright install --with-deps chromium
 
 COPY backend/ ./
 

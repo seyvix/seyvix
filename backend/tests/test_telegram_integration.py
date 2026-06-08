@@ -393,6 +393,28 @@ def test_telegram_ingest_text_creates_markdown_note(content_client: TestClient) 
     assert payload["note"]["objects"][0]["content"] == "## Research\n\nTelegram **markdown** body"
 
 
+def test_telegram_ingest_markdown_link_creates_clean_link_note(
+    content_client: TestClient,
+) -> None:
+    _auth_headers(content_client)
+
+    payload = _ingest_text(
+        content_client,
+        text="[Habr article](https://habr.com/ru/articles/551948/)",
+        message_id=2,
+    )
+
+    assert payload["status"] == "saved"
+    assert payload["note"]["type"] == "composite"
+    link_object = next(item for item in payload["note"]["objects"] if item["type"] == "link")
+    assert link_object["content"] == "https://habr.com/ru/articles/551948/"
+    text_object = next(item for item in payload["note"]["objects"] if item["type"] == "text")
+    assert text_object["content"] == (
+        "![favicon](https://favicon.yandex.net/favicon/habr.com) "
+        "[Habr article](https://habr.com/ru/articles/551948/)"
+    )
+
+
 def test_telegram_ingest_returns_universal_source_metadata(
     content_client: TestClient,
 ) -> None:
@@ -441,6 +463,7 @@ def test_telegram_ingest_returns_universal_source_metadata(
     assert fresh_response.status_code == 200, fresh_response.text
     fresh_obj = fresh_response.json()["objects"][0]
     assert fresh_obj["source"]["externalId"] == "801627037:28"
+
 
 # todo вернуть тест
 # def test_telegram_media_group_appends_to_explicit_collection_with_item_sources(

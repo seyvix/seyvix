@@ -39,6 +39,18 @@ def test_image_dimensions_from_png_header() -> None:
     assert ContentService._image_dimensions_from_header(PNG_3X2) == (3, 2)
 
 
+def test_extract_links_from_markdown_url_keeps_clean_target() -> None:
+    links, text = ContentService._extract_links_from_text(
+        "[https://habr.com/ru/articles/551948/](https://habr.com/ru/articles/551948/)"
+    )
+
+    assert links == ["https://habr.com/ru/articles/551948/"]
+    assert text == (
+        "![favicon](https://favicon.yandex.net/favicon/habr.com) "
+        "[https://habr.com/ru/articles/551948/](https://habr.com/ru/articles/551948/)"
+    )
+
+
 async def _prepare_database(database_url: str) -> async_sessionmaker:
     engine: AsyncEngine = create_async_engine(database_url)
     async with engine.begin() as connection:
