@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from html import unescape
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from typing import Any
 from urllib.parse import urlparse
 from uuid import UUID, uuid4
@@ -201,6 +200,15 @@ class UploadedContent:
     filename: str
     content_type: str | None
     data: bytes
+
+
+@dataclass(slots=True)
+class AssetFile:
+    local_path: Path | None
+    storage_key: str
+    filename: str
+    mime_type: str
+    size_bytes: int
 
 
 class ContentService:
@@ -866,22 +874,23 @@ class ContentService:
             updated_at=content_object.updated_at,
         )
 
-    async def get_asset_file(
-        self, *, owner_user_id: str, slug: str, asset_id: str
-    ) -> tuple[Path, str]:
-        """Returns (absolute_path, mime_type) for the asset file."""
+    async def get_asset_file(self, *, owner_user_id: str, slug: str, asset_id: str) -> AssetFile:
         content_object = await self._load_note(owner_user_id=owner_user_id, slug=slug)
         asset = next((a for a in content_object.assets if a.id == asset_id), None)
         if asset is None:
             raise NoteNotFoundError
+        storage_key = asset.storage_key or asset.storage_path
         path = self.storage.root / asset.storage_path
-        if not path.exists():
-            temp_file = NamedTemporaryFile(prefix=f"{asset.id}-", delete=False)
-            temp_file.write(self.storage.backend.get_bytes(asset.storage_key or asset.storage_path))
-            temp_file.close()
-            path = Path(temp_file.name)
+        local_path = path if path.exists() else None
+        size_bytes = path.stat().st_size if local_path else asset.size_bytes
         mime = asset.mime_type or "application/octet-stream"
-        return path, mime
+        return AssetFile(
+            local_path=local_path,
+            storage_key=storage_key,
+            filename=asset.filename,
+            mime_type=mime,
+            size_bytes=size_bytes,
+        )
 
     async def update_note(
         self,

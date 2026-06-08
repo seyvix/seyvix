@@ -54,6 +54,7 @@ test('fetchNotes serializes extended note filters', async () => {
   })
 
   const url = new URL(capturedUrl)
+  assert.equal(url.searchParams.get('view'), 'card')
   assert.equal(url.searchParams.get('search'), 'new game')
   assert.deepEqual(url.searchParams.getAll('types'), ['video', 'pdf'])
   assert.deepEqual(url.searchParams.getAll('sources'), ['telegram'])

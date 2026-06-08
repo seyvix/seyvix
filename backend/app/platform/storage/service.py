@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -22,6 +23,12 @@ class StoredObject:
     checksum: str
 
 
+@dataclass(slots=True)
+class StorageObjectInfo:
+    size_bytes: int
+    content_type: str | None
+
+
 class StorageBackend(Protocol):
     bucket: str
 
@@ -34,6 +41,17 @@ class StorageBackend(Protocol):
     ) -> StoredObject: ...
 
     def get_bytes(self, storage_key: str) -> bytes: ...
+
+    def stat_object(self, storage_key: str) -> StorageObjectInfo: ...
+
+    def iter_object_bytes(
+        self,
+        storage_key: str,
+        *,
+        offset: int = 0,
+        length: int | None = None,
+        chunk_size: int = 1024 * 1024,
+    ) -> Iterator[bytes]: ...
 
     def delete_object(self, storage_key: str) -> None: ...
 
@@ -115,6 +133,30 @@ class LocalVolumeStorage:
     def get_bytes(self, storage_key: str) -> bytes:
         return (self.root / storage_key).read_bytes()
 
+    def stat_object(self, storage_key: str) -> StorageObjectInfo:
+        path = self.root / storage_key
+        return StorageObjectInfo(size_bytes=path.stat().st_size, content_type=None)
+
+    def iter_object_bytes(
+        self,
+        storage_key: str,
+        *,
+        offset: int = 0,
+        length: int | None = None,
+        chunk_size: int = 1024 * 1024,
+    ) -> Iterator[bytes]:
+        remaining = length
+        with (self.root / storage_key).open("rb") as file:
+            file.seek(offset)
+            while remaining is None or remaining > 0:
+                read_size = chunk_size if remaining is None else min(chunk_size, remaining)
+                chunk = file.read(read_size)
+                if not chunk:
+                    break
+                if remaining is not None:
+                    remaining -= len(chunk)
+                yield chunk
+
     def delete_object(self, storage_key: str) -> None:
         path = self.root / storage_key
         if path.exists():
@@ -181,6 +223,30 @@ class S3CompatibleStorage:
         response = self.client.get_object(self.bucket, storage_key)
         try:
             return response.read()
+        finally:
+            response.close()
+            response.release_conn()
+
+    def stat_object(self, storage_key: str) -> StorageObjectInfo:
+        stat = self.client.stat_object(self.bucket, storage_key)
+        return StorageObjectInfo(size_bytes=stat.size, content_type=stat.content_type)
+
+    def iter_object_bytes(
+        self,
+        storage_key: str,
+        *,
+        offset: int = 0,
+        length: int | None = None,
+        chunk_size: int = 1024 * 1024,
+    ) -> Iterator[bytes]:
+        response = self.client.get_object(
+            self.bucket,
+            storage_key,
+            offset=offset,
+            length=length,
+        )
+        try:
+            yield from response.stream(chunk_size)
         finally:
             response.close()
             response.release_conn()

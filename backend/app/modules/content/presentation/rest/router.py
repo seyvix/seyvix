@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile, status
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.background import BackgroundTask
 
@@ -13,7 +14,10 @@ from app.api.dependencies import get_db_session
 from app.api.errors import AppError
 from app.api.schemas import ErrorResponse
 from app.core.logging import get_logger
-from app.modules.auth.presentation.rest.router import get_auth_context
+from app.modules.auth.presentation.rest.router import (
+    get_auth_context,
+    get_auth_context_from_bearer_or_refresh_cookie,
+)
 from app.modules.auth.service import AuthContext
 from app.modules.content.app_note import (
     AppNote,
@@ -51,6 +55,12 @@ from app.modules.search.service import SearchValidationError, SemanticSearchServ
 logger = get_logger(__name__)
 
 router = APIRouter(tags=["content"])
+NoteListView = Literal["full", "card"]
+CARD_VIEW_TEXT_CONTENT_LIMIT = 720
+
+
+class InvalidRangeHeader(Exception):
+    pass
 
 
 def get_content_service(
@@ -82,6 +92,41 @@ def _parse_filter_datetime(value: str | None, field_name: str) -> datetime | Non
             message=f"{field_name} must be an ISO date or datetime.",
         ) from exc
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _parse_range_header(range_header: str | None, size_bytes: int) -> tuple[int, int] | None:
+    if range_header is None:
+        return None
+    value = range_header.strip()
+    if not value.startswith("bytes="):
+        raise InvalidRangeHeader
+    range_spec = value.removeprefix("bytes=").strip()
+    if "," in range_spec:
+        raise InvalidRangeHeader
+    start_text, separator, end_text = range_spec.partition("-")
+    if separator != "-" or (not start_text and not end_text) or size_bytes <= 0:
+        raise InvalidRangeHeader
+    try:
+        if start_text:
+            start = int(start_text)
+            end = int(end_text) if end_text else size_bytes - 1
+        else:
+            suffix_length = int(end_text)
+            if suffix_length <= 0:
+                raise InvalidRangeHeader
+            start = max(size_bytes - suffix_length, 0)
+            end = size_bytes - 1
+    except ValueError as exc:
+        raise InvalidRangeHeader from exc
+    if start < 0 or end < start or start >= size_bytes:
+        raise InvalidRangeHeader
+    return start, min(end, size_bytes - 1)
+
+
+def _inline_content_disposition(filename: str) -> str:
+    ascii_fallback = filename.encode("ascii", "ignore").decode("ascii").strip() or "file"
+    ascii_fallback = ascii_fallback.replace("\\", "_").replace("/", "_").replace('"', "'")
+    return f"inline; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quote(filename, safe='')}"
 
 
 @router.post(
@@ -239,6 +284,10 @@ async def list_notes(
     created_after: Annotated[str | None, Query(max_length=64)] = None,
     created_before: Annotated[str | None, Query(max_length=64)] = None,
     sort: Annotated[NoteSort, Query()] = "newest",
+    view: Annotated[
+        NoteListView,
+        Query(description="Use 'card' to trim large text bodies for dashboard cards."),
+    ] = "full",
 ) -> AppNoteListResponse:
     search_service = SemanticSearchService(service.session)
     settings = search_service.settings
@@ -324,7 +373,10 @@ async def list_notes(
         created_at_to=created_before_dt,
         sort=sort,
     )
-    return AppNoteListResponse(items=[note_card_to_app_note(n) for n in lst.items])
+    text_content_limit = CARD_VIEW_TEXT_CONTENT_LIMIT if view == "card" else None
+    return AppNoteListResponse(
+        items=[note_card_to_app_note(n, text_content_limit=text_content_limit) for n in lst.items]
+    )
 
 
 @router.delete(
@@ -606,6 +658,7 @@ async def download_note(
 
 @router.get(
     "/notes/{note_slug}/asset/{asset_id}",
+    response_model=None,
     summary="Get asset file",
     description="Streams the raw file for a specific asset (image, document, etc.).",
     responses={
@@ -620,16 +673,65 @@ async def download_note(
 async def get_asset_file(
     note_slug: str,
     asset_id: str,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
+    request: Request,
+    context: Annotated[AuthContext, Depends(get_auth_context_from_bearer_or_refresh_cookie)],
     service: Annotated[ContentService, Depends(get_content_service)],
-) -> FileResponse:
+) -> FileResponse | StreamingResponse | Response:
     try:
-        path, mime = await service.get_asset_file(
+        asset_file = await service.get_asset_file(
             owner_user_id=context.user.id, slug=note_slug, asset_id=asset_id
         )
     except NoteNotFoundError as exc:
         raise _not_found(exc) from exc
-    return FileResponse(path, media_type=mime)
+
+    if asset_file.local_path is not None:
+        return FileResponse(asset_file.local_path, media_type=asset_file.mime_type)
+
+    try:
+        range_bounds = _parse_range_header(
+            request.headers.get("range"),
+            asset_file.size_bytes,
+        )
+    except InvalidRangeHeader:
+        return Response(
+            status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
+            headers={
+                "Accept-Ranges": "bytes",
+                "Content-Range": f"bytes */{asset_file.size_bytes}",
+            },
+        )
+
+    if range_bounds is None:
+        start = 0
+        end = max(asset_file.size_bytes - 1, 0)
+        response_status = status.HTTP_200_OK
+    else:
+        start, end = range_bounds
+        response_status = status.HTTP_206_PARTIAL_CONTENT
+
+    content_length = max(end - start + 1, 0)
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(content_length),
+        "Content-Disposition": _inline_content_disposition(asset_file.filename),
+    }
+    if response_status == status.HTTP_206_PARTIAL_CONTENT:
+        headers["Content-Range"] = f"bytes {start}-{end}/{asset_file.size_bytes}"
+
+    if content_length == 0:
+        content = iter(())
+    else:
+        content = service.storage.backend.iter_object_bytes(
+            asset_file.storage_key,
+            offset=start,
+            length=content_length,
+        )
+    return StreamingResponse(
+        content,
+        status_code=response_status,
+        media_type=asset_file.mime_type,
+        headers=headers,
+    )
 
 
 @router.get(
@@ -654,7 +756,7 @@ async def get_asset_file(
 async def get_asset_thumbnail(
     note_slug: str,
     asset_id: str,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
+    context: Annotated[AuthContext, Depends(get_auth_context_from_bearer_or_refresh_cookie)],
     service: Annotated[ContentService, Depends(get_content_service)],
 ) -> Response:
     try:

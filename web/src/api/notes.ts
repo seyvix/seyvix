@@ -55,6 +55,7 @@ export async function fetchNotes(
 ): Promise<Note[]> {
   const origin = typeof window === 'undefined' ? 'http://localhost' : window.location.origin
   const url = new URL(BASE, origin)
+  url.searchParams.set('view', 'card')
   if (params.search) url.searchParams.set('search', params.search)
   if (params.search && params.searchMode) url.searchParams.set('search_mode', params.searchMode)
   if (params.sort) url.searchParams.set('sort', params.sort)

@@ -81,6 +81,43 @@ async def get_auth_context(
         ) from exc
 
 
+async def get_auth_context_from_bearer_or_refresh_cookie(
+    request: Request,
+    service: Annotated[AuthService, Depends(get_auth_service)],
+    authorization: Annotated[
+        HTTPAuthorizationCredentials | None,
+        Security(bearer_auth_scheme),
+    ] = None,
+) -> AuthContext:
+    if authorization and authorization.credentials:
+        access_token = authorization.credentials.strip()
+        try:
+            return await service.get_auth_context(access_token)
+        except InvalidAccessTokenError as exc:
+            raise AppError(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                code="invalid_access_token",
+                message="Invalid access token.",
+            ) from exc
+
+    raw_refresh_token = request.cookies.get(get_settings().refresh_cookie_name)
+    if raw_refresh_token is None:
+        raise AppError(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            code="missing_access_token",
+            message="Missing access token.",
+        )
+
+    try:
+        return await service.get_auth_context_by_refresh_token(raw_refresh_token)
+    except InvalidRefreshTokenError as exc:
+        raise AppError(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            code="invalid_refresh_token",
+            message="Invalid refresh token.",
+        ) from exc
+
+
 def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
     settings = get_settings()
     legacy_path = f"{settings.api_prefix}/auth"
@@ -159,7 +196,8 @@ def _largest_telegram_photo_file_id(photo_sizes: object) -> str | None:
         return None
 
     candidates = [
-        size for size in photo_sizes
+        size
+        for size in photo_sizes
         if isinstance(size, dict) and isinstance(size.get("file_id"), str)
     ]
     if not candidates:
@@ -261,19 +299,16 @@ def _build_telegram_oidc_authorization_url(*, state: str, code_verifier: str) ->
     ):
         raise TelegramAuthNotConfiguredError
 
-    return (
-        f"{settings.telegram_oidc_authorization_url}?"
-        + urlencode(
-            {
-                "client_id": settings.telegram_oidc_client_id,
-                "redirect_uri": settings.telegram_login_redirect_url,
-                "response_type": "code",
-                "scope": settings.telegram_oidc_scope,
-                "state": state,
-                "code_challenge": build_pkce_code_challenge(code_verifier),
-                "code_challenge_method": "S256",
-            },
-        )
+    return f"{settings.telegram_oidc_authorization_url}?" + urlencode(
+        {
+            "client_id": settings.telegram_oidc_client_id,
+            "redirect_uri": settings.telegram_login_redirect_url,
+            "response_type": "code",
+            "scope": settings.telegram_oidc_scope,
+            "state": state,
+            "code_challenge": build_pkce_code_challenge(code_verifier),
+            "code_challenge_method": "S256",
+        },
     )
 
 

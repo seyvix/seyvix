@@ -39,6 +39,7 @@ import {
 } from 'lucide-react'
 import { useSyncLocalNote } from '../../hooks/useSyncLocalNote'
 import { useBulkSelect } from '../../contexts/BulkSelectContext'
+import { useSettings } from '../../contexts/SettingsContext'
 import { dropTargetForExternal } from '@atlaskit/pragmatic-drag-and-drop/external/adapter'
 import { containsFiles, getFiles } from '@atlaskit/pragmatic-drag-and-drop/external/file'
 import AuthImage from '../AuthImage/AuthImage'
@@ -67,6 +68,7 @@ import {
 import { normalizedHighlightRanges } from '../../utils/searchHighlight'
 import { htmlToMarkdown, makeMarkdownTitle, replaceBlobImageSources } from '../../utils/markdownPaste'
 import { moveSlashMenuSelection } from '../../utils/slashMenuNavigation'
+import { shouldActivateVideoPreview, videoPreviewWindow } from '../../utils/mediaPreview'
 import { useFavicon } from '../../hooks/useFavicon'
 import { LoaderSpinner } from '../LoaderSpinner'
 import styles from './NoteCard.module.css'
@@ -199,10 +201,130 @@ function VideoPreviewOverlay() {
   )
 }
 
-function VideoPreviewFrame({ src, className, style }: { src: string; className: string; style?: CSSProperties }) {
+function useReducedMotionPreference() {
+  const [reducedMotion, setReducedMotion] = useState(false)
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return
+    const query = window.matchMedia('(prefers-reduced-motion: reduce)')
+    setReducedMotion(query.matches)
+    const handleChange = () => setReducedMotion(query.matches)
+    query.addEventListener?.('change', handleChange)
+    return () => query.removeEventListener?.('change', handleChange)
+  }, [])
+
+  return reducedMotion
+}
+
+function useFineHoverPointer() {
+  const [fineHover, setFineHover] = useState(false)
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return
+    const query = window.matchMedia('(hover: hover) and (pointer: fine)')
+    setFineHover(query.matches)
+    const handleChange = () => setFineHover(query.matches)
+    query.addEventListener?.('change', handleChange)
+    return () => query.removeEventListener?.('change', handleChange)
+  }, [])
+
+  return fineHover
+}
+
+function VideoPreviewFrame({
+  src,
+  className,
+  style,
+  object,
+}: {
+  src: string
+  className: string
+  style?: CSSProperties
+  object?: NoteObject
+}) {
+  const frameRef = useRef<HTMLSpanElement>(null)
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const { videoPreviewAutoplay } = useSettings()
+  const reducedMotion = useReducedMotionPreference()
+  const fineHover = useFineHoverPointer()
+  const [isHovered, setIsHovered] = useState(false)
+  const [isInViewport, setIsInViewport] = useState(false)
+  const active = object
+    ? shouldActivateVideoPreview({
+        object,
+        isHovered: fineHover && isHovered,
+        isInViewport,
+        autoplayInViewport: videoPreviewAutoplay,
+        reducedMotion,
+      })
+    : false
+
+  useEffect(() => {
+    const el = frameRef.current
+    if (!el || !object || !videoPreviewAutoplay) {
+      setIsInViewport(false)
+      return
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => setIsInViewport(entry.isIntersecting),
+      { threshold: 0.55, rootMargin: '80px 0px' },
+    )
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [object, videoPreviewAutoplay])
+
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video) return
+    if (!active) {
+      video.pause()
+      video.removeAttribute('src')
+      video.load()
+      return
+    }
+    video.src = object?.content ?? ''
+    video.currentTime = 0
+    void video.play().catch(() => {})
+  }, [active, object?.content])
+
+  function handleTimeUpdate() {
+    const video = videoRef.current
+    if (!video) return
+    const preview = videoPreviewWindow(video.duration)
+    if (video.currentTime >= preview.start + preview.duration) {
+      video.currentTime = preview.start
+      void video.play().catch(() => {})
+    }
+  }
+
   return (
-    <span className={`${styles.videoPreviewFrame} ${className}`} style={style}>
+    <span
+      ref={frameRef}
+      className={[
+        styles.videoPreviewFrame,
+        active ? styles.videoPreviewFrameActive : '',
+        className,
+      ].filter(Boolean).join(' ')}
+      style={style}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+    >
       <AuthImage className={styles.videoPreviewImage} src={src} alt="" />
+      {object && (
+        <video
+          ref={videoRef}
+          className={styles.videoPreviewClip}
+          muted
+          playsInline
+          preload="metadata"
+          onLoadedMetadata={event => {
+            event.currentTarget.currentTime = videoPreviewWindow(event.currentTarget.duration).start
+          }}
+          onTimeUpdate={handleTimeUpdate}
+          onError={() => setIsHovered(false)}
+          aria-hidden="true"
+        />
+      )}
       <VideoPreviewOverlay />
     </span>
   )
@@ -214,7 +336,7 @@ function SimpleVisual({ obj }: { obj: NoteObject }) {
   }
   if (obj.type === 'video') {
     return obj.thumbnailUrl
-      ? <VideoPreviewFrame className={styles.simpleImageMedia} src={obj.thumbnailUrl} />
+      ? <VideoPreviewFrame className={styles.simpleImageMedia} src={obj.thumbnailUrl} object={obj} />
       : <MediaPlaceholder type="video" className={styles.simpleImageMedia} />
   }
   if (obj.type === 'document') {
@@ -419,7 +541,7 @@ function LayerContent({ obj, fallback }: { obj: NoteObject | undefined; fallback
   }
   if (obj.type === 'video') {
     const thumb = obj.thumbnailUrl ?? null
-    if (thumb) return <VideoPreviewFrame src={thumb} className={styles.collectionLayerImg} />
+    if (thumb) return <VideoPreviewFrame src={thumb} className={styles.collectionLayerImg} object={obj} />
     return <MediaPlaceholder type="video" className={styles.collectionLayerBg} />
   }
   if (obj.type === 'audio') {
@@ -481,7 +603,7 @@ function MultiObjectPreview({ visualObjs, fallback }: { visualObjs: NoteObject[]
     if (obj.type === 'image') {
       return <AuthImage src={getObjectPreviewSource(obj)} alt="" className={styles.collectionSingle} />
     } else if (shouldShowVideoPreviewOverlay(obj) && obj.thumbnailUrl) {
-      return <VideoPreviewFrame src={obj.thumbnailUrl} className={styles.collectionSingle} />
+      return <VideoPreviewFrame src={obj.thumbnailUrl} className={styles.collectionSingle} object={obj} />
     } else if (obj.type === 'audio') {
       return (
         <div className={styles.collectionSingleNonImage}>
@@ -512,7 +634,7 @@ function MultiObjectPreview({ visualObjs, fallback }: { visualObjs: NoteObject[]
           obj.type === 'image'
             ? <AuthImage key={obj.id} src={getObjectPreviewSource(obj)} alt="" className={styles.collectionPairImg} />
             : shouldShowVideoPreviewOverlay(obj) && obj.thumbnailUrl
-              ? <VideoPreviewFrame key={obj.id} src={obj.thumbnailUrl} className={styles.collectionPairImg} />
+              ? <VideoPreviewFrame key={obj.id} src={obj.thumbnailUrl} className={styles.collectionPairImg} object={obj} />
             : obj.type === 'audio'
               ? <div key={obj.id} className={styles.collectionPairSlot}>
                   <MediaPlaceholder type="audio" className={styles.collectionLayerBg} />
@@ -660,7 +782,7 @@ function CompositeCard({ note, onTagClick, titleNode }: { note: Note; onTagClick
           ? <AuthImage src={getObjectPreviewSource(imageObj)} alt="" className={styles.compositeCoverImg} />
           : videoObj
             ? videoThumb
-              ? <VideoPreviewFrame src={videoThumb} className={styles.compositeCoverImg} />
+              ? <VideoPreviewFrame src={videoThumb} className={styles.compositeCoverImg} object={videoObj} />
               : <MediaPlaceholder type="video" className={styles.compositeCoverEmpty} />
           : audioObj
             ? <MediaPlaceholder type="audio" className={styles.compositeCoverEmpty} />

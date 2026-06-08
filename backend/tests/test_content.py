@@ -27,12 +27,69 @@ from app.modules.taxonomy.models import (
     TaxonomyContentAssignment,
 )
 from app.platform.events.models import EventOutbox
+from app.platform.storage.service import StorageObjectInfo, StoredObject
 
 TELEGRAM_BOT_TOKEN = "123456:test-bot-token"
 PNG_3X2 = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAYAAACddGYaAAAADUlEQVR42mP8z8BQDwAFgwJ/lz6c"
     "WQAAAABJRU5ErkJggg=="
 )
+
+
+class InMemoryRangeStorage:
+    bucket = "app-storage"
+    storage_backend = "s3"
+
+    def __init__(self) -> None:
+        self.objects: dict[str, tuple[bytes, str | None]] = {}
+        self.get_bytes_calls = 0
+        self.iter_ranges: list[tuple[str, int, int | None]] = []
+        self.fail_get_bytes = False
+
+    def put_bytes(
+        self,
+        *,
+        storage_key: str,
+        data: bytes,
+        content_type: str | None,
+    ) -> StoredObject:
+        self.objects[storage_key] = (data, content_type)
+        return StoredObject(
+            storage_backend=self.storage_backend,
+            bucket=self.bucket,
+            storage_key=storage_key,
+            storage_ref=f"s3://{self.bucket}/{storage_key}",
+            content_type=content_type,
+            size_bytes=len(data),
+            checksum=f"sha256:{hashlib.sha256(data).hexdigest()}",
+        )
+
+    def get_bytes(self, storage_key: str) -> bytes:
+        self.get_bytes_calls += 1
+        if self.fail_get_bytes:
+            raise AssertionError("asset endpoint must not fetch the full object")
+        return self.objects[storage_key][0]
+
+    def stat_object(self, storage_key: str) -> StorageObjectInfo:
+        data, content_type = self.objects[storage_key]
+        return StorageObjectInfo(size_bytes=len(data), content_type=content_type)
+
+    def iter_object_bytes(
+        self,
+        storage_key: str,
+        *,
+        offset: int = 0,
+        length: int | None = None,
+        chunk_size: int = 1024 * 1024,
+    ) -> Iterator[bytes]:
+        self.iter_ranges.append((storage_key, offset, length))
+        data = self.objects[storage_key][0]
+        limit = len(data) if length is None else min(offset + length, len(data))
+        for index in range(offset, limit, chunk_size):
+            yield data[index : min(index + chunk_size, limit)]
+
+    def delete_object(self, storage_key: str) -> None:
+        self.objects.pop(storage_key, None)
 
 
 def test_image_dimensions_from_png_header() -> None:
@@ -64,15 +121,14 @@ async def _prepare_database(database_url: str) -> async_sessionmaker:
 def _test_database_url() -> str:
     database_url = os.getenv("TEST_DATABASE_URL")
     if not database_url:
-        pytest.skip(
-            "Set TEST_DATABASE_URL to a disposable database for DB-resetting tests."
-        )
+        pytest.skip("Set TEST_DATABASE_URL to a disposable database for DB-resetting tests.")
     return database_url
 
 
 @pytest.fixture
 def content_client(tmp_path: Path) -> Iterator[TestClient]:
     os.environ["TELEGRAM_BOT_TOKEN"] = TELEGRAM_BOT_TOKEN
+    os.environ["STORAGE_BACKEND"] = "local"
     get_settings.cache_clear()
     database_url = _test_database_url()
     try:
@@ -80,8 +136,9 @@ def content_client(tmp_path: Path) -> Iterator[TestClient]:
     except OSError as exc:
         pytest.skip(f"PostgreSQL is not available for content tests: {exc}")
 
-    app.state.content_storage_root = tmp_path / "content-storage"
     with TestClient(app) as client:
+        app.state.content_storage_root = tmp_path / "content-storage"
+        app.state.storage_backend = None
         yield client
     get_settings.cache_clear()
 
@@ -158,9 +215,7 @@ def test_create_text_note_persists_manifest_and_downloads_archive(
     assert payload["taxonomyCategory"]["path"] == "projects/ai"
     assert [tag["name"] for tag in payload["tags"]] == ["AI", "draft"]
 
-    manifests = list(
-        content_client.app.state.content_storage_root.rglob("manifest.json")
-    )
+    manifests = list(content_client.app.state.content_storage_root.rglob("manifest.json"))
     assert len(manifests) == 1
     assert manifests[0].read_text(encoding="utf-8").find("Manual title") != -1
 
@@ -212,6 +267,89 @@ def test_update_text_note_persists_markdown_content(
     assert asset_response.text == "# Renamed note\n\nUpdated **markdown**\n"
 
 
+def test_asset_file_supports_cookie_authenticated_range_requests(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client)
+    upload_response = content_client.post(
+        "/api/v1/notes/file/upload",
+        headers=headers,
+        files={"file": ("clip.mp4", b"0123456789", "video/mp4")},
+    )
+    assert upload_response.status_code == 201
+    upload_payload = upload_response.json()
+    create_response = content_client.post(
+        "/api/v1/notes",
+        headers=headers,
+        json={
+            "title": "Clip",
+            "file_upload_ids": [upload_payload["files"][0]["id"]],
+        },
+    )
+    assert create_response.status_code == 201
+    payload = create_response.json()
+    asset = payload["objects"][0]
+
+    response = content_client.get(
+        f"/api/v1/notes/{payload['slug']}/asset/{asset['id']}",
+        headers={"Range": "bytes=2-5"},
+    )
+
+    assert response.status_code == 206
+    assert response.content == b"2345"
+    assert response.headers["accept-ranges"] == "bytes"
+    assert response.headers["content-range"] == "bytes 2-5/10"
+    assert response.headers["content-type"] == "video/mp4"
+
+
+def test_asset_file_streams_nonlocal_range_without_full_download(
+    content_client: TestClient,
+) -> None:
+    fake_storage = InMemoryRangeStorage()
+    previous_backend = content_client.app.state.storage_backend
+    content_client.app.state.storage_backend = fake_storage
+    try:
+        headers = _auth_headers(content_client)
+        upload_response = content_client.post(
+            "/api/v1/notes/file/upload",
+            headers=headers,
+            files={"file": ("clip.mp4", b"0123456789", "video/mp4")},
+        )
+        assert upload_response.status_code == 201
+        upload_payload = upload_response.json()
+        create_response = content_client.post(
+            "/api/v1/notes",
+            headers=headers,
+            json={
+                "title": "Clip",
+                "file_upload_ids": [upload_payload["files"][0]["id"]],
+            },
+        )
+        assert create_response.status_code == 201
+        payload = create_response.json()
+        asset = payload["objects"][0]
+        get_bytes_calls_before_asset_request = fake_storage.get_bytes_calls
+        fake_storage.fail_get_bytes = True
+
+        response = content_client.get(
+            f"/api/v1/notes/{payload['slug']}/asset/{asset['id']}",
+            headers={"Range": "bytes=2-5"},
+        )
+    finally:
+        content_client.app.state.storage_backend = previous_backend
+
+    assert response.status_code == 206
+    assert response.content == b"2345"
+    assert response.headers["accept-ranges"] == "bytes"
+    assert response.headers["content-range"] == "bytes 2-5/10"
+    assert response.headers["content-type"] == "video/mp4"
+    assert fake_storage.get_bytes_calls == get_bytes_calls_before_asset_request
+    assert len(fake_storage.iter_ranges) == 1
+    range_storage_key, offset, length = fake_storage.iter_ranges[0]
+    assert range_storage_key in fake_storage.objects
+    assert (offset, length) == (2, 4)
+
+
 def test_create_text_note_uses_first_clean_markdown_line_as_title(
     content_client: TestClient,
 ) -> None:
@@ -254,10 +392,7 @@ def test_deleted_notes_go_to_trash_and_can_be_restored(
     )
     assert delete_response.status_code == 204
 
-    assert (
-        content_client.get(f"/api/v1/notes/{note['slug']}", headers=headers).status_code
-        == 404
-    )
+    assert content_client.get(f"/api/v1/notes/{note['slug']}", headers=headers).status_code == 404
     list_response = content_client.get("/api/v1/notes", headers=headers)
     assert note["slug"] not in {item["slug"] for item in list_response.json()["items"]}
 
@@ -271,10 +406,7 @@ def test_deleted_notes_go_to_trash_and_can_be_restored(
     )
     assert restore_response.status_code == 200, restore_response.text
     assert restore_response.json()["slug"] == note["slug"]
-    assert (
-        content_client.get(f"/api/v1/notes/{note['slug']}", headers=headers).status_code
-        == 200
-    )
+    assert content_client.get(f"/api/v1/notes/{note['slug']}", headers=headers).status_code == 200
 
 
 def test_create_plain_url_note_creates_link_object_and_content_event(
@@ -309,9 +441,7 @@ def test_create_plain_url_note_creates_link_object_and_content_event(
                 select(EventOutbox).where(EventOutbox.entity_id == payload["id"])
             )
             snapshots_result = await session.scalars(
-                select(SnapshotJob).where(
-                    SnapshotJob.content_object_id == payload["id"]
-                )
+                select(SnapshotJob).where(SnapshotJob.content_object_id == payload["id"])
             )
             tags_result = await session.scalars(
                 select(TaggingJob).where(TaggingJob.content_object_id == payload["id"])
@@ -485,9 +615,7 @@ def test_markdown_url_equal_to_label_is_saved_as_plain_link_note(
     assert response.status_code == 201
     payload = response.json()
     assert payload["title"] == "Research Page Title"
-    assert [(obj["type"], obj["content"]) for obj in payload["objects"]] == [
-        ("link", url)
-    ]
+    assert [(obj["type"], obj["content"]) for obj in payload["objects"]] == [("link", url)]
 
 
 def _many_links_text(count: int = 5) -> tuple[str, list[str]]:
@@ -522,16 +650,12 @@ def test_text_note_with_many_links_processes_first_three_and_prompts_for_rest(
     async def load_snapshot_jobs() -> list[SnapshotJob]:
         async with content_client.app.state.session_factory() as session:
             result = await session.scalars(
-                select(SnapshotJob).where(
-                    SnapshotJob.content_object_id == payload["id"]
-                )
+                select(SnapshotJob).where(SnapshotJob.content_object_id == payload["id"])
             )
             return list(result)
 
     snapshot_jobs = content_client.portal.call(load_snapshot_jobs)
-    assert {job.source_asset_id for job in snapshot_jobs} == {
-        obj["id"] for obj in link_objects
-    }
+    assert {job.source_asset_id for job in snapshot_jobs} == {obj["id"] for obj in link_objects}
 
 
 def test_accept_deferred_link_snapshots_adds_remaining_links_from_text(
@@ -560,16 +684,12 @@ def test_accept_deferred_link_snapshots_adds_remaining_links_from_text(
     async def load_snapshot_jobs() -> list[SnapshotJob]:
         async with content_client.app.state.session_factory() as session:
             result = await session.scalars(
-                select(SnapshotJob).where(
-                    SnapshotJob.content_object_id == payload["id"]
-                )
+                select(SnapshotJob).where(SnapshotJob.content_object_id == payload["id"])
             )
             return list(result)
 
     snapshot_jobs = content_client.portal.call(load_snapshot_jobs)
-    assert {job.source_asset_id for job in snapshot_jobs} == {
-        obj["id"] for obj in link_objects
-    }
+    assert {job.source_asset_id for job in snapshot_jobs} == {obj["id"] for obj in link_objects}
 
 
 def test_reject_deferred_link_snapshots_hides_prompt_without_adding_links(
@@ -670,9 +790,7 @@ def test_concurrent_notes_reuse_folder_and_tags_and_allocate_unique_slugs(
         assert len(notes) == 2
         assert all(note.category_id is None for note in notes)
         assert len(assignments) == 2
-        assert {assignment.category_path_snapshot for assignment in assignments} == {
-            "projects/ai"
-        }
+        assert {assignment.category_path_snapshot for assignment in assignments} == {"projects/ai"}
 
     try:
         asyncio.run(scenario())
@@ -749,14 +867,39 @@ def test_search_expands_collections_to_matching_child_objects(
     assert row["collection"]["slug"] == collection_slug
 
 
+def test_card_note_list_truncates_large_text_but_detail_stays_full(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client)
+    long_text = "Long search payload. " * 200
+    note = _create_text_note(
+        content_client,
+        headers,
+        title="Payload note",
+        text=long_text,
+    )
+
+    list_response = content_client.get("/api/v1/notes?view=card", headers=headers)
+    detail_response = content_client.get(
+        f"/api/v1/notes/{note['slug']}",
+        headers=headers,
+    )
+
+    assert list_response.status_code == 200
+    list_object = list_response.json()["items"][0]["objects"][0]
+    assert list_object["content"].endswith("...")
+    assert len(list_object["content"]) < len(long_text)
+
+    assert detail_response.status_code == 200
+    assert detail_response.json()["objects"][0]["content"] == long_text
+
+
 def test_favorite_and_custom_order_are_exposed_in_note_list(
     content_client: TestClient,
 ) -> None:
     headers = _auth_headers(content_client)
     first = _create_text_note(content_client, headers, title="First", text="First body")
-    second = _create_text_note(
-        content_client, headers, title="Second", text="Second body"
-    )
+    second = _create_text_note(content_client, headers, title="Second", text="Second body")
 
     favorite_response = content_client.patch(
         f"/api/v1/notes/{first['slug']}/favorite",
@@ -792,9 +935,7 @@ def test_custom_order_defaults_new_notes_to_top(
 ) -> None:
     headers = _auth_headers(content_client)
     first = _create_text_note(content_client, headers, title="First", text="First body")
-    second = _create_text_note(
-        content_client, headers, title="Second", text="Second body"
-    )
+    second = _create_text_note(content_client, headers, title="Second", text="Second body")
 
     list_response = content_client.get("/api/v1/notes?sort=custom", headers=headers)
 
@@ -819,9 +960,7 @@ def test_upload_file_without_object_id_stays_temporary_until_note_creation(
     upload_payload = upload_response.json()
     assert upload_payload["object"] is None
     assert upload_payload["files"][0]["source_filename"] == "draft.txt"
-    assert not list(
-        content_client.app.state.content_storage_root.rglob("manifest.json")
-    )
+    assert not list(content_client.app.state.content_storage_root.rglob("manifest.json"))
 
     create_response = content_client.post(
         "/api/v1/notes",
@@ -994,9 +1133,7 @@ def test_merge_moves_objects_and_collections_into_target_collection(
 ) -> None:
     headers = _auth_headers(content_client)
     first = _create_text_note(content_client, headers, title="First", text="First body")
-    second = _create_text_note(
-        content_client, headers, title="Second", text="Second body"
-    )
+    second = _create_text_note(content_client, headers, title="Second", text="Second body")
 
     merge_response = content_client.post(
         "/api/v1/notes/merge",
@@ -1145,20 +1282,14 @@ def test_folder_tree_and_folder_tags_are_available(content_client: TestClient) -
     )
 
     tree_response = content_client.get("/api/v1/folders", headers=headers)
-    folder_response = content_client.get(
-        "/api/v1/folders/work/research", headers=headers
-    )
-    notes_response = content_client.get(
-        "/api/v1/notes?folders=work/research", headers=headers
-    )
+    folder_response = content_client.get("/api/v1/folders/work/research", headers=headers)
+    notes_response = content_client.get("/api/v1/notes?folders=work/research", headers=headers)
 
     assert tree_response.status_code == 200
     assert tree_response.json()["items"][0]["name"] == "work"
     assert tree_response.json()["items"][0]["direct_count"] == 0
     assert tree_response.json()["items"][0]["total_count"] == 3
-    assert {
-        child["path"] for child in tree_response.json()["items"][0]["children"]
-    } == {
+    assert {child["path"] for child in tree_response.json()["items"][0]["children"]} == {
         "work/archive",
         "work/research",
     }
@@ -1179,19 +1310,11 @@ def test_folder_tree_and_folder_tags_are_available(content_client: TestClient) -
         "Folder note",
         "Nested folder note",
     ]
-    assert (
-        folder_response.json()["notes"][0]["taxonomyCategory"]["path"]
-        == "work/research"
-    )
-    assert (
-        folder_response.json()["notes"][1]["taxonomyCategory"]["path"]
-        == "work/research/llm"
-    )
+    assert folder_response.json()["notes"][0]["taxonomyCategory"]["path"] == "work/research"
+    assert folder_response.json()["notes"][1]["taxonomyCategory"]["path"] == "work/research/llm"
     assert notes_response.status_code == 200
     assert len(notes_response.json()["items"]) == 2
-    assert (
-        notes_response.json()["items"][0]["taxonomyCategory"]["path"] == "work/research"
-    )
+    assert notes_response.json()["items"][0]["taxonomyCategory"]["path"] == "work/research"
 
 
 @pytest.mark.parametrize(

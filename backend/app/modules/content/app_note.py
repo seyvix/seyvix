@@ -51,9 +51,7 @@ class AppSourceMetadata(BaseModel):
         default_factory=list,
         serialization_alias="customEmojiIds",
     )
-    rawPayload: dict[str, Any] | None = Field(
-        default=None, serialization_alias="rawPayload"
-    )
+    rawPayload: dict[str, Any] | None = Field(default=None, serialization_alias="rawPayload")
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -212,14 +210,26 @@ def _kind_to_app_kind(kind: str) -> NoteAppKind:
     return "simple"
 
 
+def _limit_text_content(content: str, limit: int | None) -> str:
+    if limit is None or len(content) <= limit:
+        return content
+    return f"{content[:limit].rstrip()}..."
+
+
 def _map_asset(
-    asset: NoteAssetResponse, download_url: str, created_at: datetime
+    asset: NoteAssetResponse,
+    download_url: str,
+    created_at: datetime,
+    *,
+    text_content_limit: int | None = None,
 ) -> AppNoteObject:
     ot = _media_to_object_type(asset.media_type)
     if ot in ("text", "link"):
         content = asset.text_content or asset.url or download_url
     else:
         content = asset.url or download_url
+    if ot == "text":
+        content = _limit_text_content(content, text_content_limit)
     return AppNoteObject(
         id=asset.id,
         object_type=ot,
@@ -240,9 +250,17 @@ def _map_asset(
 
 
 def _collection_asset_to_object(
-    item: NoteCardResponse, asset: NoteAssetResponse
+    item: NoteCardResponse,
+    asset: NoteAssetResponse,
+    *,
+    text_content_limit: int | None = None,
 ) -> AppNoteObject:
-    obj = _map_asset(asset, item.download_url, item.created_at)
+    obj = _map_asset(
+        asset,
+        item.download_url,
+        item.created_at,
+        text_content_limit=text_content_limit,
+    )
     obj.noteId = item.id
     obj.slug = item.slug
     if obj.source is None:
@@ -250,17 +268,31 @@ def _collection_asset_to_object(
     return obj
 
 
-def _collection_item_to_objects(item: NoteCardResponse) -> list[AppNoteObject]:
+def _collection_item_to_objects(
+    item: NoteCardResponse,
+    *,
+    text_content_limit: int | None = None,
+) -> list[AppNoteObject]:
     if item.assets:
-        return [_collection_asset_to_object(item, asset) for asset in item.assets]
+        return [
+            _collection_asset_to_object(
+                item,
+                asset,
+                text_content_limit=text_content_limit,
+            )
+            for asset in item.assets
+        ]
 
     ot = _media_to_object_type(item.media_type)
+    content = item.download_url
+    if ot == "text":
+        content = _limit_text_content(content, text_content_limit)
     return [
         AppNoteObject(
             id=item.id,
             noteId=item.id,
             object_type=ot,
-            content=item.download_url,
+            content=content,
             slug=item.slug,
             source=_source(item.source),
             createdAt=item.created_at,
@@ -268,19 +300,36 @@ def _collection_item_to_objects(item: NoteCardResponse) -> list[AppNoteObject]:
     ]
 
 
-def note_card_to_app_note(card: NoteCardResponse) -> AppNote:
+def note_card_to_app_note(
+    card: NoteCardResponse,
+    *,
+    text_content_limit: int | None = None,
+) -> AppNote:
     if card.kind == "collection":
-        objects = [obj for ch in card.items for obj in _collection_item_to_objects(ch)]
+        objects = [
+            obj
+            for ch in card.items
+            for obj in _collection_item_to_objects(
+                ch,
+                text_content_limit=text_content_limit,
+            )
+        ]
     elif card.assets:
         objects = [
-            _map_asset(a, card.download_url, card.created_at) for a in card.assets
+            _map_asset(
+                a,
+                card.download_url,
+                card.created_at,
+                text_content_limit=text_content_limit,
+            )
+            for a in card.assets
         ]
     elif card.media_type == "text" or card.media_type is None:
         objects = [
             AppNoteObject(
                 id=f"{card.id}-text",
                 object_type="text",
-                content=card.title,
+                content=_limit_text_content(card.title, text_content_limit),
                 source=_source(card.source),
                 createdAt=card.created_at,
             )

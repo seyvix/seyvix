@@ -17,8 +17,8 @@ export function notesQueryKey(params: NotesParams = {}) {
   }] as const
 }
 
-export function useNotes(params: NotesParams = {}) {
-  const hasSearchOrFilters = Boolean(
+export function hasNotesSearchOrFilters(params: NotesParams = {}) {
+  return Boolean(
     params.search
     || params.tags?.length
     || params.folders?.length
@@ -28,14 +28,28 @@ export function useNotes(params: NotesParams = {}) {
     || params.createdAfter
     || params.createdBefore,
   )
+}
+
+export function notesRefetchInterval(
+  params: NotesParams = {},
+  visibilityState: DocumentVisibilityState = 'visible',
+) {
+  if (hasNotesSearchOrFilters(params)) return false
+  return visibilityState === 'visible' ? 10_000 : false
+}
+
+export function useNotes(params: NotesParams = {}) {
+  const hasSearchOrFilters = hasNotesSearchOrFilters(params)
+  const stableParams = notesQueryKey(params)[1]
+
   return useQuery({
     queryKey: notesQueryKey(params),
     queryFn: ({ signal }) => fetchNotes(params, signal),
-    staleTime: hasSearchOrFilters ? 0 : undefined,
-    refetchInterval: () => (
-      typeof document !== 'undefined' && document.visibilityState === 'visible'
-        ? 2000
-        : false
+    staleTime: hasSearchOrFilters ? 5_000 : 10_000,
+    placeholderData: previousData => previousData,
+    refetchInterval: () => notesRefetchInterval(
+      stableParams,
+      typeof document !== 'undefined' ? document.visibilityState : 'visible',
     ),
     refetchOnWindowFocus: 'always',
   })

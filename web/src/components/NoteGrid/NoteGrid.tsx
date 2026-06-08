@@ -33,6 +33,9 @@ type MuuriItem = import('muuri').Item
 interface NoteGridProps {
   notes: Note[]
   preserveOrder?: boolean
+  showAddCard?: boolean
+  isUpdating?: boolean
+  updatingLabel?: string
   emptyState?: {
     title: string
     description: string
@@ -44,6 +47,9 @@ interface NoteGridProps {
 export function NoteGrid({
   notes,
   preserveOrder = true,
+  showAddCard = true,
+  isUpdating = false,
+  updatingLabel = 'Обновляем заметки',
   emptyState,
   onAddNote,
   onTagClick,
@@ -368,22 +374,35 @@ export function NoteGrid({
             <LoaderSpinner size="md" />
           </div>
         )}
+        {isUpdating && !isMasonryBootstrapping && (
+          <div className={styles.updateStatus} role="status" aria-live="polite">
+            <LoaderSpinner size="xs" />
+            <span>{updatingLabel}</span>
+          </div>
+        )}
         <div
           ref={gridRef}
-          className={`${styles.grid} ${isMobileGrid ? styles.mobileGrid : ''}`}
+          className={[
+            styles.grid,
+            isMobileGrid ? styles.mobileGrid : '',
+            isUpdating ? styles.gridUpdating : '',
+          ].filter(Boolean).join(' ')}
           style={gridStyle}
           onClickCapture={handleGridClickCapture}
+          aria-busy={isUpdating ? 'true' : undefined}
           data-grid-measured={hasGridMetrics ? 'true' : undefined}
           data-masonry-bootstrapping={isMasonryBootstrapping ? 'true' : undefined}
           data-masonry-ready={isMasonryReady ? 'true' : undefined}
           data-mobile-grid={isMobileGrid ? 'true' : undefined}
           data-mobile-cols={isMobileGrid ? String(visibleMetrics.cols) : undefined}
         >
-          <div className={`${styles.item} ${styles.addItem}`} style={itemStyle} data-static-item="true" data-muuri-item>
-            <div className={styles.itemContent}>
-              <AddNoteCard onClick={onAddNote} />
+          {showAddCard && (
+            <div className={`${styles.item} ${styles.addItem}`} style={itemStyle} data-static-item="true" data-muuri-item>
+              <div className={styles.itemContent}>
+                <AddNoteCard onClick={onAddNote} />
+              </div>
             </div>
-          </div>
+          )}
 
           {orderedNotes.length === 0 && emptyState ? (
             <div className={`${styles.item} ${styles.emptyItem}`} style={itemStyle} data-static-item="true" data-muuri-item>

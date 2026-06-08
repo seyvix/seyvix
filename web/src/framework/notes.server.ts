@@ -1,8 +1,9 @@
 import type { QueryClient } from '@tanstack/react-query'
-import type { SearchCapabilities } from '../api/search'
-import { SEARCH_CAPABILITIES_QUERY_KEY } from '../hooks/useSearchCapabilities'
-import type { Note, NotesParams } from '../types'
-import { normalizeSearchMode } from '../utils/searchMode'
+import type { SearchCapabilities } from '../api/search.ts'
+import type { Note, NotesParams } from '../types/index.ts'
+import { normalizeSearchMode } from '../utils/searchMode.ts'
+
+const SEARCH_CAPABILITIES_QUERY_KEY = ['search-capabilities'] as const
 
 const FALLBACK_CAPABILITIES: SearchCapabilities = {
   noteCount: 0,
@@ -120,6 +121,7 @@ async function fetchNotes(
   params: NotesParams,
 ): Promise<Note[]> {
   const url = new URL('/api/v1/notes', apiBaseUrl)
+  url.searchParams.set('view', 'card')
   if (params.search) url.searchParams.set('search', params.search)
   if (params.search && params.searchMode) url.searchParams.set('search_mode', params.searchMode)
   if (params.sort) url.searchParams.set('sort', params.sort)

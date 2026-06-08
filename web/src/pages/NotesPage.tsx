@@ -122,7 +122,7 @@ export default function NotesPage() {
     sources: SOURCE_OPTIONS,
   }), [folders, tags])
 
-  const { data: serverNotes = [] } = useNotes({
+  const notesQuery = useNotes({
     search:  search  || undefined,
     searchMode,
     tags:    filters.tags.length ? filters.tags : undefined,
@@ -134,6 +134,7 @@ export default function NotesPage() {
     createdBefore: filters.createdBefore,
     sort:    'custom',
   })
+  const serverNotes = notesQuery.data ?? []
   const { localNotes } = useLocalNotes()
 
   const pendingNotes  = useMemo(() => localNotes.filter(n => n.isLocal || n.isLoading), [localNotes])
@@ -143,11 +144,9 @@ export default function NotesPage() {
     [pendingNotes, serverNotes, pendingIds],
   )
   const hasActiveSearchOrFilters = hasActiveFilters(filters)
-  const noteGridKey = hasActiveSearchOrFilters
-    ? `search:${search}:${searchMode}:${filters.tags.join(',')}:${filters.folders.join(',')}:${filters.contentTypes.join(',')}:${filters.sources.join(',')}:${filters.favorite}:${filters.createdAfter}:${filters.createdBefore}`
-    : 'notes'
+  const isSearchUpdating = hasActiveSearchOrFilters && notesQuery.isFetching
 
-  useThumbnailPoller(notes)
+  useThumbnailPoller(notes, { enabled: !hasActiveSearchOrFilters })
 
   function applyFilters(nextFilters: SearchFilterState, replace = true) {
     setSearchParams(prev => {
@@ -250,9 +249,11 @@ export default function NotesPage() {
       />
       <BulkToolbar />
       <NoteGrid
-        key={noteGridKey}
         notes={notes}
         preserveOrder={!hasActiveSearchOrFilters}
+        showAddCard={!hasActiveSearchOrFilters}
+        isUpdating={isSearchUpdating}
+        updatingLabel="Ищем материалы"
         onTagClick={handleTagClick}
       />
     </BulkSelectProvider>

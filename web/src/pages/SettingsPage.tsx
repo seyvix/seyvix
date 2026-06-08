@@ -51,7 +51,12 @@ function describeSession(userAgent: string | null): string {
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<TabKey>('profile')
   const { user, logout } = useAuth()
-  const { cols, setCols } = useSettings()
+  const {
+    cols,
+    setCols,
+    videoPreviewAutoplay,
+    setVideoPreviewAutoplay,
+  } = useSettings()
   const queryClient = useQueryClient()
 
   const snapshotSettings = useQuery({
@@ -145,6 +150,22 @@ export default function SettingsPage() {
               <p className={styles.profileHint}>
                 Профиль подтягивается из Telegram. Параметры отображения сохраняются локально на устройстве.
               </p>
+
+              <div className={styles.toggleRow}>
+                <div>
+                  <h3>Автопревью видео в ленте</h3>
+                  <p>Когда включено, видео-превью запускаются без звука при попадании карточки в видимую область.</p>
+                  <small>Когда выключено, превью запускается только при наведении мышью.</small>
+                </div>
+                <button
+                  className={[styles.switch, videoPreviewAutoplay ? styles.switchOn : ''].filter(Boolean).join(' ')}
+                  onClick={() => setVideoPreviewAutoplay(!videoPreviewAutoplay)}
+                  aria-label="Автопревью видео в ленте"
+                  aria-pressed={videoPreviewAutoplay}
+                >
+                  <span />
+                </button>
+              </div>
 
               {/*<div className={styles.settingBlock}>*/}
               {/*  <div>*/}

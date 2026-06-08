@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { notesQueryKey } from './useNotes.ts'
+import { notesQueryKey, notesRefetchInterval } from './useNotes.ts'
 
 test('notesQueryKey is derived from scalar search params', () => {
   assert.deepEqual(notesQueryKey({ search: 'Valheim', searchMode: 'hybrid', sort: 'custom' }), [
@@ -27,4 +27,11 @@ test('notesQueryKey is derived from scalar search params', () => {
     notesQueryKey({ search: 'Valheim', contentTypes: ['video'] }),
     notesQueryKey({ search: 'Valheim', contentTypes: ['image'] }),
   )
+})
+
+test('notesRefetchInterval pauses active searches and polls idle notes lightly', () => {
+  assert.equal(notesRefetchInterval({ search: 'Valheim' }, 'visible'), false)
+  assert.equal(notesRefetchInterval({ tags: ['games'] }, 'visible'), false)
+  assert.equal(notesRefetchInterval({}, 'hidden'), false)
+  assert.equal(notesRefetchInterval({}, 'visible'), 10_000)
 })
