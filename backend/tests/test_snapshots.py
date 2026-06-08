@@ -926,9 +926,20 @@ def test_snapshot_generator_reports_ocr_provider_failure_as_unsupported(
         def extract_image_text(self, image_path: Path) -> str:
             raise RuntimeError("provider unavailable")
 
+    class SilentVisionProvider:
+        def describe_image(self, image_path: Path) -> str | None:
+            return None
+
+        def describe_video(self, video_path: Path, *, max_seconds: int) -> str | None:
+            return None
+
     monkeypatch.setattr(
         "app.modules.snapshots.extraction.dispatcher.build_ocr_provider",
         lambda: BrokenOcrProvider(),
+    )
+    monkeypatch.setattr(
+        "app.modules.snapshots.extraction.dispatcher.build_vision_provider",
+        lambda: SilentVisionProvider(),
     )
 
     with pytest.raises(UnsupportedSnapshotError, match="OCR provider failed"):
@@ -978,6 +989,14 @@ def test_snapshot_generator_adds_image_description_to_markdown(
         def describe_video(self, video_path: Path, *, max_seconds: int) -> str | None:
             return None
 
+    class SilentOcrProvider:
+        def extract_image_text(self, image_path: Path) -> str | None:
+            return None
+
+    monkeypatch.setattr(
+        "app.modules.snapshots.extraction.dispatcher.build_ocr_provider",
+        lambda: SilentOcrProvider(),
+    )
     monkeypatch.setattr(
         "app.modules.snapshots.extraction.dispatcher.build_vision_provider",
         lambda: FakeVisionProvider(),
@@ -1217,19 +1236,30 @@ def test_openai_compatible_stt_provider_transcribes_audio_chunks(
         assert source_path == media_path
         return [first_chunk, second_chunk]
 
-    def fake_post(
-        url: str,
-        *,
-        headers: dict[str, str],
-        data: dict[str, str],
-        files: dict[str, tuple[str, object, str]],
-        timeout: int,
-    ) -> FakeResponse:
-        requests.append({"url": url, "headers": headers, "data": data, "files": files})
-        return responses.pop(0)
+    class FakeClient:
+        def __init__(self, **kwargs: object) -> None:
+            requests.append({"client_kwargs": kwargs})
+
+        def __enter__(self) -> FakeClient:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def post(
+            self,
+            url: str,
+            *,
+            headers: dict[str, str],
+            data: dict[str, str],
+            files: dict[str, tuple[str, object, str]],
+            timeout: int,
+        ) -> FakeResponse:
+            requests.append({"url": url, "headers": headers, "data": data, "files": files})
+            return responses.pop(0)
 
     monkeypatch.setattr(OpenAICompatibleSttProvider, "_extract_audio_chunks", fake_chunks)
-    monkeypatch.setattr("app.modules.snapshots.extraction.providers.httpx.post", fake_post)
+    monkeypatch.setattr("app.modules.snapshots.extraction.providers.httpx.Client", FakeClient)
 
     provider = OpenAICompatibleSttProvider(
         base_url="https://llm.example/v1",
@@ -1241,9 +1271,10 @@ def test_openai_compatible_stt_provider_transcribes_audio_chunks(
     )
 
     assert provider.transcribe_media(media_path) == "first transcript\n\nsecond transcript"
-    assert len(requests) == 2
-    assert requests[0]["url"] == "https://llm.example/v1/audio/transcriptions"
-    assert requests[0]["data"] == {"model": "whisper-large-v3"}
+    transcribe_requests = [request for request in requests if "url" in request]
+    assert len(transcribe_requests) == 2
+    assert transcribe_requests[0]["url"] == "https://llm.example/v1/audio/transcriptions"
+    assert transcribe_requests[0]["data"] == {"model": "whisper-large-v3"}
 
 
 def test_openai_compatible_vision_provider_describes_video_in_chunks(

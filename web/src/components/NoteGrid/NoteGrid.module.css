@@ -95,6 +95,14 @@
   will-change: auto;
 }
 
+@media (max-width: 760px), (pointer: coarse) {
+  .grid[data-masonry-ready='true'] .item {
+    cursor: default;
+    touch-action: pan-y;
+    will-change: auto;
+  }
+}
+
 .itemDragging {
   z-index: 20;
   cursor: grabbing;
