@@ -212,14 +212,21 @@ class OpenAICompatibleSttProvider:
         return sorted(output_dir.glob("chunk-*.wav"))
 
     def _transcribe_chunk(self, chunk_path: Path) -> str | None:
+        # todo удалить костылёк)
+        client_kwargs = {}
+        telegram_oidc_proxy_url = get_settings().telegram_oidc_proxy_url
+        if telegram_oidc_proxy_url:
+            client_kwargs["proxy"] = telegram_oidc_proxy_url
+
         with chunk_path.open("rb") as file_obj:
-            response = httpx.post(
-                _openai_url(self.base_url, "/audio/transcriptions"),
-                headers=_openai_headers(self.api_key),
-                data={"model": self.model},
-                files={"file": (chunk_path.name, file_obj, "audio/wav")},
-                timeout=self.timeout_seconds,
-            )
+            with httpx.Client(**client_kwargs) as client:
+                response = client.post(
+                    _openai_url(self.base_url, "/audio/transcriptions"),
+                    headers=_openai_headers(self.api_key),
+                    data={"model": self.model},
+                    files={"file": (chunk_path.name, file_obj, "audio/wav")},
+                    timeout=self.timeout_seconds,
+                )
         response.raise_for_status()
         data = response.json()
         text = data.get("text")
