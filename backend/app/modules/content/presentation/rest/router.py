@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -67,6 +68,20 @@ def _not_found(exc: Exception) -> AppError:
         code="note_not_found",
         message="Note not found.",
     )
+
+
+def _parse_filter_datetime(value: str | None, field_name: str) -> datetime | None:
+    if value is None or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise AppError(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            code="validation_error",
+            message=f"{field_name} must be an ISO date or datetime.",
+        ) from exc
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 @router.post(
@@ -218,11 +233,18 @@ async def list_notes(
     tags: Annotated[list[str] | None, Query()] = None,
     folder: Annotated[str | None, Query(max_length=1024)] = None,
     folders: Annotated[str | None, Query(max_length=1024)] = None,
+    types: Annotated[list[str] | None, Query()] = None,
+    sources: Annotated[list[str] | None, Query()] = None,
+    favorite: Annotated[bool | None, Query()] = None,
+    created_after: Annotated[str | None, Query(max_length=64)] = None,
+    created_before: Annotated[str | None, Query(max_length=64)] = None,
     sort: Annotated[NoteSort, Query()] = "newest",
 ) -> AppNoteListResponse:
     search_service = SemanticSearchService(service.session)
     settings = search_service.settings
     normalized_search = search.strip() if search else None
+    created_after_dt = _parse_filter_datetime(created_after, "created_after")
+    created_before_dt = _parse_filter_datetime(created_before, "created_before")
     if normalized_search and search_mode in ("semantic", "hybrid"):
         meilisearch_available = settings.search_engine == "meilisearch" and bool(
             settings.search_meilisearch_url
@@ -254,6 +276,11 @@ async def list_notes(
                 filters=SearchFilters(
                     tags=tags or [],
                     folder_path=folders or folder,
+                    content_types=types or [],
+                    source_providers=sources or [],
+                    is_favorite=favorite,
+                    created_at_from=created_after_dt,
+                    created_at_to=created_before_dt,
                 ),
             )
             search_result_ids = list(search_matches_by_object_id)
@@ -290,6 +317,11 @@ async def list_notes(
         include_local_search_matches=search_mode == "hybrid",
         tag_slugs=tags or [],
         folder_path=folders or folder,
+        content_types=types or [],
+        source_providers=sources or [],
+        is_favorite=favorite,
+        created_at_from=created_after_dt,
+        created_at_to=created_before_dt,
         sort=sort,
     )
     return AppNoteListResponse(items=[note_card_to_app_note(n) for n in lst.items])

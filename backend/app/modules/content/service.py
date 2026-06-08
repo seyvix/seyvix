@@ -91,12 +91,16 @@ def _optional_string(value: Any) -> str | None:
 
 
 _TITLE_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
+_TITLE_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\([^)]+\)")
+_TITLE_CUSTOM_EMOJI_RE = re.compile(r"\{\{tg_emoji:[0-9]+\|([^}]+)\}\}")
 _TITLE_INLINE_TAG_RE = re.compile(
     r"</?(?:u|b|i|s|em|strong|code|tg-spoiler)\b[^>]*>",
     re.IGNORECASE,
 )
 _TITLE_HEADING_PREFIX_RE = re.compile(r"^\s{0,3}#{1,6}\s+")
 _TITLE_BLOCKQUOTE_PREFIX_RE = re.compile(r"^\s{0,3}>\s+")
+_TITLE_TASK_PREFIX_RE = re.compile(r"^\s{0,3}[-*+]\s+\[[ xX]\]\s+")
+_TITLE_LIST_PREFIX_RE = re.compile(r"^\s{0,3}[-*+]\s+")
 _TITLE_BOLD_STAR_RE = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
 _TITLE_BOLD_UNDERSCORE_RE = re.compile(r"__(.+?)__", re.DOTALL)
 _TITLE_STRIKE_RE = re.compile(r"~~(.+?)~~", re.DOTALL)
@@ -110,12 +114,17 @@ _TITLE_INLINE_CODE_RE = re.compile(r"`+([^`]+?)`+")
 def _strip_title_markdown(value: str) -> str:
     """Remove common Markdown / Telegram entity markers from a single-line title.
 
-    Bold/italic/strike/code/link/heading/blockquote markers are unwrapped while
-    the textual content is preserved. Whitespace is collapsed.
+    Telegram custom emoji markers are replaced with their fallback emoji.
+    Bold/italic/strike/code/link/heading/blockquote/list markers are unwrapped
+    while the textual content is preserved. Whitespace is collapsed.
     """
     text = value.replace("\r", " ").replace("\n", " ")
+    text = _TITLE_CUSTOM_EMOJI_RE.sub(r"\1", text)
     text = _TITLE_HEADING_PREFIX_RE.sub("", text)
     text = _TITLE_BLOCKQUOTE_PREFIX_RE.sub("", text)
+    text = _TITLE_TASK_PREFIX_RE.sub("", text)
+    text = _TITLE_LIST_PREFIX_RE.sub("", text)
+    text = _TITLE_IMAGE_RE.sub(r"\1", text)
     text = _TITLE_LINK_RE.sub(r"\1", text)
     text = _TITLE_INLINE_TAG_RE.sub("", text)
     text = _TITLE_BOLD_STAR_RE.sub(r"\1", text)
@@ -128,14 +137,14 @@ def _strip_title_markdown(value: str) -> str:
 
 
 def _normalize_title(*candidates: str | None, max_length: int = 80) -> str:
-    """Pick the first non-empty candidate, strip Markdown markers, truncate."""
+    """Pick the first clean non-empty line from candidates and truncate."""
     for candidate in candidates:
         if not candidate:
             continue
-        cleaned = _strip_title_markdown(candidate)
-        if not cleaned:
-            continue
-        return cleaned[:max_length]
+        for line in str(candidate).splitlines():
+            cleaned = _strip_title_markdown(line)
+            if cleaned:
+                return cleaned[:max_length]
     return ""
 
 
@@ -395,6 +404,11 @@ class ContentService:
         tag_slugs: list[str],
         folder_path: str | None,
         sort: str,
+        content_types: list[str] | None = None,
+        source_providers: list[str] | None = None,
+        is_favorite: bool | None = None,
+        created_at_from: datetime | None = None,
+        created_at_to: datetime | None = None,
     ) -> NoteListResponse:
         objects = await self.content.list_all(owner_user_id=owner_user_id)
         normalized_search = search.casefold().strip() if search else None
@@ -404,10 +418,24 @@ class ContentService:
             else None
         )
         normalized_tags = {slugify(tag) for tag in tag_slugs}
+        normalized_content_types = {
+            value.strip().casefold() for value in (content_types or []) if value.strip()
+        }
+        normalized_source_providers = {
+            value.strip().casefold() for value in (source_providers or []) if value.strip()
+        }
         assignment_by_object_id = await self._current_assignment_map(owner_user_id)
         tags_by_object_id = await self.tag_service.list_active_tags_for_contents(
             owner_user_id=owner_user_id,
             content_object_ids=[content_object.id for content_object in objects],
+        )
+        source_providers_by_object_id = (
+            await self._source_provider_map(
+                owner_user_id=owner_user_id,
+                content_object_ids=[content_object.id for content_object in objects],
+            )
+            if normalized_source_providers
+            else {}
         )
         items: list[ContentObject] = []
         seen_item_ids: set[str] = set()
@@ -433,16 +461,18 @@ class ContentService:
                 and (not include_local_search_matches or local_search_score <= 0)
             ):
                 continue
-            if folder_path and (
-                assignment is None
-                or not self._path_matches_or_descends(
-                    assignment.category_path_snapshot,
-                    folder_path,
-                )
-            ):
-                continue
-            if normalized_tags and not normalized_tags.issubset(
-                {tag.slug for tag in tags_by_object_id.get(content_object.id, [])},
+            if not self._matches_note_filters(
+                content_object,
+                assignment=assignment,
+                active_tags=tags_by_object_id.get(content_object.id, []),
+                source_providers=source_providers_by_object_id.get(content_object.id, set()),
+                normalized_tags=normalized_tags,
+                folder_path=folder_path,
+                normalized_content_types=normalized_content_types,
+                normalized_source_providers=normalized_source_providers,
+                is_favorite=is_favorite,
+                created_at_from=created_at_from,
+                created_at_to=created_at_to,
             ):
                 continue
             if normalized_search and search_rank is None:
@@ -450,6 +480,23 @@ class ContentService:
                     for item in await self.content.list_collection_items(content_object.id):
                         child = item.content_object
                         if child.id in seen_item_ids:
+                            continue
+                        if not self._matches_note_filters(
+                            child,
+                            assignment=assignment_by_object_id.get(child.id),
+                            active_tags=tags_by_object_id.get(child.id, []),
+                            source_providers=source_providers_by_object_id.get(
+                                child.id,
+                                set(),
+                            ),
+                            normalized_tags=normalized_tags,
+                            folder_path=folder_path,
+                            normalized_content_types=normalized_content_types,
+                            normalized_source_providers=normalized_source_providers,
+                            is_favorite=is_favorite,
+                            created_at_from=created_at_from,
+                            created_at_to=created_at_to,
+                        ):
                             continue
                         child_score = self._local_search_score(
                             child,
@@ -516,6 +563,98 @@ class ContentService:
                 for item in items
             ]
         )
+
+    async def _source_provider_map(
+        self,
+        *,
+        owner_user_id: str,
+        content_object_ids: list[str],
+    ) -> dict[str, set[str]]:
+        if not content_object_ids:
+            return {}
+        records = list(
+            await self.session.scalars(
+                select(ContentSource).where(
+                    ContentSource.owner_user_id == owner_user_id,
+                    ContentSource.content_object_id.in_(content_object_ids),
+                )
+            )
+        )
+        providers: dict[str, set[str]] = {}
+        for record in records:
+            providers.setdefault(record.content_object_id, set()).add(record.provider.casefold())
+        return providers
+
+    def _matches_note_filters(
+        self,
+        content_object: ContentObject,
+        *,
+        assignment: TaxonomyContentAssignment | None,
+        active_tags: list[Tag],
+        source_providers: set[str],
+        normalized_tags: set[str],
+        folder_path: str | None,
+        normalized_content_types: set[str],
+        normalized_source_providers: set[str],
+        is_favorite: bool | None,
+        created_at_from: datetime | None,
+        created_at_to: datetime | None,
+    ) -> bool:
+        if folder_path and (
+            assignment is None
+            or not self._path_matches_or_descends(
+                assignment.category_path_snapshot,
+                folder_path,
+            )
+        ):
+            return False
+        if normalized_tags and not normalized_tags.issubset({tag.slug for tag in active_tags}):
+            return False
+        if normalized_content_types and not self._content_type_matches(
+            content_object,
+            normalized_content_types,
+        ):
+            return False
+        if normalized_source_providers and not (source_providers & normalized_source_providers):
+            return False
+        if is_favorite is not None and content_object.is_favorite is not is_favorite:
+            return False
+        if created_at_from is not None and content_object.created_at < self._aware_datetime(
+            created_at_from
+        ):
+            return False
+        if created_at_to is not None and content_object.created_at > self._aware_datetime(
+            created_at_to
+        ):
+            return False
+        return True
+
+    @staticmethod
+    def _content_type_matches(
+        content_object: ContentObject,
+        normalized_content_types: set[str],
+    ) -> bool:
+        media_type = (content_object.media_type or "").casefold()
+        mime_type = (content_object.mime_type or "").casefold()
+        source_filename = (content_object.source_filename or "").casefold()
+        for value in normalized_content_types:
+            if value in {"note", "notes", "text"} and media_type in {"", "text"}:
+                return True
+            if value == "collection" and content_object.kind == "collection":
+                return True
+            if (
+                value == "pdf"
+                and media_type == "document"
+                and (mime_type == "application/pdf" or source_filename.endswith(".pdf"))
+            ):
+                return True
+            if media_type == value:
+                return True
+        return False
+
+    @staticmethod
+    def _aware_datetime(value: datetime) -> datetime:
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
     async def get_note(self, *, owner_user_id: str, slug: str) -> NoteCardResponse:
         return await self._to_card(await self._load_note(owner_user_id=owner_user_id, slug=slug))
@@ -741,7 +880,7 @@ class ContentService:
     ) -> NoteCardResponse:
         content_object = await self._load_note(owner_user_id=owner_user_id, slug=slug)
         if title is not None:
-            cleaned_title = _strip_title_markdown(title)[:80]
+            cleaned_title = _normalize_title(title)
             if cleaned_title:
                 content_object.title = cleaned_title
         if tag_names is not None:
@@ -1032,7 +1171,7 @@ class ContentService:
         folder_path: str | None,
         tag_names: list[str],
     ) -> NoteCardResponse:
-        normalized_title = _strip_title_markdown(title or text.strip().splitlines()[0])[:80]
+        normalized_title = _normalize_title(title, text) or "Новая заметка"
         slug = await self._unique_slug(owner_user_id, normalized_title)
         sort_order = await self._next_root_sort_order(owner_user_id=owner_user_id)
         content_object_id = str(uuid4())
@@ -1351,9 +1490,7 @@ class ContentService:
 
         first_file = files[0]
         file_media_type = self._media_type(first_file.filename, first_file.content_type)
-        first_line = next(iter((text or "").strip().splitlines()), "")
-        title_source = title if title is not None else first_line
-        normalized_title = _strip_title_markdown(title_source)[:80]
+        normalized_title = _normalize_title(title) if title is not None else _normalize_title(text)
         if not normalized_title and title is None:
             normalized_title = Path(first_file.filename).stem or "Telegram message"
         slug = await self._unique_slug(owner_user_id, normalized_title)
@@ -1562,7 +1699,7 @@ class ContentService:
 
         collection = await self._create_collection(
             owner_user_id=owner_user_id,
-            title=title or "Imported collection",
+            title=_normalize_title(title) or "Imported collection",
             folder_path=folder_path,
             tag_names=tag_names,
             object_id=object_id,
@@ -1599,9 +1736,7 @@ class ContentService:
     ) -> ContentObject:
         media_type = self._media_type(uploaded.filename, uploaded.content_type)
         kind = "complex" if media_type == "document" else "simple"
-        normalized_title = (
-            _strip_title_markdown(title)[:80] if title is not None else uploaded.filename
-        )
+        normalized_title = _normalize_title(title) if title is not None else uploaded.filename
         slug = await self._unique_slug(
             owner_user_id,
             Path(uploaded.filename).stem or normalized_title or "uploaded-file",
@@ -1806,14 +1941,15 @@ class ContentService:
         object_id: str | None = None,
         slug: str | None = None,
     ) -> ContentObject:
-        normalized_slug = slug or await self._unique_slug(owner_user_id, title)
+        normalized_title = _normalize_title(title) or "Imported collection"
+        normalized_slug = slug or await self._unique_slug(owner_user_id, normalized_title)
         sort_order = await self._next_root_sort_order(owner_user_id=owner_user_id)
         content_object_id = object_id or str(uuid4())
         collection = ContentObject(
             id=content_object_id,
             owner_user_id=owner_user_id,
             slug=normalized_slug,
-            title=title,
+            title=normalized_title,
             kind="collection",
             media_type=None,
             storage_path=f"content-assets/{content_object_id}",
@@ -1850,7 +1986,7 @@ class ContentService:
     ) -> ContentObject:
         if content_object.kind == "collection":
             if title:
-                content_object.title = title
+                content_object.title = _normalize_title(title) or content_object.title
             return content_object
 
         child_slug = await self._unique_slug(

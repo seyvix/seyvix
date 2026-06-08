@@ -44,16 +44,47 @@ export async function prefetchNotesRoute(
 function buildNotesParams(url: URL, capabilities: SearchCapabilities): NotesParams {
   const search = url.searchParams.get('search') ?? ''
   const searchMode = normalizeSearchMode(url.searchParams.get('searchMode'), capabilities)
-  const tags = url.searchParams.get('tags')?.split(',').filter(Boolean) ?? []
-  const folders = url.searchParams.get('folders')?.split(',').filter(Boolean) ?? []
+  const tags = paramList(url.searchParams, 'tags')
+  const folders = paramList(url.searchParams, 'folders')
+  const contentTypes = paramList(url.searchParams, 'types')
+  const sources = paramList(url.searchParams, 'sources')
+  const favorite = parseBool(url.searchParams.get('favorite'))
+  const createdAfter = optionalParam(url.searchParams.get('created_after'))
+  const createdBefore = optionalParam(url.searchParams.get('created_before'))
 
   return {
     search: search || undefined,
     searchMode,
     tags: tags.length ? tags : undefined,
     folders: folders.length ? folders : undefined,
+    contentTypes: contentTypes.length ? contentTypes : undefined,
+    sources: sources.length ? sources : undefined,
+    favorite,
+    createdAfter,
+    createdBefore,
     sort: 'custom',
   }
+}
+
+function paramList(params: URLSearchParams, key: string): string[] {
+  return Array.from(new Set(
+    params
+      .getAll(key)
+      .flatMap(value => value.split(','))
+      .map(value => value.trim())
+      .filter(Boolean),
+  ))
+}
+
+function optionalParam(value: string | null): string | null {
+  const trimmed = value?.trim()
+  return trimmed || null
+}
+
+function parseBool(value: string | null): boolean | null {
+  if (value === 'true') return true
+  if (value === 'false') return false
+  return null
 }
 
 function notesQueryKey(params: NotesParams) {
@@ -63,6 +94,11 @@ function notesQueryKey(params: NotesParams) {
     sort: params.sort ?? null,
     tags: params.tags ?? [],
     folders: params.folders ?? [],
+    contentTypes: params.contentTypes ?? [],
+    sources: params.sources ?? [],
+    favorite: params.favorite ?? null,
+    createdAfter: params.createdAfter ?? null,
+    createdBefore: params.createdBefore ?? null,
   }] as const
 }
 
@@ -89,6 +125,13 @@ async function fetchNotes(
   if (params.sort) url.searchParams.set('sort', params.sort)
   params.tags?.forEach(tag => url.searchParams.append('tags', tag))
   params.folders?.forEach(folder => url.searchParams.append('folders', folder))
+  params.contentTypes?.forEach(type => url.searchParams.append('types', type))
+  params.sources?.forEach(source => url.searchParams.append('sources', source))
+  if (params.favorite !== undefined && params.favorite !== null) {
+    url.searchParams.set('favorite', String(params.favorite))
+  }
+  if (params.createdAfter) url.searchParams.set('created_after', params.createdAfter)
+  if (params.createdBefore) url.searchParams.set('created_before', params.createdBefore)
 
   const response = await fetch(url, {
     headers: authenticatedHeaders(accessToken),

@@ -120,12 +120,16 @@
 @media (max-width: 640px) {
   .scrollArea {
     overscroll-behavior: contain;
-    padding-bottom: var(--mobile-bottom-nav-clearance);
+    padding-bottom: calc(var(--mobile-bottom-nav-clearance) + 8px);
   }
 
   .grid {
-    margin: 10px auto 0;
-    padding: var(--space-3) 0 var(--space-5);
+    margin: 8px auto 0;
+    padding: 10px 0 24px;
+  }
+
+  .grid[data-mobile-cols='2'] {
+    margin-top: 6px;
   }
 
   .item {

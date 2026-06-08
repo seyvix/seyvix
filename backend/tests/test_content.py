@@ -174,6 +174,29 @@ def test_create_text_note_persists_manifest_and_downloads_archive(
     assert len(download_response.content) > 100
 
 
+def test_create_text_note_uses_first_clean_markdown_line_as_title(
+    content_client: TestClient,
+) -> None:
+    headers = _auth_headers(content_client)
+
+    response = content_client.post(
+        "/api/v1/notes",
+        headers=headers,
+        json={
+            "media_type": "text",
+            "text": "{{tg_emoji:5280586677532774817|⚡}} **Важно**\n"
+            "Вторая строка остается в тексте",
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["title"] == "⚡ Важно"
+    assert payload["objects"][0]["content"].startswith(
+        "{{tg_emoji:5280586677532774817|⚡}} **Важно**"
+    )
+
+
 def test_deleted_notes_go_to_trash_and_can_be_restored(
     content_client: TestClient,
 ) -> None:
@@ -363,6 +386,37 @@ def test_create_text_with_link_keeps_text_title_instead_of_page_title(
     assert response.status_code == 201
     payload = response.json()
     assert payload["title"] == "Read later https://example.com/research?item=1"
+    assert {obj["type"] for obj in payload["objects"]} == {"link", "text"}
+
+
+def test_create_text_with_link_uses_first_clean_markdown_line_for_title(
+    content_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers = _auth_headers(content_client)
+
+    async def fake_fetch_title(url: str) -> str | None:
+        return "Research Page Title"
+
+    monkeypatch.setattr(
+        ContentService,
+        "_fetch_link_page_title",
+        staticmethod(fake_fetch_title),
+        raising=False,
+    )
+
+    response = content_client.post(
+        "/api/v1/notes",
+        headers=headers,
+        json={
+            "text": "# {{tg_emoji:5280586677532774817|⚡}} **Read later**\n"
+            "Details https://example.com/research?item=1",
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["title"] == "⚡ Read later"
     assert {obj["type"] for obj in payload["objects"]} == {"link", "text"}
 
 

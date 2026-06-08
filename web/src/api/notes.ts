@@ -1,4 +1,5 @@
 import { apiFetch } from '../lib/apiClient.ts'
+import { makeMarkdownTitle } from '../utils/markdownPaste.ts'
 import type { Note, NotesParams, RecommendedNote, UploadJob } from '../types'
 
 const BASE = '/api/v1/notes'
@@ -49,6 +50,13 @@ export async function fetchNotes(
   if (params.sort) url.searchParams.set('sort', params.sort)
   params.tags?.forEach(t => url.searchParams.append('tags', t))
   params.folders?.forEach(f => url.searchParams.append('folders', f))
+  params.contentTypes?.forEach(type => url.searchParams.append('types', type))
+  params.sources?.forEach(source => url.searchParams.append('sources', source))
+  if (params.favorite !== undefined && params.favorite !== null) {
+    url.searchParams.set('favorite', String(params.favorite))
+  }
+  if (params.createdAfter) url.searchParams.set('created_after', params.createdAfter)
+  if (params.createdBefore) url.searchParams.set('created_before', params.createdBefore)
 
   const res = await apiFetch(url.toString(), { signal })
   if (!res.ok) throw new Error('Failed to fetch notes')
@@ -150,7 +158,7 @@ export async function startUploadJob(
     const uploadResult = await uploadRes.json()
     const fileIds: string[] = (uploadResult.files ?? []).map((f: { id: string }) => f.id)
 
-    const title = text.split('\n')[0].slice(0, 60) || files[0]?.name || ''
+    const title = makeMarkdownTitle(text) || files[0]?.name || ''
     const createRes = await apiFetch(BASE, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

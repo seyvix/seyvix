@@ -367,6 +367,7 @@ export function NoteGrid({
           onClickCapture={handleGridClickCapture}
           data-masonry-ready={isMasonryReady ? 'true' : undefined}
           data-mobile-grid={isMobileGrid ? 'true' : undefined}
+          data-mobile-cols={isMobileGrid ? String(visibleMetrics.cols) : undefined}
         >
           <div className={`${styles.item} ${styles.addItem}`} style={itemStyle} data-static-item="true" data-muuri-item>
             <div className={styles.itemContent}>

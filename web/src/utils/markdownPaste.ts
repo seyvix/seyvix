@@ -44,6 +44,7 @@ export function makeMarkdownTitle(markdown: string): string {
     .find(Boolean) ?? 'Новая заметка'
 
   return line
+    .replace(/\{\{tg_emoji:[0-9]+\|([^}]+)\}\}/g, '$1')
     .replace(/^#{1,6}\s+/, '')
     .replace(/^[-*+]\s+\[[ xX]\]\s+/, '')
     .replace(/^[-*+]\s+/, '')

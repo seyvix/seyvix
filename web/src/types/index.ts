@@ -200,6 +200,11 @@ export interface NotesParams {
   searchMode?: 'full_text' | 'semantic' | 'hybrid'
   tags?: string[]
   folders?: string[]
+  contentTypes?: string[]
+  sources?: string[]
+  favorite?: boolean | null
+  createdAfter?: string | null
+  createdBefore?: string | null
   sort?: 'newest' | 'custom'
 }
 

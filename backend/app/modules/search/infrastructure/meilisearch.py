@@ -466,9 +466,16 @@ def build_meilisearch_filter_expression(
             "(" + " OR ".join(_eq("content_type", value) for value in content_types) + ")"
         )
 
+    source_providers = [value.strip() for value in filters.source_providers if value.strip()]
     provider = filters.source_provider or filters.content_source
-    if provider:
-        clauses.append(_eq("source_provider", provider))
+    if provider and provider.strip():
+        source_providers.append(provider.strip())
+    if source_providers:
+        clauses.append(
+            "("
+            + " OR ".join(_eq("source_provider", value) for value in source_providers)
+            + ")"
+        )
     if filters.source_kind:
         clauses.append(_eq("source_kind", filters.source_kind))
     if filters.telegram_chat_type:
