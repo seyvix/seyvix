@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { mergeNotes } from '../api/notes'
+import { mergeNoteInNotesQueryData, type NotesQueryData } from './useNotes'
 import type { Note } from '../types'
 
 export function useMergeNotes() {
@@ -10,12 +11,8 @@ export function useMergeNotes() {
       mergeNotes(sourceSlug, targetSlug, title),
     onSuccess: (mergedNote: Note, { sourceSlug }) => {
       // Immediately write the merged result into the cache
-      queryClient.setQueriesData<Note[]>({ queryKey: ['notes'] }, old =>
-        Array.isArray(old)
-          ? old
-              .filter(n => n.slug !== sourceSlug)
-              .map(n => n.slug === mergedNote.slug ? mergedNote : n)
-          : old,
+      queryClient.setQueriesData<NotesQueryData>({ queryKey: ['notes'] }, old =>
+        mergeNoteInNotesQueryData(old, mergedNote, sourceSlug),
       )
       queryClient.invalidateQueries({ queryKey: ['notes'] })
     },

@@ -1,8 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { dedupeNotes, notesQueryKey, notesRefetchInterval } from './useNotes.ts'
-import type { Note } from '../types/index.ts'
+import {
+  dedupeNotes,
+  normalizeNotesQueryData,
+  notesQueryKey,
+  notesRefetchInterval,
+  upsertNoteInNotesQueryData,
+} from './useNotes.ts'
+import type { Note, NotesPageResult } from '../types/index.ts'
 
 test('notesQueryKey is derived from scalar search params', () => {
   assert.deepEqual(notesQueryKey({ search: 'Valheim', searchMode: 'hybrid', sort: 'custom' }), [
@@ -48,4 +54,48 @@ test('dedupeNotes keeps the first occurrence from refreshed pages', () => {
     'Fresh note',
     'Old note from first page',
   ])
+})
+
+test('normalizeNotesQueryData migrates legacy note arrays into infinite data', () => {
+  const notes = [
+    { id: 'first', slug: 'first', title: 'First note' },
+  ] as Note[]
+
+  const data = normalizeNotesQueryData(notes)
+
+  assert.deepEqual(data, {
+    pages: [{ items: notes, nextOffset: null }],
+    pageParams: [0],
+  })
+})
+
+test('upsertNoteInNotesQueryData preserves infinite data shape', () => {
+  const oldNote = { id: 'old', slug: 'old', title: 'Old note' } as Note
+  const updatedNote = { id: 'new', slug: 'new', title: 'Uploaded deck' } as Note
+  const page: NotesPageResult = {
+    items: [oldNote],
+    nextOffset: 60,
+  }
+
+  const data = upsertNoteInNotesQueryData(
+    { pages: [page], pageParams: [0] },
+    updatedNote,
+  )
+
+  assert.equal(data.pages.length, 1)
+  assert.deepEqual(data.pageParams, [0])
+  assert.deepEqual(data.pages[0].items.map(note => note.id), ['new', 'old'])
+  assert.equal(data.pages[0].nextOffset, 60)
+})
+
+test('upsertNoteInNotesQueryData updates an existing note without duplicating it', () => {
+  const oldNote = { id: 'same', slug: 'same', title: 'Old title' } as Note
+  const updatedNote = { id: 'same', slug: 'same', title: 'New title' } as Note
+
+  const data = upsertNoteInNotesQueryData(
+    { pages: [{ items: [oldNote], nextOffset: null }], pageParams: [0] },
+    updatedNote,
+  )
+
+  assert.deepEqual(data.pages[0].items.map(note => note.title), ['New title'])
 })

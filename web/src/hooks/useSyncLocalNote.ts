@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { createNote, startUploadJob } from '../api/notes'
 import { useLocalNotes } from '../contexts/LocalNotesContext'
+import { type NotesQueryData, upsertNoteInNotesQueryData } from './useNotes'
 import type { Note } from '../types'
 
 export function useSyncLocalNote() {
@@ -32,10 +33,8 @@ export function useSyncLocalNote() {
         queryClient.invalidateQueries({ queryKey: ['notes'] })
       } else {
         updateLocalNote(result.stableKey, { ...result.serverNote, stableKey: result.stableKey, isLoading: false, isLocal: false })
-        queryClient.setQueriesData<Note[]>({ queryKey: ['notes'] }, old =>
-          Array.isArray(old)
-            ? [result.serverNote, ...old.filter(n => n.id !== result.serverNote.id)]
-            : [result.serverNote],
+        queryClient.setQueriesData<NotesQueryData>({ queryKey: ['notes'] }, old =>
+          upsertNoteInNotesQueryData(old, result.serverNote),
         )
       }
     },
