@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties, type ReactNode } from 'react'
+import { useMemo, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import {
   CalendarDays,
   Clock3,
@@ -109,6 +109,7 @@ export function SearchBar({
 }: SearchBarProps) {
   const [isModeMenuOpen, setModeMenuOpen] = useState(false)
   const [isSuggestOpen, setSuggestOpen] = useState(false)
+  const [isInputFocused, setInputFocused] = useState(false)
   const parsedInput = useMemo(() => parseSearchInput(search), [search])
   const suggestions = useMemo(
     () => buildSuggestions({
@@ -132,6 +133,7 @@ export function SearchBar({
   const showModeButton = availableModes.length > 1 || anyVectorMode
   const hasContent = hasSearchContent(search, filters)
   const showSuggestions = isSuggestOpen && suggestions.length > 0
+  const showClearButton = isInputFocused || hasContent
 
   function applySuggestion(suggestion: Suggestion) {
     if (suggestion.disabled) return
@@ -146,6 +148,15 @@ export function SearchBar({
       return
     }
     onSearchChange(replaceCurrentWord(search, suggestion.token))
+  }
+
+  function handleClearClick(event: ReactMouseEvent<HTMLButtonElement>) {
+    event.preventDefault()
+    setSuggestOpen(false)
+    setModeMenuOpen(false)
+    onClear()
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+    event.currentTarget.blur()
   }
 
   return (
@@ -166,9 +177,15 @@ export function SearchBar({
             onSearchChange(event.target.value)
             setSuggestOpen(true)
           }}
-          onFocus={() => setSuggestOpen(true)}
+          onFocus={() => {
+            setInputFocused(true)
+            setSuggestOpen(true)
+          }}
           onBlur={() => {
-            window.setTimeout(() => setSuggestOpen(false), 120)
+            window.setTimeout(() => {
+              setInputFocused(false)
+              setSuggestOpen(false)
+            }, 120)
           }}
           onKeyDown={event => {
             if ((event.key === 'Backspace' || event.key === 'Delete') && search === '' && activeChipCount(filters) > 0) {
@@ -279,14 +296,13 @@ export function SearchBar({
           )}
         </div>
       )}
-      {hasContent && (
+      {showClearButton && (
         <button
           type="button"
           className={styles.clearBtn}
-          onPointerDown={event => { event.preventDefault(); onClear() }}
-          onMouseDown={event => { event.preventDefault() }}
-          onClick={event => { event.preventDefault(); onClear() }}
-          aria-label="Очистить поиск"
+          onClick={handleClearClick}
+          aria-label={hasContent ? 'Очистить поиск' : 'Закрыть поиск'}
+          title={hasContent ? 'Очистить поиск' : 'Закрыть поиск'}
         >
           <X size={32} strokeWidth={2.5} />
         </button>
