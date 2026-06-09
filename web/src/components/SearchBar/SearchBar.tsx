@@ -155,7 +155,8 @@ export function SearchBar({
         <ActiveFilterChips filters={filters} onFilterRemove={onFilterRemove} />
         <input
           className={styles.input}
-          type="search"
+          type="text"
+          role="searchbox"
           name="notes-search"
           autoComplete="off"
           enterKeyHint="search"

@@ -1,7 +1,6 @@
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useState, useEffect, useMemo, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronDown } from 'lucide-react'
 import { useNotes } from '../hooks/useNotes'
 import { useLocalNotes } from '../contexts/LocalNotesContext'
 import { NoteGrid } from '../components/NoteGrid/NoteGrid'
@@ -26,8 +25,6 @@ import {
 import { useFolders } from '../hooks/useFolders'
 import { fetchTags } from '../api/enrichment'
 import type { Folder } from '../types'
-import { LoaderSpinner } from '../components/LoaderSpinner'
-import styles from './NotesPage.module.css'
 
 const TYPE_OPTIONS = [
   { value: 'note', label: 'Notes', description: 'Текстовые заметки' },
@@ -137,6 +134,11 @@ export default function NotesPage() {
     createdBefore: filters.createdBefore,
     sort:    'custom',
   })
+  const {
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = notesQuery
   const serverNotes = notesQuery.data ?? []
   const { localNotes } = useLocalNotes()
 
@@ -165,6 +167,11 @@ export default function NotesPage() {
   }, [hasActiveSearchOrFilters, notes.length, notesQuery.isError, notesQuery.isFetching])
 
   useThumbnailPoller(notes, { enabled: !hasActiveSearchOrFilters })
+
+  const handleLoadMore = useCallback(() => {
+    if (!hasNextPage || isFetchingNextPage) return
+    void fetchNextPage()
+  }, [fetchNextPage, hasNextPage, isFetchingNextPage])
 
   function applyFilters(nextFilters: SearchFilterState, replace = true) {
     setSearchParams(prev => {
@@ -274,22 +281,10 @@ export default function NotesPage() {
         updatingLabel="Ищем материалы"
         emptyState={emptyState}
         onTagClick={handleTagClick}
+        hasMore={hasNextPage}
+        isLoadingMore={isFetchingNextPage}
+        onLoadMore={handleLoadMore}
       />
-      {notesQuery.hasNextPage && (
-        <div className={styles.loadMoreRow}>
-          <button
-            type="button"
-            className={styles.loadMoreButton}
-            onClick={() => void notesQuery.fetchNextPage()}
-            disabled={notesQuery.isFetchingNextPage}
-          >
-            {notesQuery.isFetchingNextPage
-              ? <LoaderSpinner size="xs" />
-              : <ChevronDown size={16} />}
-            <span>{notesQuery.isFetchingNextPage ? 'Загружаем' : 'Показать еще'}</span>
-          </button>
-        </div>
-      )}
     </BulkSelectProvider>
   )
 }
