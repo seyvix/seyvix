@@ -315,17 +315,20 @@
   align-items: center;
   justify-content: center;
   align-self: stretch;
-  width: 70px;
-  background: #dc2626;
-  color: #fff;
+  width: 58px;
+  background: color-mix(in srgb, #ef4444 9%, transparent);
+  color: color-mix(in srgb, #ef4444 76%, var(--color-text-secondary) 24%);
   cursor: pointer;
   flex-shrink: 0;
-  transition: background var(--duration-fast);
+  transition:
+    background var(--duration-fast),
+    color var(--duration-fast);
   margin-right: -20px;
 }
 
 .clearBtn:hover {
-  background: #b91c1c;
+  background: color-mix(in srgb, #ef4444 16%, transparent);
+  color: #f87171;
 }
 
 @media (max-width: 760px) {
@@ -435,13 +438,13 @@
   .clearBtn {
     width: 48px;
     margin-right: -12px;
-    background: transparent;
-    color: var(--color-text-secondary);
+    background: color-mix(in srgb, #ef4444 8%, transparent);
+    color: color-mix(in srgb, #ef4444 72%, var(--color-text-secondary) 28%);
   }
 
   .clearBtn:hover {
-    background: var(--color-surface-hover);
-    color: var(--color-text-primary);
+    background: color-mix(in srgb, #ef4444 14%, transparent);
+    color: #f87171;
   }
 
   .clearBtn svg {
