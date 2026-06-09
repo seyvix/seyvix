@@ -42,6 +42,9 @@ interface NoteGridProps {
   }
   onAddNote?: () => void
   onTagClick?: (tag: string) => void
+  hasMore?: boolean
+  isLoadingMore?: boolean
+  onLoadMore?: () => void
 }
 
 export function NoteGrid({
@@ -53,11 +56,15 @@ export function NoteGrid({
   emptyState,
   onAddNote,
   onTagClick,
+  hasMore = false,
+  isLoadingMore = false,
+  onLoadMore,
 }: NoteGridProps) {
   const knownKeysRef  = useRef(new Set<string>())
   const isFirstRender = useRef(true)
   const scrollRef = useRef<HTMLDivElement>(null)
   const gridRef = useRef<HTMLDivElement>(null)
+  const loadMoreRef = useRef<HTMLDivElement>(null)
   const muuriRef = useRef<MuuriGrid | null>(null)
   const itemResizeObserverRef = useRef<ResizeObserver | null>(null)
   const dragStartOrderRef = useRef<Note[] | null>(null)
@@ -350,6 +357,44 @@ export function NoteGrid({
     grid.refreshItems(undefined, true).synchronize().layout()
   }, [orderedNotes, gridMetrics])
 
+  useEffect(() => {
+    const scrollArea = scrollRef.current
+    const loadMoreElement = loadMoreRef.current
+    if (!scrollArea || !loadMoreElement || !hasMore || isLoadingMore || !onLoadMore) return
+    let requested = false
+
+    const requestLoadMore = () => {
+      if (requested) return
+      requested = true
+      onLoadMore()
+    }
+
+    if (typeof IntersectionObserver === 'undefined') {
+      const handleScroll = () => {
+        const distanceToBottom = scrollArea.scrollHeight - scrollArea.scrollTop - scrollArea.clientHeight
+        if (distanceToBottom < 520) requestLoadMore()
+      }
+
+      handleScroll()
+      scrollArea.addEventListener('scroll', handleScroll, { passive: true })
+      return () => scrollArea.removeEventListener('scroll', handleScroll)
+    }
+
+    const observer = new IntersectionObserver(
+      entries => {
+        if (entries.some(entry => entry.isIntersecting)) requestLoadMore()
+      },
+      {
+        root: scrollArea,
+        rootMargin: '520px 0px',
+        threshold: 0,
+      },
+    )
+
+    observer.observe(loadMoreElement)
+    return () => observer.disconnect()
+  }, [hasMore, isLoadingMore, onLoadMore])
+
   if (isFirstRender.current) {
     isFirstRender.current = false
     notes.forEach(n => knownKeysRef.current.add(n.stableKey ?? n.id))
@@ -435,6 +480,7 @@ export function NoteGrid({
             )
           })}
         </div>
+        {hasMore && <div ref={loadMoreRef} className={styles.loadMoreSentinel} aria-hidden="true" />}
       </div>
     </DragProvider>
   )
