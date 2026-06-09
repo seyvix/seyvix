@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { createNote } from '../api/notes'
 import { useLocalNotes } from '../contexts/LocalNotesContext'
 import { SEARCH_CAPABILITIES_QUERY_KEY } from './useSearchCapabilities'
+import { type NotesQueryData, upsertNoteInNotesQueryData } from './useNotes'
 import type { Note } from '../types'
 
 function makeTempId() {
@@ -46,10 +47,8 @@ export function useCreateNote() {
         isLocal: false,
       })
       // Seed React Query cache so other queries see the new note
-      queryClient.setQueriesData<Note[]>({ queryKey: ['notes'] }, old =>
-        Array.isArray(old)
-          ? [{ ...serverNote, stableKey: ctx.stableKey }, ...old.filter(n => n.id !== serverNote.id)]
-          : [serverNote],
+      queryClient.setQueriesData<NotesQueryData>({ queryKey: ['notes'] }, old =>
+        upsertNoteInNotesQueryData(old, { ...serverNote, stableKey: ctx.stableKey }),
       )
       queryClient.invalidateQueries({ queryKey: SEARCH_CAPABILITIES_QUERY_KEY })
     },

@@ -42,6 +42,8 @@ export function notesRefetchInterval(
 }
 
 type NotesQueryParams = ReturnType<typeof notesQueryKey>[1]
+export type NotesInfiniteData = InfiniteData<NotesPageResult, number>
+export type NotesQueryData = NotesInfiniteData | Note[] | undefined
 
 function notesParamsFromQueryParams(params: NotesQueryParams): NotesParams {
   return {
@@ -65,6 +67,91 @@ export function dedupeNotes(notes: Note[]) {
     seen.add(note.id)
     return true
   })
+}
+
+function makeEmptyNotesInfiniteData(): NotesInfiniteData {
+  return { pages: [{ items: [], nextOffset: null }], pageParams: [0] }
+}
+
+export function normalizeNotesQueryData(data: NotesQueryData): NotesInfiniteData | undefined {
+  if (!data) return undefined
+  if (Array.isArray(data)) {
+    return { pages: [{ items: data, nextOffset: null }], pageParams: [0] }
+  }
+  if (Array.isArray(data.pages) && Array.isArray(data.pageParams)) return data
+  return undefined
+}
+
+function ensureNotesInfiniteData(data: NotesQueryData): NotesInfiniteData {
+  const normalized = normalizeNotesQueryData(data) ?? makeEmptyNotesInfiniteData()
+  if (normalized.pages.length > 0) return normalized
+  return makeEmptyNotesInfiniteData()
+}
+
+export function upsertNoteInNotesQueryData(data: NotesQueryData, note: Note): NotesInfiniteData {
+  const normalized = ensureNotesInfiniteData(data)
+  return {
+    ...normalized,
+    pages: normalized.pages.map((page, index) => {
+      const items = page.items ?? []
+      const filteredItems = items.filter(item => item.id !== note.id)
+      return {
+        ...page,
+        items: index === 0 ? [note, ...filteredItems] : filteredItems,
+      }
+    }),
+  }
+}
+
+export function removeNotesFromNotesQueryData(
+  data: NotesQueryData,
+  slugs: Iterable<string>,
+): NotesInfiniteData | undefined {
+  const normalized = normalizeNotesQueryData(data)
+  if (!normalized) return undefined
+  const slugSet = new Set(slugs)
+  return {
+    ...normalized,
+    pages: normalized.pages.map(page => ({
+      ...page,
+      items: (page.items ?? []).filter(note => !slugSet.has(note.slug)),
+    })),
+  }
+}
+
+export function replaceNoteInNotesQueryData(
+  data: NotesQueryData,
+  updatedNote: Note,
+): NotesInfiniteData | undefined {
+  const normalized = normalizeNotesQueryData(data)
+  if (!normalized) return undefined
+  return {
+    ...normalized,
+    pages: normalized.pages.map(page => ({
+      ...page,
+      items: (page.items ?? []).map(note => (
+        note.id === updatedNote.id || note.slug === updatedNote.slug ? updatedNote : note
+      )),
+    })),
+  }
+}
+
+export function mergeNoteInNotesQueryData(
+  data: NotesQueryData,
+  mergedNote: Note,
+  sourceSlug: string,
+): NotesInfiniteData | undefined {
+  const normalized = normalizeNotesQueryData(data)
+  if (!normalized) return undefined
+  return {
+    ...normalized,
+    pages: normalized.pages.map(page => ({
+      ...page,
+      items: (page.items ?? [])
+        .filter(note => note.slug !== sourceSlug)
+        .map(note => note.slug === mergedNote.slug ? mergedNote : note),
+    })),
+  }
 }
 
 export function useNotes(params: NotesParams = {}) {
@@ -107,13 +194,15 @@ export function useNotes(params: NotesParams = {}) {
           offset: 0,
         })
         if (cancelled) return
-        queryClient.setQueryData<InfiniteData<NotesPageResult, number>>(
+        queryClient.setQueryData<NotesQueryData>(
           pollQueryKey,
           current => {
-            if (!current) return { pages: [firstPage], pageParams: [0] }
+            const normalized = normalizeNotesQueryData(current)
+            if (!normalized) return { pages: [firstPage], pageParams: [0] }
             return {
-              pages: [firstPage, ...current.pages.slice(1)],
-              pageParams: [0, ...current.pageParams.slice(1)],
+              ...normalized,
+              pages: [firstPage, ...normalized.pages.slice(1)],
+              pageParams: [0, ...normalized.pageParams.slice(1)],
             }
           },
         )

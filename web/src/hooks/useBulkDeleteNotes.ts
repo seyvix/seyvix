@@ -3,7 +3,7 @@ import { deleteNotes } from '../api/notes'
 import { useLocalNotes } from '../contexts/LocalNotesContext'
 import { useBulkSelect } from '../contexts/BulkSelectContext'
 import { SEARCH_CAPABILITIES_QUERY_KEY } from './useSearchCapabilities'
-import type { Note } from '../types'
+import { type NotesQueryData, removeNotesFromNotesQueryData } from './useNotes'
 
 export function useBulkDeleteNotes() {
   const queryClient = useQueryClient()
@@ -17,8 +17,8 @@ export function useBulkDeleteNotes() {
       const slugSet = new Set(slugs)
 
       // Optimistically remove from cache
-      queryClient.setQueriesData<Note[]>({ queryKey: ['notes'] }, old =>
-        Array.isArray(old) ? old.filter(n => !slugSet.has(n.slug)) : old,
+      queryClient.setQueriesData<NotesQueryData>({ queryKey: ['notes'] }, old =>
+        removeNotesFromNotesQueryData(old, slugSet),
       )
 
       // Remove local notes

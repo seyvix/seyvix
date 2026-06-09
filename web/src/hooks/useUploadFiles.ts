@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { startUploadJob, fetchNote } from '../api/notes'
 import { useLocalNotes } from '../contexts/LocalNotesContext'
 import { makeMarkdownTitle } from '../utils/markdownPaste'
+import { type NotesQueryData, upsertNoteInNotesQueryData } from './useNotes'
 import type { Note, NoteObject, NoteObjectType } from '../types'
 
 function makeTempId() {
@@ -63,10 +64,8 @@ export function useUploadFiles() {
           isLoading: false,
           isLocal: false,
         })
-        queryClient.setQueriesData<Note[]>({ queryKey: ['notes'] }, old =>
-          Array.isArray(old)
-            ? [{ ...serverNote, stableKey: ctx.stableKey }, ...old.filter(n => n.id !== serverNote.id)]
-            : [serverNote],
+        queryClient.setQueriesData<NotesQueryData>({ queryKey: ['notes'] }, old =>
+          upsertNoteInNotesQueryData(old, { ...serverNote, stableKey: ctx.stableKey }),
         )
       } catch {
         updateLocalNote(ctx.stableKey, { id: noteId, slug: noteSlug, isLoading: false, isLocal: false })
