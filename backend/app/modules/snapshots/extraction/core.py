@@ -1,12 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
-
-from app.modules.content.models import ContentAsset
-from app.modules.snapshots.extraction.office import OfficeConversionResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,13 +58,6 @@ class ExtractionResult:
             "sections": [section.to_dict() for section in self.sections],
             "metadata": dict(self.metadata),
         }
-
-
-@dataclass(frozen=True, slots=True)
-class ExtractorContext:
-    fetch_webpage_html: Callable[[str], str]
-    link_url: Callable[[ContentAsset, Path], str]
-    convert_office_to_pdf: Callable[[Path], OfficeConversionResult]
 
 
 def normalize_blank_lines(value: str) -> str:

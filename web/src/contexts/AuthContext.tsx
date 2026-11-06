@@ -1,16 +1,28 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
-import { apiLogin, apiLogout, apiRegister } from '../api/auth'
-import type { UserResponse } from '../api/auth'
-import { configureApiClient, refreshApiToken } from '../lib/apiClient'
-import { shouldRenderBeforeAuthRefresh, shouldSkipInitialRefresh } from '../utils/authBootstrap'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+import { apiLogout, type AuthTokensResponse, type UserResponse } from '../api/auth'
+import { isSessionRejection, onAuthLost, refreshSession, setAccessToken } from '../lib/apiClient'
+import { accessDeniedInfo, type AccessDeniedInfo } from '../lib/apiError'
+import { clearAuthenticatedBlobCache } from '../utils/authenticatedBlobUrl'
+import { shouldSkipInitialRefresh } from '../utils/authBootstrap'
+
+/**
+ * - `loading`: the initial refresh is in flight.
+ * - `anonymous`: no session (or it was rejected/revoked).
+ * - `unavailable`: the refresh failed for a transient reason (network/5xx); the session may
+ *   still be valid, so the user is offered a retry instead of being sent to the login page.
+ */
+export type AuthStatus = 'loading' | 'authenticated' | 'anonymous' | 'unavailable'
 
 interface AuthContextValue {
   user: UserResponse | null
-  isReady: boolean
-  login: (email: string, password: string) => Promise<void>
-  register: (email: string, display_name: string, password: string) => Promise<void>
+  status: AuthStatus
+  /** Last allowlist denial (from login or a revoked session); shown on the auth page. */
+  accessDenied: AccessDeniedInfo | null
+  loginWithTokens: (tokens: AuthTokensResponse) => void
+  reportAccessDenied: (info: AccessDeniedInfo | null) => void
   logout: () => Promise<void>
-  loginWithTokens: (user: UserResponse, accessToken: string) => void
+  retry: () => void
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -21,105 +33,83 @@ export function useAuth() {
   return ctx
 }
 
-interface AuthProviderProps {
-  children: React.ReactNode
-  initialIsReady?: boolean
-  initialUser?: UserResponse | null
-  initialAccessToken?: string | null
-}
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const queryClient = useQueryClient()
+  const [user, setUser] = useState<UserResponse | null>(null)
+  const [status, setStatus] = useState<AuthStatus>('loading')
+  const [accessDenied, setAccessDenied] = useState<AccessDeniedInfo | null>(null)
+  const [bootAttempt, setBootAttempt] = useState(0)
 
-export function AuthProvider({
-  children,
-  initialIsReady,
-  initialUser = null,
-  initialAccessToken = null,
-}: AuthProviderProps) {
-  const [user, setUser] = useState<UserResponse | null>(initialUser)
-  const [isReady, setIsReady] = useState(() => (
-    initialIsReady ?? (
-      Boolean(initialUser && initialAccessToken) ||
-      typeof window !== 'undefined' &&
-      shouldRenderBeforeAuthRefresh(window.location.pathname)
-    )
-  ))
-
-  // access_token живёт только в памяти
-  const tokenRef = useRef<string | null>(initialAccessToken)
-
-  // Настраиваем apiClient во время render, чтобы query-эффекты детей не успели стартовать
-  // с дефолтным пустым токеном после hydration.
-  configureApiClient({
-    getToken: () => tokenRef.current,
-    setToken: (t) => { tokenRef.current = t },
-    onUnauthenticated: () => {
-      tokenRef.current = null
-      setUser(null)
-    },
-  })
-
-  // Bootstrap: пробуем refresh при старте приложения
-  useEffect(() => {
-    if (initialUser) {
-      setIsReady(true)
-      if (!initialAccessToken) {
-        refreshApiToken()
-          .then(({ user, access_token }) => {
-            tokenRef.current = access_token
-            setUser(user)
-          })
-          .catch(() => {
-            tokenRef.current = null
-            setUser(null)
-          })
-      }
-      return
-    }
-
-    if (shouldSkipInitialRefresh(window.location.pathname)) {
-      setIsReady(true)
-      return
-    }
-
-    refreshApiToken()
-      .then(({ user, access_token }) => {
-        tokenRef.current = access_token
-        setUser(user)
-      })
-      .catch(() => {
-        // refresh не удался — пользователь не авторизован, это нормально
-      })
-      .finally(() => {
-        setIsReady(true)
-      })
-  }, [])
-
-  async function login(email: string, password: string) {
-    const { user, access_token } = await apiLogin(email, password)
-    tokenRef.current = access_token
-    setUser(user)
-  }
-
-  async function register(email: string, display_name: string, password: string) {
-    const { user, access_token } = await apiRegister(email, display_name, password)
-    tokenRef.current = access_token
-    setUser(user)
-  }
-
-  async function logout() {
-    await apiLogout()
-    tokenRef.current = null
+  const endSession = useCallback((denied: AccessDeniedInfo | null) => {
+    setAccessToken(null)
     setUser(null)
-  }
+    setStatus('anonymous')
+    setAccessDenied(denied)
+    queryClient.clear()
+    clearAuthenticatedBlobCache()
+  }, [queryClient])
 
-  // useCallback даёт стабильную ссылку — useEffect в AuthCallbackPage не зациклится
-  const loginWithTokens = useCallback((user: UserResponse, accessToken: string) => {
-    tokenRef.current = accessToken
-    setUser(user)
+  // One refresh on load. StrictMode's double effect shares the in-flight request.
+  useEffect(() => {
+    if (shouldSkipInitialRefresh(window.location.pathname)) {
+      // The callback page is about to create the session itself.
+      setStatus('anonymous')
+      return
+    }
+    let active = true
+    setStatus('loading')
+    refreshSession()
+      .then((tokens) => {
+        if (!active) return
+        setUser(tokens.user)
+        setStatus('authenticated')
+      })
+      .catch((error: unknown) => {
+        if (!active) return
+        if (isSessionRejection(error)) {
+          setStatus('anonymous')
+          setAccessDenied(accessDeniedInfo(error))
+        } else {
+          console.warn('[auth] session refresh failed', error)
+          setStatus('unavailable')
+        }
+      })
+    return () => {
+      active = false
+    }
+  }, [bootAttempt])
+
+  useEffect(() => onAuthLost(error => endSession(accessDeniedInfo(error))), [endSession])
+
+  const loginWithTokens = useCallback((tokens: AuthTokensResponse) => {
+    setAccessToken(tokens.access_token)
+    setUser(tokens.user)
+    setAccessDenied(null)
+    setStatus('authenticated')
   }, [])
 
-  return (
-    <AuthContext.Provider value={{ user, isReady, login, register, logout, loginWithTokens }}>
-      {children}
-    </AuthContext.Provider>
-  )
+  const logout = useCallback(async () => {
+    try {
+      await apiLogout()
+    } catch (error) {
+      // The local session is dropped regardless so the user is never stuck "logged in".
+      console.error('[auth] server logout failed', error)
+    } finally {
+      endSession(null)
+    }
+  }, [endSession])
+
+  const retry = useCallback(() => setBootAttempt(n => n + 1), [])
+
+  const value = useMemo<AuthContextValue>(() => ({
+    user,
+    status,
+    accessDenied,
+    loginWithTokens,
+    reportAccessDenied: setAccessDenied,
+    logout,
+    retry,
+  }), [user, status, accessDenied, loginWithTokens, logout, retry])
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }

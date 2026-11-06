@@ -6,6 +6,9 @@ import {
   fetchSnapshotArtifacts,
   reprocessSnapshotMarkdown,
 } from './enrichment.ts'
+import { setAccessToken } from '../lib/apiClient.ts'
+
+setAccessToken('test-token')
 
 function jsonResponse(body: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(body), {

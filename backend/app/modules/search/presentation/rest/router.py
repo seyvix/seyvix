@@ -8,34 +8,42 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import get_db_session
 from app.api.errors import AppError
 from app.api.schemas import ErrorResponse
-from app.core.config import get_settings
 from app.modules.auth.presentation.rest.router import get_auth_context
 from app.modules.auth.service import AuthContext
-from app.modules.content.infrastructure.repositories import ContentRepository
-from app.modules.search.infrastructure.meilisearch import MeilisearchUnavailableError
 from app.modules.search.schemas import (
     HybridSearchRequest,
     HybridSearchResponse,
     SearchCapabilitiesResponse,
-    SearchMode,
     SemanticSearchRequest,
     SemanticSearchResponse,
 )
-from app.modules.search.service import SearchValidationError, SemanticSearchService
+from app.modules.search.service import (
+    SearchService,
+    SearchUnavailableError,
+    SearchValidationError,
+)
 
 router = APIRouter(prefix="/search", tags=["search"])
 
 
-def get_semantic_search_service(
+def get_search_service(
     session: Annotated[AsyncSession, Depends(get_db_session)],
-) -> SemanticSearchService:
-    return SemanticSearchService(session)
+) -> SearchService:
+    return SearchService(session)
+
+
+def _empty_query_error(exc: SearchValidationError) -> AppError:
+    return AppError(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        code="validation_error",
+        message=str(exc) or "Search query must not be empty.",
+    )
 
 
 @router.post(
     "/semantic",
     response_model=SemanticSearchResponse,
-    summary="Search indexed vectorized chunks semantically",
+    summary="Search indexed chunks by embedding similarity (requires AI)",
     responses={
         401: {"model": ErrorResponse},
         422: {"model": ErrorResponse},
@@ -45,7 +53,7 @@ def get_semantic_search_service(
 async def semantic_search(
     payload: SemanticSearchRequest,
     context: Annotated[AuthContext, Depends(get_auth_context)],
-    service: Annotated[SemanticSearchService, Depends(get_semantic_search_service)],
+    service: Annotated[SearchService, Depends(get_search_service)],
 ) -> SemanticSearchResponse:
     try:
         results = await service.semantic_search(
@@ -58,34 +66,26 @@ async def semantic_search(
             filters=payload.filters,
         )
     except SearchValidationError as exc:
-        raise AppError(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            code="validation_error",
-            message="Search query must not be empty.",
-        ) from exc
-    except (ValueError, MeilisearchUnavailableError) as exc:
+        raise _empty_query_error(exc) from exc
+    except SearchUnavailableError as exc:
         raise AppError(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             code="semantic_search_unavailable",
-            message="Semantic search embedding provider is not available.",
+            message="Semantic search is not available (AI disabled or unreachable).",
         ) from exc
-    return SemanticSearchResponse(query=payload.query.strip(), results=results)
+    return SemanticSearchResponse(query=" ".join(payload.query.split()), results=results)
 
 
 @router.post(
     "/hybrid",
     response_model=HybridSearchResponse,
-    summary="Search indexed chunks with full-text, semantic vectors, and RRF ranking",
-    responses={
-        401: {"model": ErrorResponse},
-        422: {"model": ErrorResponse},
-        503: {"model": ErrorResponse},
-    },
+    summary="Search indexed chunks with full-text and (when AI is available) vectors, RRF-fused",
+    responses={401: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
 )
 async def hybrid_search(
     payload: HybridSearchRequest,
     context: Annotated[AuthContext, Depends(get_auth_context)],
-    service: Annotated[SemanticSearchService, Depends(get_semantic_search_service)],
+    service: Annotated[SearchService, Depends(get_search_service)],
 ) -> HybridSearchResponse:
     try:
         return await service.hybrid_search(
@@ -100,17 +100,7 @@ async def hybrid_search(
             mode=payload.mode,
         )
     except SearchValidationError as exc:
-        raise AppError(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            code="validation_error",
-            message="Search query must not be empty.",
-        ) from exc
-    except (ValueError, MeilisearchUnavailableError) as exc:
-        raise AppError(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            code="hybrid_search_unavailable",
-            message="Hybrid search provider is not available.",
-        ) from exc
+        raise _empty_query_error(exc) from exc
 
 
 @router.get(
@@ -118,37 +108,13 @@ async def hybrid_search(
     response_model=SearchCapabilitiesResponse,
     summary="Search capabilities for the current user",
     description=(
-        "Returns the user's note count, the minimum threshold for vector "
-        "search modes, the list of currently unlocked modes, and the "
-        "recommended default mode."
+        "Returns the user's note count, the minimum note count for vector modes (0), the "
+        "currently unlocked modes, the recommended default mode and whether AI is enabled. "
+        "Without AI only full_text is unlocked."
     ),
 )
 async def get_search_capabilities(
     context: Annotated[AuthContext, Depends(get_auth_context)],
-    session: Annotated[AsyncSession, Depends(get_db_session)],
+    service: Annotated[SearchService, Depends(get_search_service)],
 ) -> SearchCapabilitiesResponse:
-    settings = get_settings()
-    repo = ContentRepository(session)
-    note_count = await repo.count_owned_notes(owner_user_id=context.user.id)
-
-    meilisearch_available = (
-        settings.search_engine == "meilisearch"
-        and bool(settings.search_meilisearch_url)
-    )
-    vector_modes_unlocked = (
-        meilisearch_available
-        and note_count >= settings.search_vector_modes_min_notes
-    )
-
-    unlocked: list[SearchMode] = ["full_text"]
-    if vector_modes_unlocked:
-        unlocked.extend(["semantic", "hybrid"])
-
-    default_mode: SearchMode = "hybrid" if vector_modes_unlocked else "full_text"
-
-    return SearchCapabilitiesResponse(
-        note_count=note_count,
-        threshold=settings.search_vector_modes_min_notes,
-        unlocked_modes=unlocked,
-        default_mode=default_mode,
-    )
+    return await service.capabilities(owner_user_id=context.user.id)

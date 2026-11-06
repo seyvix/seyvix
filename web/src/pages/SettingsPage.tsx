@@ -9,9 +9,10 @@ import {
 } from '../api/snapshots'
 import { fetchTaxonomySettings, updateTaxonomySettings } from '../api/folders'
 import { useSettings } from '../contexts/SettingsContext'
+import { AccessSettings } from '../components/AccessSettings/AccessSettings'
 import styles from './SettingsPage.module.css'
 
-type TabKey = 'profile' | 'snapshots' | 'taxonomy' | 'sessions'
+type TabKey = 'profile' | 'snapshots' | 'taxonomy' | 'sessions' | 'access'
 
 const tabs: Array<{ key: TabKey; label: string; caption: string }> = [
   { key: 'profile', label: 'Профиль', caption: 'Аккаунт и внешний вид' },
@@ -20,12 +21,15 @@ const tabs: Array<{ key: TabKey; label: string; caption: string }> = [
   { key: 'sessions', label: 'Сессии', caption: 'Устройства и входы' },
 ]
 
+const adminTabs: typeof tabs = [
+  { key: 'access', label: 'Доступ', caption: 'Кто может входить' },
+]
+
 const snapshotLabels: Record<SnapshotFormatKey, string> = {
   screenshot: 'Скриншот',
   webpage_html: 'HTML-архив',
   pdf: 'PDF',
   markdown: 'Markdown',
-  archive_org: 'Archive.org',
 }
 
 function formatDate(value: string | null): string {
@@ -51,12 +55,8 @@ function describeSession(userAgent: string | null): string {
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<TabKey>('profile')
   const { user, logout } = useAuth()
-  const {
-    cols,
-    setCols,
-    videoPreviewAutoplay,
-    setVideoPreviewAutoplay,
-  } = useSettings()
+  const { videoPreviewAutoplay, setVideoPreviewAutoplay } = useSettings()
+  const visibleTabs = user?.is_admin ? [...tabs, ...adminTabs] : tabs
   const queryClient = useQueryClient()
 
   const snapshotSettings = useQuery({
@@ -114,7 +114,7 @@ export default function SettingsPage() {
 
       <div className={styles.shell}>
         <nav className={styles.tabs} aria-label="Разделы настроек">
-          {tabs.map((tab) => (
+          {visibleTabs.map((tab) => (
             <button
               key={tab.key}
               className={[styles.tab, activeTab === tab.key ? styles.tabActive : ''].filter(Boolean).join(' ')}
@@ -167,24 +167,6 @@ export default function SettingsPage() {
                 </button>
               </div>
 
-              {/*<div className={styles.settingBlock}>*/}
-              {/*  <div>*/}
-              {/*    <h3>Колонки в сетке</h3>*/}
-              {/*    <p>Настройка плотности ленты. На телефоне применяется компактный режим: одна, две или три читаемые колонки, если экран позволяет.</p>*/}
-              {/*  </div>*/}
-              {/*  <div className={styles.segmented} aria-label="Количество колонок">*/}
-              {/*    {[1, 2, 3, 4, 5, 6, 7].map((value) => (*/}
-              {/*      <button*/}
-              {/*        key={value}*/}
-              {/*        className={cols === value ? styles.segmentActive : ''}*/}
-              {/*        onClick={() => setCols(value)}*/}
-              {/*        aria-pressed={cols === value}*/}
-              {/*      >*/}
-              {/*        {value}*/}
-              {/*      </button>*/}
-              {/*    ))}*/}
-              {/*  </div>*/}
-              {/*</div>*/}
             </div>
           )}
 
@@ -196,6 +178,7 @@ export default function SettingsPage() {
               </div>
               {snapshotSettings.isLoading && <p className={styles.muted}>Загружаю настройки...</p>}
               {snapshotSettings.isError && <p className={styles.error}>Не удалось загрузить настройки снапшотов.</p>}
+              {updateSnapshots.isError && <p className={styles.error}>{updateSnapshots.error.message}</p>}
               {snapshotSettings.data?.available.map((option) => {
                 const key = option.key
                 const override = snapshotSettings.data.overrides[key]
@@ -248,6 +231,8 @@ export default function SettingsPage() {
               </button>
               {sessions.isLoading && <p className={styles.muted}>Загружаю сессии...</p>}
               {sessions.isError && <p className={styles.error}>Не удалось загрузить активные сессии.</p>}
+              {revokeSession.isError && <p className={styles.error}>{revokeSession.error.message}</p>}
+              {logoutEverywhere.isError && <p className={styles.error}>{logoutEverywhere.error.message}</p>}
               <div className={styles.sessionList}>
                 {sessions.data?.map((session) => (
                   <article className={styles.session} key={session.id}>
@@ -274,6 +259,8 @@ export default function SettingsPage() {
             </div>
           )}
 
+          {activeTab === 'access' && user?.is_admin && <AccessSettings />}
+
           {activeTab === 'taxonomy' && (
             <div className={styles.section}>
               <div className={styles.sectionIntro}>
@@ -282,6 +269,7 @@ export default function SettingsPage() {
               </div>
               {taxonomySettings.isLoading && <p className={styles.muted}>Загружаю настройки категорий...</p>}
               {taxonomySettings.isError && <p className={styles.error}>Не удалось загрузить настройки категорий.</p>}
+              {updateTaxonomy.isError && <p className={styles.error}>{updateTaxonomy.error.message}</p>}
               {taxonomySettings.data && (
                 <>
                   <div className={styles.toggleRow}>
@@ -322,15 +310,22 @@ export default function SettingsPage() {
                       <p>Дней до окончательной очистки удалённых заметок.</p>
                     </div>
                     <input
+                      key={taxonomySettings.data.trashRetentionDays}
                       className={styles.numberInput}
                       type="number"
                       min={1}
                       max={365}
-                      value={taxonomySettings.data.trashRetentionDays}
+                      defaultValue={taxonomySettings.data.trashRetentionDays}
                       disabled={updateTaxonomy.isPending}
-                      onChange={(event) => updateTaxonomy.mutate({
-                        trashRetentionDays: Number(event.target.value),
-                      })}
+                      onBlur={(event) => {
+                        const days = Math.round(Number(event.target.value))
+                        if (days >= 1 && days <= 365 && days !== taxonomySettings.data.trashRetentionDays) {
+                          updateTaxonomy.mutate({ trashRetentionDays: days })
+                        }
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') event.currentTarget.blur()
+                      }}
                     />
                   </div>
                 </>

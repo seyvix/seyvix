@@ -1,4 +1,13 @@
+@keyframes highlightEnter {
+  0%   { box-shadow: 0 0 0 6px rgba(99, 102, 241, 0.7), 0 0 24px rgba(99, 102, 241, 0.4); border-color: var(--color-accent); }
+  100% { box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.4), 0 0 12px rgba(99, 102, 241, 0.2); border-color: var(--color-accent); }
+}
+
 /* === DnD wrapper === */
+.cardWrapper {
+  position: relative;
+}
+
 .cardWrapper,
 .cardWrapper * {
   cursor: grab;
@@ -7,25 +16,6 @@
 .cardWrapper:active,
 .cardWrapper:active * {
   cursor: grabbing;
-}
-
-.isDragging .card {
-  opacity: 0.35;
-  transform: scale(0.97);
-  transition: opacity 0.15s, transform 0.15s;
-  pointer-events: none;
-}
-
-.isDropOver .card {
-  border-color: var(--color-accent);
-  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.25), 0 12px 28px rgba(0, 0, 0, 0.28);
-  transition: border-color 0.1s, box-shadow 0.1s;
-}
-
-/* Новая карточка — подсветка 5 с */
-@keyframes highlightEnter {
-  0%   { box-shadow: 0 0 0 6px rgba(99, 102, 241, 0.7), 0 0 24px rgba(99, 102, 241, 0.4); border-color: var(--color-accent); }
-  100% { box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.4), 0 0 12px rgba(99, 102, 241, 0.2); border-color: var(--color-accent); }
 }
 
 .isHighlighted .card {
@@ -67,16 +57,16 @@
 .cardTextOnly {
   border-color: rgba(255, 255, 255, 0.035);
   background:
-    radial-gradient(circle at 100% 0%, rgba(113, 104, 255, 0.16), transparent 36%),
-    radial-gradient(circle at 0% 100%, rgba(255, 114, 168, 0.08), transparent 34%),
-    linear-gradient(155deg, rgba(255, 255, 255, 0.046), rgba(255, 255, 255, 0.014));
+  radial-gradient(circle at 100% 0%, rgba(113, 104, 255, 0.16), transparent 36%),
+  radial-gradient(circle at 0% 100%, rgba(255, 114, 168, 0.08), transparent 34%),
+  linear-gradient(155deg, rgba(255, 255, 255, 0.046), rgba(255, 255, 255, 0.014));
 }
 
 .cardTextOnly:hover {
   background:
-    radial-gradient(circle at 100% 0%, rgba(113, 104, 255, 0.2), transparent 36%),
-    radial-gradient(circle at 0% 100%, rgba(255, 114, 168, 0.1), transparent 34%),
-    linear-gradient(155deg, rgba(255, 255, 255, 0.058), rgba(255, 255, 255, 0.018));
+  radial-gradient(circle at 100% 0%, rgba(113, 104, 255, 0.2), transparent 36%),
+  radial-gradient(circle at 0% 100%, rgba(255, 114, 168, 0.1), transparent 34%),
+  linear-gradient(155deg, rgba(255, 255, 255, 0.058), rgba(255, 255, 255, 0.018));
 }
 
 .card.cardTextShort {
@@ -144,15 +134,15 @@
   color: #fff;
   pointer-events: none;
   background:
-    linear-gradient(180deg,
-      rgba(5, 6, 9, 0) 0%,
-      rgba(5, 6, 9, 0.03) 14%,
-      rgba(5, 6, 9, 0.12) 32%,
-      rgba(5, 6, 9, 0.34) 54%,
-      rgba(5, 6, 9, 0.68) 76%,
-      rgba(5, 6, 9, 0.94) 100%),
-    radial-gradient(ellipse 80% 100% at 0% 100%, rgba(0, 0, 0, 0.34) 0%, transparent 70%),
-    radial-gradient(circle at 18% 92%, rgba(255, 255, 255, 0.09), transparent 34%);
+  linear-gradient(180deg,
+  rgba(5, 6, 9, 0) 0%,
+  rgba(5, 6, 9, 0.03) 14%,
+  rgba(5, 6, 9, 0.12) 32%,
+  rgba(5, 6, 9, 0.34) 54%,
+  rgba(5, 6, 9, 0.68) 76%,
+  rgba(5, 6, 9, 0.94) 100%),
+  radial-gradient(ellipse 80% 100% at 0% 100%, rgba(0, 0, 0, 0.34) 0%, transparent 70%),
+  radial-gradient(circle at 18% 92%, rgba(255, 255, 255, 0.09), transparent 34%);
 }
 
 .softOverlay::before {
@@ -253,8 +243,8 @@
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(circle at 35% 25%, rgba(139, 200, 255, 0.18), transparent 34%),
-    radial-gradient(circle at 78% 74%, rgba(255, 114, 168, 0.12), transparent 38%);
+  radial-gradient(circle at 35% 25%, rgba(139, 200, 255, 0.18), transparent 34%),
+  radial-gradient(circle at 78% 74%, rgba(255, 114, 168, 0.12), transparent 38%);
 }
 
 .mediaPlaceholder svg {
@@ -280,14 +270,14 @@
 
 .audioPlaceholder {
   background:
-    linear-gradient(135deg, rgba(28, 34, 43, 0.98), rgba(15, 17, 24, 0.98)),
-    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.08) 0 1px, transparent 1px 9px);
+  linear-gradient(135deg, rgba(28, 34, 43, 0.98), rgba(15, 17, 24, 0.98)),
+  repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.08) 0 1px, transparent 1px 9px);
 }
 
 .videoPlaceholder {
   background:
-    radial-gradient(circle at 50% 35%, rgba(255, 255, 255, 0.12), transparent 42%),
-    linear-gradient(145deg, rgba(34, 41, 58, 0.95), rgba(11, 13, 20, 0.95));
+  radial-gradient(circle at 50% 35%, rgba(255, 255, 255, 0.12), transparent 42%),
+  linear-gradient(145deg, rgba(34, 41, 58, 0.95), rgba(11, 13, 20, 0.95));
 }
 
 .videoPreviewFrame {
@@ -367,14 +357,14 @@
   width: 100%;
   height: 100%;
   filter:
-    drop-shadow(0 1px 5px rgba(0, 0, 0, 0.46))
-    drop-shadow(0 0 10px rgba(24, 194, 229, 0.24));
+  drop-shadow(0 1px 5px rgba(0, 0, 0, 0.46))
+  drop-shadow(0 0 10px rgba(24, 194, 229, 0.24));
 }
 
 .filePlaceholder {
   background:
-    linear-gradient(145deg, rgba(37, 41, 49, 0.98), rgba(15, 17, 22, 0.98)),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.045), transparent 34%, rgba(255, 255, 255, 0.035));
+  linear-gradient(145deg, rgba(37, 41, 49, 0.98), rgba(15, 17, 22, 0.98)),
+  linear-gradient(90deg, rgba(255, 255, 255, 0.045), transparent 34%, rgba(255, 255, 255, 0.035));
 }
 
 .title {
@@ -593,22 +583,6 @@
   height: 100%;
 }
 
-.inlineTelegramEmoji {
-  width: 1.15em;
-  height: 1.15em;
-  margin: -0.12em 0.04em 0;
-  vertical-align: -0.18em;
-  object-fit: contain;
-}
-
-/* Слой с документом */
-.collectionLayerDoc {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: rgba(255, 255, 255, 0.4);
-}
-
 /* Слой со ссылкой */
 .collectionLayerLink {
   display: flex;
@@ -672,8 +646,8 @@
   inset: 0;
   pointer-events: none;
   background:
-    linear-gradient(180deg, rgba(5, 6, 9, 0.08) 0%, rgba(5, 6, 9, 0.08) 40%, rgba(5, 6, 9, 0.58) 100%),
-    linear-gradient(90deg, rgba(0, 0, 0, 0.18), transparent 62%);
+  linear-gradient(180deg, rgba(5, 6, 9, 0.08) 0%, rgba(5, 6, 9, 0.08) 40%, rgba(5, 6, 9, 0.58) 100%),
+  linear-gradient(90deg, rgba(0, 0, 0, 0.18), transparent 62%);
 }
 
 .collectionMoreBadge {
@@ -710,72 +684,12 @@
   gap: 5px;
   padding-top: 8px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.028), rgba(255, 255, 255, 0.012)),
-    color-mix(in srgb, var(--color-surface) 74%, transparent);
+  linear-gradient(180deg, rgba(255, 255, 255, 0.028), rgba(255, 255, 255, 0.012)),
+  color-mix(in srgb, var(--color-surface) 74%, transparent);
 }
 
 .cardFooter:empty {
   display: none;
-}
-
-/* Rename after merge */
-.renameRow {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  position: relative;
-}
-
-@keyframes underlineExpand {
-  from { transform: scaleX(0); }
-  to   { transform: scaleX(1); }
-}
-
-.renameInput {
-  flex: 1;
-  background: transparent;
-  border: none;
-  border-bottom: 1.5px solid var(--color-accent);
-  outline: none;
-  color: var(--color-text-primary);
-  font-size: var(--font-size-base);
-  font-family: var(--font-family);
-  font-weight: var(--font-weight-semibold);
-  line-height: 1.4;
-  padding: 0 0 3px;
-  min-width: 0;
-  box-shadow: 0 1px 0 0 rgba(99, 102, 241, 0.35);
-  animation: underlineExpand 0.25s cubic-bezier(0.22, 1, 0.36, 1) both;
-  transform-origin: center;
-}
-
-.renameInput::placeholder {
-  color: var(--color-text-tertiary, #555);
-  font-weight: var(--font-weight-normal, 400);
-}
-
-.renameSubmit {
-  all: unset;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 2px 7px;
-  border-radius: var(--radius-sm);
-  background: var(--color-accent);
-  color: #fff;
-  cursor: pointer;
-  flex-shrink: 0;
-  font-size: 12px;
-  font-family: var(--font-family);
-  font-weight: var(--font-weight-semibold);
-  letter-spacing: 0.02em;
-  transition: opacity var(--duration-fast), box-shadow var(--duration-fast);
-  box-shadow: 0 0 0 0 rgba(99, 102, 241, 0);
-}
-
-.renameSubmit:hover {
-  opacity: 0.9;
-  box-shadow: 0 0 8px rgba(99, 102, 241, 0.5);
 }
 
 .collectionStats {
@@ -797,12 +711,6 @@
 
 .collectionStat svg {
   opacity: 0.78;
-}
-
-.footerMeta {
-  font-size: 10px;
-  color: var(--color-text-secondary);
-  letter-spacing: 0.04em;
 }
 
 /* === Composite === */
@@ -841,20 +749,20 @@
 
 .compositeCoverEmpty.audioPlaceholder {
   background:
-    linear-gradient(135deg, rgba(28, 34, 43, 0.98), rgba(15, 17, 24, 0.98)),
-    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.08) 0 1px, transparent 1px 9px);
+  linear-gradient(135deg, rgba(28, 34, 43, 0.98), rgba(15, 17, 24, 0.98)),
+  repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.08) 0 1px, transparent 1px 9px);
 }
 
 .compositeCoverEmpty.videoPlaceholder {
   background:
-    radial-gradient(circle at 50% 35%, rgba(255, 255, 255, 0.12), transparent 42%),
-    linear-gradient(145deg, rgba(34, 41, 58, 0.95), rgba(11, 13, 20, 0.95));
+  radial-gradient(circle at 50% 35%, rgba(255, 255, 255, 0.12), transparent 42%),
+  linear-gradient(145deg, rgba(34, 41, 58, 0.95), rgba(11, 13, 20, 0.95));
 }
 
 .compositeCoverEmpty.filePlaceholder {
   background:
-    linear-gradient(145deg, rgba(37, 41, 49, 0.98), rgba(15, 17, 22, 0.98)),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.045), transparent 34%, rgba(255, 255, 255, 0.035));
+  linear-gradient(145deg, rgba(37, 41, 49, 0.98), rgba(15, 17, 22, 0.98)),
+  linear-gradient(90deg, rgba(255, 255, 255, 0.045), transparent 34%, rgba(255, 255, 255, 0.035));
 }
 
 .compositeCoverText {
@@ -978,430 +886,6 @@
   text-transform: uppercase;
   flex-shrink: 0;
   letter-spacing: 0.04em;
-}
-
-/* === Add card === */
-.addCard {
-  background: color-mix(in srgb, var(--color-surface) 88%, #202334 12%);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: var(--radius-md);
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  min-height: 148px;
-  transition: border-color var(--duration-fast), color var(--duration-fast), background 0.2s, box-shadow 0.2s;
-  font-family: var(--font-family);
-  overflow: visible;
-  position: relative;
-}
-
-/* Кнопка-триггер внутри addCard (режим по умолчанию) */
-.addCardTrigger {
-  all: unset;
-  display: flex;
-  align-items: flex-start;
-  justify-content: flex-start;
-  gap: 12px;
-  flex: 1;
-  width: 100%;
-  min-height: 148px;
-  cursor: pointer;
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
-  box-sizing: border-box;
-  transition: color var(--duration-fast), background var(--duration-fast);
-  padding: 18px;
-}
-
-.addCard:not(.addCardEditing):hover .addCardTrigger {
-  color: var(--color-text-primary);
-}
-
-.addCard:not(.addCardEditing):hover {
-  border-color: rgba(255, 255, 255, 0.14);
-  box-shadow: var(--shadow-sm);
-}
-
-.addCardTriggerText {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.addCardTriggerText strong {
-  color: #ff5a2f;
-  font-size: 11px;
-  line-height: 1.1;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
-
-.addCardTriggerText span {
-  color: var(--color-text-secondary);
-  font-size: 13px;
-  line-height: 1.45;
-}
-
-/* Режим формы */
-.addCardBackdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 70;
-  background: rgba(8, 10, 16, 0.48);
-  backdrop-filter: blur(10px);
-}
-
-.addCardEditing {
-  position: fixed;
-  z-index: 80;
-  left: clamp(84px, 6vw, 128px);
-  top: clamp(148px, 19vh, 220px);
-  width: min(720px, calc(100vw - 150px));
-  height: min(620px, calc(100vh - 190px));
-  min-height: 420px;
-  background: rgba(25, 26, 38, 0.96);
-  border-style: solid;
-  border-color: rgba(120, 134, 170, 0.32);
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.04);
-  overflow: hidden;
-}
-
-.addCardEditorShell {
-  flex: 1;
-  min-height: 0;
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  padding: 20px 22px 14px;
-}
-
-.addCardKicker {
-  color: #ff5a2f;
-  font-size: 11px;
-  font-weight: var(--font-weight-semibold);
-  letter-spacing: 0.12em;
-  line-height: 1;
-  text-transform: uppercase;
-  margin-bottom: 18px;
-}
-
-.quickNoteEditor {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-}
-
-.quickNoteEditorContent {
-  min-height: 100%;
-  outline: none;
-  color: var(--color-text-primary);
-  font-size: 15px;
-  line-height: 1.65;
-  overflow-wrap: anywhere;
-}
-
-.quickNoteEditorContent p,
-.quickNoteEditorContent ul,
-.quickNoteEditorContent ol,
-.quickNoteEditorContent blockquote,
-.quickNoteEditorContent pre {
-  margin: 0 0 12px;
-}
-
-.quickNoteEditorContent h1,
-.quickNoteEditorContent h2,
-.quickNoteEditorContent h3 {
-  color: var(--color-text-primary);
-  line-height: 1.2;
-  margin: 0 0 12px;
-  letter-spacing: 0;
-}
-
-.quickNoteEditorContent h1 {
-  font-size: 28px;
-}
-
-.quickNoteEditorContent h2 {
-  font-size: 22px;
-}
-
-.quickNoteEditorContent h3 {
-  font-size: 18px;
-}
-
-.quickNoteEditorContent a {
-  color: #8bc8ff;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-
-.quickNoteEditorContent ul,
-.quickNoteEditorContent ol {
-  padding-left: 22px;
-}
-
-.quickNoteEditorContent blockquote {
-  border-left: 3px solid rgba(139, 200, 255, 0.45);
-  padding-left: 12px;
-  color: var(--color-text-secondary);
-}
-
-.quickNoteEditorContent pre {
-  padding: 12px;
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.34);
-  overflow: auto;
-}
-
-.quickNoteEditorContent code {
-  color: #d7efff;
-  background: rgba(139, 200, 255, 0.1);
-  border-radius: 4px;
-  padding: 1px 4px;
-}
-
-.quickNoteEditorContent pre code {
-  background: transparent;
-  padding: 0;
-}
-
-.quickNoteEditorContent img {
-  display: block;
-  max-width: 100%;
-  max-height: 260px;
-  object-fit: contain;
-  border-radius: 8px;
-  margin: 10px 0;
-}
-
-.quickNoteEditorContent hr {
-  border: none;
-  height: 1px;
-  background: rgba(255, 255, 255, 0.12);
-  margin: 18px 0;
-}
-
-.quickNoteEditorContent ul[data-type='taskList'] {
-  list-style: none;
-  padding-left: 0;
-}
-
-.quickNoteEditorContent ul[data-type='taskList'] li {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-}
-
-.quickNoteEditorContent ul[data-type='taskList'] label {
-  padding-top: 2px;
-}
-
-.quickNoteEditorContent [data-placeholder]::before {
-  color: rgba(154, 163, 184, 0.5);
-  content: attr(data-placeholder);
-  float: left;
-  height: 0;
-  pointer-events: none;
-}
-
-.quickNoteBubble {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 5px;
-  border: 1px solid rgba(120, 134, 170, 0.26);
-  border-radius: 10px;
-  background: rgba(38, 40, 58, 0.96);
-  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.34);
-}
-
-.quickNoteBubble button,
-.quickNoteSlashMenu button {
-  all: unset;
-  box-sizing: border-box;
-  cursor: pointer;
-}
-
-.quickNoteBubble button {
-  width: 32px;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 7px;
-  color: var(--color-text-secondary);
-}
-
-.quickNoteBubble button:hover,
-.quickNoteToolActive {
-  color: var(--color-text-primary) !important;
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.quickNoteSlashMenu {
-  position: absolute;
-  z-index: 5;
-  width: min(340px, calc(100% - 32px));
-  max-height: min(320px, calc(100vh - 240px));
-  padding: 8px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  border-radius: 12px;
-  background: rgba(8, 9, 14, 0.96);
-  border: 1px solid rgba(120, 134, 170, 0.18);
-  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.42);
-}
-
-.quickNoteSlashMenu button {
-  width: 100%;
-  min-height: 48px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  color: var(--color-text-secondary);
-  font-size: 14px;
-}
-
-.quickNoteSlashMenu button:hover,
-.quickNoteSlashItemActive {
-  color: var(--color-text-primary);
-  background: rgba(255, 255, 255, 0.07);
-}
-
-.quickNoteSlashText {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.quickNoteSlashText span,
-.quickNoteSlashText small {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.quickNoteSlashText span {
-  font-weight: var(--font-weight-semibold);
-}
-
-.quickNoteSlashText small {
-  color: var(--color-text-secondary);
-  font-size: 12px;
-  line-height: 1.25;
-}
-
-.addCardFileList {
-  list-style: none;
-  margin: 0;
-  padding: 0 16px 10px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  max-height: 96px;
-  overflow: auto;
-}
-
-.addCardFileItem {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  max-width: 220px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  border-radius: 999px;
-  padding: 4px 8px 4px 10px;
-}
-
-.addCardFileName {
-  flex: 1;
-  font-size: 11px;
-  color: var(--color-text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.addCardFileRemove {
-  all: unset;
-  font-size: 10px;
-  color: #555;
-  cursor: pointer;
-  flex-shrink: 0;
-  line-height: 1;
-  padding: 1px 2px;
-}
-
-.addCardFileRemove:hover {
-  color: var(--color-text-primary);
-}
-
-.addCardActions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 10px 14px;
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
-}
-
-.addCardFileBtn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: var(--radius-sm);
-  color: var(--color-text-secondary);
-  cursor: pointer;
-  transition: background var(--duration-fast), color var(--duration-fast);
-  margin-right: auto;
-}
-
-.addCardFileBtn:hover {
-  background: var(--color-border);
-  color: var(--color-text-primary);
-}
-
-.addCardCancelBtn {
-  all: unset;
-  font-size: var(--font-size-xs);
-  color: var(--color-text-secondary);
-  cursor: pointer;
-  padding: 4px 10px;
-  border-radius: var(--radius-sm);
-  transition: color var(--duration-fast);
-  font-family: var(--font-family);
-}
-
-.addCardCancelBtn:hover {
-  color: var(--color-text-primary);
-}
-
-.addCardSubmitBtn {
-  all: unset;
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-semibold);
-  color: #fff;
-  background: var(--color-accent);
-  cursor: pointer;
-  padding: 4px 12px;
-  border-radius: var(--radius-sm);
-  font-family: var(--font-family);
-  transition: opacity var(--duration-fast);
-}
-
-.addCardSubmitBtn:hover {
-  opacity: 0.85;
-}
-
-.addCardSubmitBtn:disabled {
-  cursor: default;
-  opacity: 0.42;
 }
 
 @media (max-width: 760px) {
@@ -1532,72 +1016,6 @@
     max-height: 44px;
     overflow: hidden;
   }
-
-  .addCardEditing {
-    left: 10px;
-    right: 10px;
-    top: max(10px, var(--app-safe-area-top));
-    bottom: calc(var(--mobile-bottom-nav-clearance) + 8px);
-    width: auto;
-    height: auto;
-    min-height: 0;
-    border-radius: 18px;
-  }
-
-  .addCardEditorShell {
-    padding: 16px 14px 12px;
-  }
-
-  .addCardKicker {
-    margin-bottom: 12px;
-  }
-
-  .quickNoteEditorContent {
-    font-size: 16px;
-    line-height: 1.55;
-  }
-
-  .quickNoteBubble {
-    max-width: calc(100vw - 28px);
-    overflow-x: auto;
-  }
-
-  .quickNoteSlashMenu {
-    width: min(320px, calc(100vw - 28px));
-    max-height: min(42svh, 300px);
-    left: 14px !important;
-    right: 14px;
-    overflow-y: auto;
-  }
-
-  .addCardFileList {
-    flex-wrap: nowrap;
-    max-height: 48px;
-    padding: 0 12px 8px;
-    overflow-x: auto;
-    overflow-y: hidden;
-  }
-
-  .addCardFileItem {
-    max-width: 220px;
-    flex: 0 0 auto;
-  }
-
-  .addCardActions {
-    gap: 8px;
-    padding: 10px 12px calc(10px + var(--app-safe-area-bottom));
-  }
-
-  .addCardFileBtn,
-  .addCardCancelBtn,
-  .addCardSubmitBtn {
-    min-height: 36px;
-    box-sizing: border-box;
-  }
-
-  .addCardSubmitBtn {
-    padding-inline: 14px;
-  }
 }
 
 @media (max-width: 430px) {
@@ -1613,24 +1031,8 @@
 
   .mediaPlaceholder span,
   .overlayExcerpt,
-  .footerMeta,
   .collectionStat {
     display: none;
-  }
-
-  .addCardTrigger {
-    min-height: 116px;
-    gap: 9px;
-    padding: 13px;
-  }
-
-  .addCardTriggerText strong {
-    font-size: 10px;
-  }
-
-  .addCardTriggerText span {
-    font-size: 12px;
-    line-height: 1.35;
   }
 }
 
@@ -1646,44 +1048,6 @@
   border-color: #22c55e;
   box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.2), var(--shadow-sm);
   transition: border-color 0.1s, box-shadow 0.1s;
-}
-
-/* Файл тащат где-то на странице — заметное свечение + подъём */
-@keyframes addCardGlow {
-  0%, 100% { box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.3), 0 0 20px rgba(99, 102, 241, 0.15); }
-  50%       { box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.7), 0 0 32px rgba(99, 102, 241, 0.35); }
-}
-
-.addCardFileDrag {
-  border-color: var(--color-accent);
-  border-style: solid;
-  color: var(--color-accent);
-  background: rgba(99, 102, 241, 0.08);
-  animation: addCardGlow 1s ease-in-out infinite;
-  transition: background 0.2s, color 0.2s;
-}
-
-/* Файл завис прямо над AddNoteCard */
-.addCardOver {
-  border-color: var(--color-accent) !important;
-  border-style: solid !important;
-  color: var(--color-accent);
-  background: rgba(99, 102, 241, 0.14);
-  animation: none;
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.4), 0 0 40px rgba(99, 102, 241, 0.25);
-}
-
-.addIcon {
-  flex-shrink: 0;
-}
-
-.skeletonCard {
-  display: grid;
-  place-items: center;
-  border-radius: var(--radius-md);
-  aspect-ratio: 3 / 4;
-  background: #1a1a1a;
-  border: 1px solid var(--color-border);
 }
 
 .cardLoadingOverlay {
@@ -1702,7 +1066,7 @@
 }
 
 /* === Bulk selection === */
-.isSelected .card {
+.cardWrapper:has(> .bulkOverlaySelected) .card {
   border-color: var(--color-accent);
   border-width: 2px;
   box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.3);
@@ -1761,9 +1125,11 @@
   backdrop-filter: blur(4px);
   transition: background 0.15s;
 }
+
 .syncBtn:hover {
   background: rgba(255, 200, 60, 0.28);
 }
+
 .linkCoverInner {
   display: flex;
   flex-direction: column;

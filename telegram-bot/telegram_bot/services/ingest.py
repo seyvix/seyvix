@@ -1,32 +1,60 @@
+"""Buffers Telegram messages into logical saves and uploads them to Seyvix.
+
+* auto mode: messages arriving within `group_window_seconds` form one save (albums and quick
+  series end up in one note);
+* separate / manual mode: only albums (media groups) are buffered, for `media_group_seconds`.
+
+Buckets keep only metadata (Telegram `file_id`s), never file bytes; attachments are downloaded
+to a temporary directory at flush time and streamed to the backend in one request.
+"""
+
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
-from datetime import UTC, datetime
-from typing import Any, TypeVar, cast
+import tempfile
+from collections.abc import Awaitable
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+from typing import Any, Protocol
 
 from telegram_bot.domain.enums import BotMode
-from telegram_bot.domain.models import BotState, InboundMaterial, SavedMaterial
-from telegram_bot.infrastructure.backend_client import HttpSeyvixBackend
-from telegram_bot.services.state import BotStateRepository
+from telegram_bot.domain.models import InboundMaterial, SavedMaterial
+from telegram_bot.infrastructure.backend_client import HttpSeyvixBackend, IngestItem, UploadFile
 
-StatusMessage = TypeVar("StatusMessage")
-SendLoading = Callable[[InboundMaterial], Awaitable[StatusMessage]]
-PrepareMaterial = Callable[[InboundMaterial, StatusMessage | None], Awaitable[InboundMaterial]]
-UpdateSaved = Callable[[StatusMessage, SavedMaterial], Awaitable[None]]
-UpdateError = Callable[[StatusMessage, Exception], Awaitable[None]]
 logger = logging.getLogger(__name__)
+
+
+class FileTooLargeError(Exception):
+    """Telegram refuses to hand this file to bots."""
+
+
+class IngestReporter(Protocol):
+    """Chat-side feedback for one save (implemented by the Telegram handler)."""
+
+    async def loading(self, material: InboundMaterial) -> Any: ...
+
+    async def saved(self, status: Any, saved: SavedMaterial, skipped: list[str]) -> None: ...
+
+    async def nothing_saved(self, status: Any, skipped: list[str]) -> None: ...
+
+    async def failed(self, status: Any, exc: Exception) -> None: ...
+
+
+class FileFetcher(Protocol):
+    async def enrich(self, material: InboundMaterial) -> InboundMaterial: ...
+
+    async def download(self, file_id: str, destination: Path) -> None: ...
 
 
 @dataclass(slots=True)
 class _Bucket:
-    state: BotState
+    reporter: IngestReporter
     materials: list[InboundMaterial]
-    status: object
-    task: asyncio.Task[None]
-    pending: int = 0
+    deadline: float
+    status: asyncio.Task[Any]
+    wake: asyncio.Event = field(default_factory=asyncio.Event)
+    task: asyncio.Task[None] | None = None
 
 
 class TelegramIngestService:
@@ -34,267 +62,184 @@ class TelegramIngestService:
         self,
         *,
         backend: HttpSeyvixBackend,
-        state_repository: BotStateRepository,
-        auto_group_window_seconds: float,
-        media_group_flush_seconds: float,
+        fetcher: FileFetcher,
+        group_window_seconds: float,
+        media_group_seconds: float,
+        max_buffered_materials: int,
+        max_download_bytes: int | None,
     ) -> None:
         self.backend = backend
-        self.state_repository = state_repository
-        self.auto_group_window_seconds = auto_group_window_seconds
-        self.media_group_flush_seconds = media_group_flush_seconds
+        self.fetcher = fetcher
+        self.group_window_seconds = group_window_seconds
+        self.media_group_seconds = media_group_seconds
+        self.max_buffered_materials = max_buffered_materials
+        self.max_download_bytes = max_download_bytes
         self._buckets: dict[str, _Bucket] = {}
-        self._bucket_locks: dict[str, asyncio.Lock] = {}
+        self._tasks: set[asyncio.Task[None]] = set()
 
-    async def ingest(
+    async def submit(
         self,
-        *,
         material: InboundMaterial,
-        state: BotState,
-        send_loading: SendLoading[StatusMessage],
-        prepare_material: PrepareMaterial[StatusMessage],
-        update_saved: UpdateSaved[StatusMessage],
-        update_error: UpdateError[StatusMessage],
-    ) -> None:
-        key = self._buffer_key(material=material, state=state)
-        logger.info(
-            "Telegram ingest queued user=%s chat=%s message=%s mode=%s type=%s key=%s",
-            material.telegram_user_id,
-            material.telegram_chat_id,
-            material.telegram_message_id,
-            state.mode.value,
-            material.material_type.value,
-            key or "immediate",
-        )
-        if key is None:
-            status = await send_loading(material)
-            try:
-                prepared = await prepare_material(material, status)
-            except Exception as exc:
-                logger.exception(
-                    "Telegram material prepare failed user=%s chat=%s message=%s",
-                    material.telegram_user_id,
-                    material.telegram_chat_id,
-                    material.telegram_message_id,
-                )
-                await update_error(status, exc)
-                return
-            await self._save_and_update(
-                status=status,
-                state=state,
-                materials=[prepared],
-                update_saved=update_saved,
-                update_error=update_error,
-            )
-            return
-
-        lock = self._bucket_lock(key)
-        async with lock:
-            bucket = self._buckets.get(key)
-            if bucket is None:
-                prepare_status: StatusMessage | None = await send_loading(material)
-                placeholder = asyncio.create_task(asyncio.sleep(0))
-                bucket = _Bucket(
-                    state=state,
-                    materials=[],
-                    status=prepare_status,
-                    task=placeholder,
-                )
-                self._buckets[key] = bucket
-                logger.info("Telegram ingest bucket opened key=%s", key)
-            else:
-                bucket.task.cancel()
-                prepare_status = None
-            bucket.pending += 1
-
-        try:
-            prepared = await prepare_material(material, prepare_status)
-        except Exception as exc:
-            async with lock:
-                bucket.pending -= 1
-                current_bucket = self._buckets.pop(key, None)
-                if current_bucket is not None:
-                    current_bucket.task.cancel()
-            logger.exception(
-                "Telegram bucket material prepare failed key=%s user=%s chat=%s message=%s",
-                key,
-                material.telegram_user_id,
-                material.telegram_chat_id,
-                material.telegram_message_id,
-            )
-            await update_error(cast(StatusMessage, bucket.status), exc)
-            return
-
-        async with lock:
-            current_bucket = self._buckets.get(key)
-            if current_bucket is None:
-                logger.warning(
-                    "Telegram ingest bucket disappeared before append key=%s message=%s",
-                    key,
-                    material.telegram_message_id,
-                )
-                return
-            current_bucket.materials.append(prepared)
-            current_bucket.pending -= 1
-            current_bucket.task.cancel()
-            logger.info(
-                "Telegram ingest bucket appended key=%s count=%s pending=%s",
-                key,
-                len(current_bucket.materials),
-                current_bucket.pending,
-            )
-            current_bucket.task = asyncio.create_task(
-                self._flush_later(
-                    key=key,
-                    delay=self._buffer_delay(material=material, state=state),
-                    update_saved=update_saved,
-                    update_error=update_error,
-                )
-            )
-
-    async def _flush_later(
-        self,
         *,
-        key: str,
-        delay: float,
-        update_saved: UpdateSaved[StatusMessage],
-        update_error: UpdateError[StatusMessage],
+        mode: BotMode,
+        reporter: IngestReporter,
+    ) -> None:
+        key, delay = self._buffering(material, mode)
+        if key is None:
+            status = await reporter.loading(material)
+            self._spawn(self._save([material], reporter, status))
+            return
+        loop = asyncio.get_running_loop()
+        bucket = self._buckets.get(key)
+        if bucket is None:
+            # Register before awaiting anything so concurrent updates join this bucket.
+            bucket = _Bucket(
+                reporter=reporter,
+                materials=[material],
+                deadline=loop.time() + delay,
+                status=asyncio.create_task(reporter.loading(material)),
+            )
+            self._buckets[key] = bucket
+            bucket.task = asyncio.create_task(self._run_bucket(key, bucket))
+            self._tasks.add(bucket.task)
+            bucket.task.add_done_callback(self._tasks.discard)
+            return
+        bucket.materials.append(material)
+        full = len(bucket.materials) >= self.max_buffered_materials
+        bucket.deadline = loop.time() if full else loop.time() + delay
+        if full:
+            # Start a fresh bucket for whatever arrives next.
+            self._buckets.pop(key, None)
+        bucket.wake.set()
+
+    async def shutdown(self, grace_seconds: float = 30.0) -> None:
+        """Flush buffered messages immediately and wait for in-flight saves."""
+        loop = asyncio.get_running_loop()
+        for bucket in self._buckets.values():
+            bucket.deadline = loop.time()
+            bucket.wake.set()
+        if self._tasks:
+            _, pending = await asyncio.wait(set(self._tasks), timeout=grace_seconds)
+            for task in pending:
+                task.cancel()
+
+    def _spawn(self, coroutine: Awaitable[None]) -> None:
+        task: asyncio.Task[None] = asyncio.ensure_future(coroutine)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    def _buffering(self, material: InboundMaterial, mode: BotMode) -> tuple[str | None, float]:
+        group_id = material.source.group_id if material.source else None
+        if mode == BotMode.AUTO:
+            key = f"auto:{material.telegram_user_id}:{material.telegram_chat_id}"
+            return key, self.group_window_seconds
+        if group_id:
+            return (
+                f"album:{material.telegram_user_id}:{material.telegram_chat_id}:{group_id}",
+                self.media_group_seconds,
+            )
+        return None, 0.0
+
+    async def _run_bucket(self, key: str, bucket: _Bucket) -> None:
+        loop = asyncio.get_running_loop()
+        while (remaining := bucket.deadline - loop.time()) > 0:
+            bucket.wake.clear()
+            try:
+                await asyncio.wait_for(bucket.wake.wait(), timeout=remaining)
+            except TimeoutError:
+                pass
+        if self._buckets.get(key) is bucket:
+            del self._buckets[key]
+        try:
+            status = await bucket.status
+        except Exception:  # noqa: BLE001 - loading message failed; reporter sends a new one
+            logger.warning("Could not send loading message", exc_info=True)
+            status = None
+        await self._save(bucket.materials, bucket.reporter, status)
+
+    async def _save(
+        self,
+        materials: list[InboundMaterial],
+        reporter: IngestReporter,
+        status: Any,
     ) -> None:
         try:
-            await asyncio.sleep(delay)
-        except asyncio.CancelledError:
-            return
+            ordered = _deduplicate_repeated_captions(_sort_materials(materials))
+            enriched = [await self.fetcher.enrich(material) for material in ordered]
+            with tempfile.TemporaryDirectory(prefix="seyvix-bot-") as tmp:
+                groups, files, skipped = await self._download(enriched, Path(tmp))
+                if not groups:
+                    await reporter.nothing_saved(status, skipped)
+                    return
+                first = enriched[0]
+                saved = await self.backend.ingest(
+                    telegram_user_id=int(first.telegram_user_id),
+                    telegram_chat_id=first.telegram_chat_id,
+                    groups=groups,
+                    files=files,
+                )
+            logger.info(
+                "Saved %s Telegram message(s) as %s (%s)", len(materials), saved.id, saved.status
+            )
+            await reporter.saved(status, saved, skipped)
+        except Exception as exc:  # noqa: BLE001 - every failure is reported to the user
+            logger.warning("Telegram save failed: %s", exc, exc_info=True)
+            await _safely(reporter.failed(status, exc))
 
-        lock = self._bucket_lock(key)
-        async with lock:
-            bucket = self._buckets.get(key)
-            if bucket is None:
-                return
-            if bucket.pending > 0:
-                bucket.task = asyncio.create_task(
-                    self._flush_later(
-                        key=key,
-                        delay=delay,
-                        update_saved=update_saved,
-                        update_error=update_error,
+    async def _download(
+        self,
+        materials: list[InboundMaterial],
+        directory: Path,
+    ) -> tuple[list[list[IngestItem]], list[UploadFile], list[str]]:
+        files: list[UploadFile] = []
+        skipped: list[str] = []
+        groups: list[list[IngestItem]] = []
+        for group in _logical_groups(materials):
+            items: list[IngestItem] = []
+            for material in group:
+                attachment = material.attachment
+                if attachment is None:
+                    items.append(IngestItem(material=material, file_index=None))
+                    continue
+                too_large = (
+                    self.max_download_bytes is not None
+                    and attachment.file_size is not None
+                    and attachment.file_size > self.max_download_bytes
+                )
+                path = directory / f"{len(files)}"
+                try:
+                    if too_large:
+                        raise FileTooLargeError(attachment.filename)
+                    await self.fetcher.download(attachment.file_id, path)
+                except FileTooLargeError:
+                    skipped.append(attachment.filename)
+                    if material.caption or material.text:
+                        # Keep the text of the message even if its file cannot be fetched.
+                        items.append(
+                            IngestItem(
+                                material=replace(material, attachment=None),
+                                file_index=None,
+                            )
+                        )
+                    continue
+                files.append(
+                    UploadFile(
+                        path=path,
+                        filename=attachment.filename,
+                        mime_type=attachment.mime_type,
                     )
                 )
-                logger.info(
-                    "Telegram ingest bucket flush postponed key=%s pending=%s",
-                    key,
-                    bucket.pending,
-                )
-                return
-            bucket = self._buckets.pop(key)
-        logger.info(
-            "Telegram ingest bucket flushing key=%s count=%s",
-            key,
-            len(bucket.materials),
-        )
-        await self._save_and_update(
-            status=cast(StatusMessage, bucket.status),
-            state=bucket.state,
-            materials=_deduplicate_repeated_captions(_sort_materials(bucket.materials)),
-            update_saved=update_saved,
-            update_error=update_error,
-        )
+                items.append(IngestItem(material=material, file_index=len(files) - 1))
+            if items:
+                groups.append(items)
+        return groups, files, skipped
 
-    async def _save_and_update(
-        self,
-        *,
-        status: StatusMessage,
-        state: BotState,
-        materials: list[InboundMaterial],
-        update_saved: UpdateSaved[StatusMessage],
-        update_error: UpdateError[StatusMessage],
-    ) -> None:
-        try:
-            saved = await self._save_materials(state=state, materials=materials)
-        except Exception as exc:
-            first = materials[0] if materials else None
-            logger.exception(
-                "Telegram ingest save failed user=%s chat=%s mode=%s count=%s",
-                first.telegram_user_id if first else None,
-                first.telegram_chat_id if first else None,
-                state.mode.value,
-                len(materials),
-            )
-            await update_error(status, exc)
-            return
-        first = materials[0]
-        logger.info(
-            "Telegram ingest saved user=%s chat=%s mode=%s count=%s saved_id=%s status=%s",
-            first.telegram_user_id,
-            first.telegram_chat_id,
-            state.mode.value,
-            len(materials),
-            saved.id,
-            saved.status,
-        )
-        await update_saved(status, saved)
 
-    async def _save_materials(
-        self,
-        *,
-        state: BotState,
-        materials: list[InboundMaterial],
-    ) -> SavedMaterial:
-        target_collection_id = (
-            state.active_collection_id if state.mode == BotMode.MANUAL_COLLECTION else None
-        )
-        saved: SavedMaterial | None = None
-        for group in _logical_message_groups(materials):
-            payload = await self.backend.ingest_many(
-                group,
-                target_collection_id=target_collection_id,
-            )
-            saved = _saved_from_payload(payload)
-            if saved.id is not None:
-                target_collection_id = saved.id
-
-        if saved is None:
-            raise RuntimeError("No Telegram materials to save.")
-
-        if state.mode == BotMode.MANUAL_COLLECTION and saved.id is not None:
-            await self.state_repository.save(
-                state.with_manual_collection(collection_id=saved.id, now=datetime.now(UTC))
-            )
-        return saved
-
-    def _buffer_key(self, *, material: InboundMaterial, state: BotState) -> str | None:
-        if state.mode == BotMode.AUTO:
-            return f"auto:{material.telegram_user_id}:{material.telegram_chat_id}"
-        media_group_key = self._media_group_key(material)
-        if media_group_key is not None:
-            return media_group_key
-        return None
-
-    def _buffer_delay(self, *, material: InboundMaterial, state: BotState) -> float:
-        if state.mode == BotMode.AUTO:
-            return self.auto_group_window_seconds
-        if self._media_group_key(material) is not None:
-            return self.media_group_flush_seconds
-        return 0
-
-    def _bucket_lock(self, key: str) -> asyncio.Lock:
-        lock = self._bucket_locks.get(key)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._bucket_locks[key] = lock
-        return lock
-
-    @staticmethod
-    def _media_group_key(material: InboundMaterial) -> str | None:
-        if material.source is None or not material.source.group_id:
-            return None
-        return ":".join(
-            [
-                "media",
-                material.source.provider,
-                material.telegram_user_id,
-                material.telegram_chat_id,
-                material.source.group_id,
-            ]
-        )
+async def _safely(awaitable: Awaitable[None]) -> None:
+    try:
+        await awaitable
+    except Exception:  # noqa: BLE001 - feedback is best effort (message deleted, bot blocked)
+        logger.warning("Could not deliver save feedback", exc_info=True)
 
 
 def _sort_materials(materials: list[InboundMaterial]) -> list[InboundMaterial]:
@@ -306,8 +251,6 @@ def _message_id_sort_key(value: str) -> tuple[int, str]:
 
 
 def _deduplicate_repeated_captions(materials: list[InboundMaterial]) -> list[InboundMaterial]:
-    from dataclasses import replace
-
     seen: set[str] = set()
     result: list[InboundMaterial] = []
     for material in materials:
@@ -321,41 +264,13 @@ def _deduplicate_repeated_captions(materials: list[InboundMaterial]) -> list[Inb
     return result
 
 
-def _logical_message_groups(materials: list[InboundMaterial]) -> list[list[InboundMaterial]]:
+def _logical_groups(materials: list[InboundMaterial]) -> list[list[InboundMaterial]]:
+    """One group per Telegram message, except albums which form a single group."""
     groups: dict[str, list[InboundMaterial]] = {}
-    order: list[str] = []
     for material in materials:
-        key = _logical_message_key(material)
-        if key not in groups:
-            groups[key] = []
-            order.append(key)
-        groups[key].append(material)
-    return [groups[key] for key in order]
-
-
-def _logical_message_key(material: InboundMaterial) -> str:
-    if material.source is not None and material.source.group_id:
-        return ":".join(
-            [
-                "group",
-                material.source.provider,
-                material.telegram_chat_id,
-                material.source.group_id,
-            ]
-        )
-    return ":".join(["message", material.telegram_chat_id, material.telegram_message_id])
-
-
-def _saved_from_payload(payload: Mapping[str, object]) -> SavedMaterial:
-    raw_note = payload.get("note")
-    note = raw_note if isinstance(raw_note, Mapping) else {}
-    return SavedMaterial(
-        title=_string_value(note, "title") or "материал",
-        id=_string_value(note, "id"),
-        status=_string_value(payload, "status") or "saved",
-    )
-
-
-def _string_value(mapping: Mapping[Any, Any], key: str) -> str | None:
-    value = mapping.get(key)
-    return value if isinstance(value, str) and value else None
+        if material.source is not None and material.source.group_id:
+            key = f"group:{material.telegram_chat_id}:{material.source.group_id}"
+        else:
+            key = f"message:{material.telegram_chat_id}:{material.telegram_message_id}"
+        groups.setdefault(key, []).append(material)
+    return list(groups.values())

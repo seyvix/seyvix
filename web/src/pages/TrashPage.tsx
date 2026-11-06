@@ -12,17 +12,15 @@ export default function TrashPage() {
   })
   const restore = useMutation({
     mutationFn: restoreNote,
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['notes-trash'] })
-      await queryClient.invalidateQueries({ queryKey: ['notes'] })
-      await queryClient.invalidateQueries({ queryKey: ['folders'] })
-    },
+    onSuccess: () => Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['notes-trash'] }),
+      queryClient.invalidateQueries({ queryKey: ['notes'] }),
+      queryClient.invalidateQueries({ queryKey: ['folders'] }),
+    ]),
   })
   const cleanup = useMutation({
     mutationFn: cleanupTrash,
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['notes-trash'] })
-    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['notes-trash'] }),
   })
 
   return (
@@ -40,8 +38,8 @@ export default function TrashPage() {
 
       {isPending && <div className={styles.state}>Загружаю корзину...</div>}
       {isError && <div className={styles.error}>Не удалось загрузить корзину.</div>}
-      {restore.isError && <div className={styles.error}>Не удалось восстановить заметку.</div>}
-      {cleanup.isError && <div className={styles.error}>Не удалось очистить корзину.</div>}
+      {restore.isError && <div className={styles.error}>{restore.error.message}</div>}
+      {cleanup.isError && <div className={styles.error}>{cleanup.error.message}</div>}
       {cleanup.isSuccess && <div className={styles.success}>Удалено просроченных заметок: {cleanup.data.deletedCount}</div>}
       {restore.isSuccess && restore.data && (
         <div className={styles.success}>

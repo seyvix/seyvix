@@ -1,194 +1,194 @@
+"""Related notes: nearest neighbours of a note's embedding centroid (computed in SQL).
+
+Without embeddings (AI disabled or not embedded yet) notes sharing the most accepted tags are
+recommended instead, so the panel still works.
+"""
+
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections import defaultdict
 from uuid import UUID
 
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.core.config import Settings, get_settings
-from app.modules.content.infrastructure.repositories import ContentRepository
 from app.modules.content.models import ContentObject
 from app.modules.content.schemas import TagResponse
-from app.modules.recommendations.infrastructure.repositories import (
-    RecommendationRepository,
-    SourceEmbedding,
-)
 from app.modules.recommendations.schemas import NoteRecommendationsResponse, RecommendedNoteItem
-from app.modules.vectorization.contracts import (
-    VectorizedChunkSearchReader,
-    VectorizedChunkSearchResult,
-    build_vectorized_chunk_search_reader,
+from app.modules.search.retrieval import (
+    ChunkHit,
+    Scope,
+    content_embedding_centroid,
+    use_exact_vector_search,
+    vector_chunks,
 )
+from app.modules.tags.models import ContentTagAssignment, Tag
+from app.modules.vectorization.documents import SOURCE_CONTENT
 
 MAX_NOTE_RECOMMENDATIONS = 5
-_CANDIDATE_MULTIPLIER = 20
+_CANDIDATE_CHUNKS = 100
 _MATCHED_TEXT_MAX_CHARS = 320
+_ACCEPTED = "accepted"
 
 
 class RecommendationNoteNotFoundError(Exception):
     pass
 
 
-@dataclass(slots=True)
-class _RecommendationCandidate:
-    content_object_id: str
-    score: float
-    distance: float
-    matched_text: str
-    match_count: int = 1
-
-
 class RecommendationService:
-    def __init__(
-        self,
-        session: AsyncSession,
-        *,
-        settings: Settings | None = None,
-        chunk_reader: VectorizedChunkSearchReader | None = None,
-    ) -> None:
+    def __init__(self, session: AsyncSession, *, settings: Settings | None = None) -> None:
         self.session = session
         self.settings = settings or get_settings()
-        self.content = ContentRepository(session)
-        self.repository = RecommendationRepository(session)
-        self.chunk_reader = chunk_reader or build_vectorized_chunk_search_reader(session)
 
     async def recommend_notes(
-        self,
-        *,
-        owner_user_id: str,
-        note_ref: str,
-        limit: int,
+        self, *, owner_user_id: str, note_ref: str, limit: int
     ) -> NoteRecommendationsResponse:
-        target = await self._load_note(owner_user_id=owner_user_id, note_ref=note_ref)
-        if target is None:
+        target_id = await self._resolve_note_id(owner_user_id=owner_user_id, note_ref=note_ref)
+        if target_id is None:
             raise RecommendationNoteNotFoundError
+        effective_limit = min(max(limit, 1), MAX_NOTE_RECOMMENDATIONS)
 
-        effective_limit = _effective_limit(limit)
-        query_embeddings = await self.repository.list_content_object_embeddings(
-            owner_user_id=owner_user_id,
-            content_object_id=target.id,
-            provider=self.settings.vector_embedding_provider,
-            model=self.settings.vector_embedding_model,
-            dimensions=self.settings.vector_embedding_dimensions,
-        )
-        if not query_embeddings:
+        ranked = await self._semantic_candidates(owner_user_id, target_id)
+        if not ranked:
+            ranked = await self._shared_tag_candidates(owner_user_id, target_id)
+        if not ranked:
             return NoteRecommendationsResponse(items=[])
 
-        query_embedding = _mean_embedding(query_embeddings)
-        matches = await self.chunk_reader.search_similar_chunks(
-            owner_user_id=owner_user_id,
-            query_embedding=query_embedding,
-            provider=self.settings.vector_embedding_provider,
-            model=self.settings.vector_embedding_model,
-            dimensions=self.settings.vector_embedding_dimensions,
-            limit=max(effective_limit * _CANDIDATE_MULTIPLIER, effective_limit + 5),
-            source="content",
-            source_type="content_object",
-        )
-        candidates = _aggregate_matches(matches=matches, target_id=target.id)
-        object_ids = [candidate.content_object_id for candidate in candidates]
-        objects_by_id = await self.repository.list_recommendable_content_objects(
-            owner_user_id=owner_user_id,
-            content_object_ids=object_ids,
+        objects = {
+            item.id: item
+            for item in await self.session.scalars(
+                select(ContentObject).where(
+                    ContentObject.owner_user_id == owner_user_id,
+                    ContentObject.id.in_([note_id for note_id, _, _ in ranked]),
+                    ContentObject.deleted_at.is_(None),
+                )
+            )
+        }
+        kept = [entry for entry in ranked if entry[0] in objects][:effective_limit]
+        tags = await self._tags_for([note_id for note_id, _, _ in kept])
+        return NoteRecommendationsResponse(
+            items=[
+                RecommendedNoteItem(
+                    id=objects[note_id].id,
+                    slug=objects[note_id].slug,
+                    kind=objects[note_id].kind,
+                    media_type=objects[note_id].media_type,
+                    title=objects[note_id].title,
+                    score=min(max(score, 0.0), 1.0),
+                    matched_text=matched_text,
+                    tags=tags.get(note_id, []),
+                    created_at=objects[note_id].created_at,
+                    updated_at=objects[note_id].updated_at,
+                )
+                for note_id, score, matched_text in kept
+            ]
         )
 
-        items: list[RecommendedNoteItem] = []
-        for candidate in candidates:
-            content_object = objects_by_id.get(candidate.content_object_id)
-            if content_object is None:
+    async def _resolve_note_id(self, *, owner_user_id: str, note_ref: str) -> str | None:
+        ref = note_ref.strip()
+        try:
+            object_id: str | None = str(UUID(ref))
+        except ValueError:
+            object_id = None
+        condition = (
+            or_(ContentObject.id == object_id, ContentObject.slug == ref)
+            if object_id
+            else ContentObject.slug == ref
+        )
+        note_id: str | None = await self.session.scalar(
+            select(ContentObject.id)
+            .where(
+                ContentObject.owner_user_id == owner_user_id,
+                ContentObject.deleted_at.is_(None),
+                condition,
+            )
+            .order_by((ContentObject.id == (object_id or "")).desc())
+            .limit(1)
+        )
+        return note_id
+
+    async def _semantic_candidates(
+        self, owner_user_id: str, target_id: str
+    ) -> list[tuple[str, float, str]]:
+        centroid = await content_embedding_centroid(
+            self.session,
+            owner_user_id=owner_user_id,
+            content_object_id=target_id,
+            model=self.settings.ai_embedding_model,
+        )
+        if centroid is None:
+            return []
+        scope = Scope(
+            owner_user_id=owner_user_id, source=SOURCE_CONTENT[0], source_type=SOURCE_CONTENT[1]
+        )
+        hits = await vector_chunks(
+            self.session,
+            scope,
+            centroid,
+            settings=self.settings,
+            limit=_CANDIDATE_CHUNKS,
+            exact=await use_exact_vector_search(self.session, owner_user_id, self.settings),
+        )
+        best: dict[str, ChunkHit] = {}
+        counts: dict[str, int] = defaultdict(int)
+        for hit in hits:  # hits are ordered best first
+            if hit.source_id == target_id:
                 continue
-            items.append(_item_from_candidate(candidate, content_object))
-            if len(items) >= effective_limit:
-                break
-        return NoteRecommendationsResponse(items=items)
+            counts[hit.source_id] += 1
+            best.setdefault(hit.source_id, hit)
+        ordered = sorted(
+            best.values(), key=lambda hit: (hit.score, counts[hit.source_id]), reverse=True
+        )
+        return [(hit.source_id, hit.score, _compact_text(hit.text)) for hit in ordered]
 
-    async def _load_note(self, *, owner_user_id: str, note_ref: str) -> ContentObject | None:
-        normalized_ref = note_ref.strip()
-        object_id = _uuid_ref(normalized_ref)
-        if object_id is not None:
-            content_object = await self.content.get_by_id(
-                owner_user_id=owner_user_id,
-                object_id=object_id,
+    async def _shared_tag_candidates(
+        self, owner_user_id: str, target_id: str
+    ) -> list[tuple[str, float, str]]:
+        mine = aliased(ContentTagAssignment)
+        other = aliased(ContentTagAssignment)
+        target_tags = await self.session.scalar(
+            select(func.count()).where(
+                mine.content_object_id == target_id, mine.status == _ACCEPTED
             )
-            if content_object is not None:
-                return content_object
-        return await self.content.get_by_slug(owner_user_id=owner_user_id, slug=normalized_ref)
-
-
-def _effective_limit(limit: int) -> int:
-    return min(max(limit, 1), MAX_NOTE_RECOMMENDATIONS)
-
-
-def _uuid_ref(value: str) -> str | None:
-    try:
-        return str(UUID(value))
-    except ValueError:
-        return None
-
-
-def _mean_embedding(embeddings: list[SourceEmbedding]) -> list[float]:
-    dimensions = len(embeddings[0].vector)
-    sums = [0.0] * dimensions
-    for embedding in embeddings:
-        for index, value in enumerate(embedding.vector):
-            sums[index] += value
-    count = float(len(embeddings))
-    return [value / count for value in sums]
-
-
-def _aggregate_matches(
-    *,
-    matches: list[VectorizedChunkSearchResult],
-    target_id: str,
-) -> list[_RecommendationCandidate]:
-    candidates: dict[str, _RecommendationCandidate] = {}
-    for match in matches:
-        if match.source_id == target_id:
-            continue
-        existing = candidates.get(match.source_id)
-        if existing is None:
-            candidates[match.source_id] = _RecommendationCandidate(
-                content_object_id=match.source_id,
-                score=match.score,
-                distance=match.distance,
-                matched_text=_compact_text(match.text),
+        )
+        if not target_tags:
+            return []
+        shared = func.count().label("shared")
+        rows = await self.session.execute(
+            select(other.content_object_id, shared)
+            .join(mine, and_(mine.tag_id == other.tag_id, mine.status == _ACCEPTED))
+            .where(
+                mine.content_object_id == target_id,
+                other.owner_user_id == owner_user_id,
+                other.status == _ACCEPTED,
+                other.content_object_id != target_id,
             )
-            continue
-        existing.match_count += 1
-        if match.score > existing.score:
-            existing.score = match.score
-            existing.distance = match.distance
-            existing.matched_text = _compact_text(match.text)
-    return sorted(
-        candidates.values(),
-        key=lambda item: (item.score, item.match_count, -item.distance),
-        reverse=True,
-    )
+            .group_by(other.content_object_id)
+            .order_by(shared.desc())
+            .limit(MAX_NOTE_RECOMMENDATIONS * 4)
+        )
+        return [(row.content_object_id, row.shared / target_tags, "") for row in rows]
 
-
-def _item_from_candidate(
-    candidate: _RecommendationCandidate,
-    content_object: ContentObject,
-) -> RecommendedNoteItem:
-    return RecommendedNoteItem(
-        id=content_object.id,
-        slug=content_object.slug,
-        kind=content_object.kind,
-        media_type=content_object.media_type,
-        title=content_object.title,
-        score=_bounded_score(candidate.score),
-        matched_text=candidate.matched_text,
-        tags=[
-            TagResponse(id=tag.id, name=tag.name, slug=tag.slug)
-            for tag in sorted(content_object.tags, key=lambda item: item.name.casefold())
-        ],
-        created_at=content_object.created_at,
-        updated_at=content_object.updated_at,
-    )
-
-
-def _bounded_score(score: float) -> float:
-    return min(max(score, 0.0), 1.0)
+    async def _tags_for(self, note_ids: list[str]) -> dict[str, list[TagResponse]]:
+        if not note_ids:
+            return {}
+        rows = await self.session.execute(
+            select(ContentTagAssignment.content_object_id, Tag.id, Tag.name, Tag.slug)
+            .join(Tag, Tag.id == ContentTagAssignment.tag_id)
+            .where(
+                ContentTagAssignment.content_object_id.in_(note_ids),
+                ContentTagAssignment.status == _ACCEPTED,
+            )
+            .order_by(func.lower(Tag.name))
+        )
+        result: dict[str, list[TagResponse]] = defaultdict(list)
+        for row in rows:
+            result[row.content_object_id].append(
+                TagResponse(id=row.id, name=row.name, slug=row.slug)
+            )
+        return result
 
 
 def _compact_text(text: str) -> str:

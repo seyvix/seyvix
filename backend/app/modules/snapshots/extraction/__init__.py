@@ -2,14 +2,13 @@ from app.modules.snapshots.extraction.core import (
     ExtractionPage,
     ExtractionResult,
     ExtractionSection,
-    ExtractorContext,
 )
-from app.modules.snapshots.extraction.dispatcher import extract_asset_text
+from app.modules.snapshots.extraction.dispatcher import ExtractionSource, extract_markdown
 
 __all__ = [
     "ExtractionPage",
     "ExtractionResult",
     "ExtractionSection",
-    "ExtractorContext",
-    "extract_asset_text",
+    "ExtractionSource",
+    "extract_markdown",
 ]

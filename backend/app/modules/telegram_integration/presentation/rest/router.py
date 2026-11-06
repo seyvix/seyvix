@@ -1,8 +1,10 @@
+"""Internal API for the telegram-bot service (the bot has no database access).
+
+Every endpoint requires `Authorization: Bearer <TELEGRAM_INTERNAL_TOKEN>`.
+"""
+
 from __future__ import annotations
 
-import json
-import logging
-from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, Header, Query, UploadFile, status
@@ -12,31 +14,49 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import get_db_session
 from app.api.errors import AppError
 from app.core.config import get_settings
+from app.modules.auth.access import (
+    AccessDeniedError,
+    AccessGrantExistsError,
+    AccessGrantNotFoundError,
+    AccessService,
+    access_denied_details,
+    is_admin_telegram_id,
+)
+from app.modules.auth.presentation.rest.admin_router import (
+    grant_exists_error,
+    grant_not_found_error,
+)
+from app.modules.auth.schemas import AccessGrantResponse, AccessListResponse
+from app.modules.auth.security import tokens_equal
 from app.modules.content.presentation.rest.router import get_content_service
-from app.modules.content.service import ContentService, UploadedContent
+from app.modules.content.service import ContentService
+from app.modules.content.uploads import spool_upload_files
 from app.modules.telegram_integration.schemas import (
-    TelegramBatchIngestPart,
-    TelegramIngestPayload,
+    MAX_INGEST_FILES,
+    BotModeRequest,
+    BotStateResponse,
+    FinishCollectionResponse,
+    InternalAccessGrantRequest,
+    InternalAccessRevokeRequest,
+    InternalAccessRevokeResponse,
+    ReminderClaimRequest,
+    ReminderClaimResponse,
+    TelegramIngestRequest,
     TelegramIngestResponse,
-    TelegramMaterialType,
-    TelegramStatusResponse,
-    UniversalSourcePayload,
+    TelegramUserStatusResponse,
 )
 from app.modules.telegram_integration.service import (
-    TelegramCollectionNotFoundError,
     TelegramIngestService,
     TelegramUserNotLinkedError,
+    TelegramUserStatusService,
 )
-
-router = APIRouter(prefix="/integrations/telegram", tags=["integrations"])
-logger = logging.getLogger(__name__)
+from app.modules.telegram_integration.state import BotStateStore, state_response
 
 
-def _verify_internal_token(authorization: str | None) -> None:
-    settings = get_settings()
-    expected = settings.telegram_internal_token or settings.telegram_bot_token
+def verify_internal_token(authorization: Annotated[str | None, Header()] = None) -> None:
+    expected = get_settings().telegram_internal_token
     scheme, _, token = (authorization or "").partition(" ")
-    if not expected or scheme.lower() != "bearer" or token != expected:
+    if scheme.casefold() != "bearer" or not tokens_equal(token.strip(), expected):
         raise AppError(
             status_code=status.HTTP_401_UNAUTHORIZED,
             code="invalid_telegram_integration_token",
@@ -44,196 +64,204 @@ def _verify_internal_token(authorization: str | None) -> None:
         )
 
 
-def get_telegram_ingest_service(
-    session: Annotated[AsyncSession, Depends(get_db_session)],
-    content_service: Annotated[ContentService, Depends(get_content_service)],
-) -> TelegramIngestService:
-    return TelegramIngestService(
-        session=session,
-        content_service=content_service,
+router = APIRouter(
+    prefix="/integrations/telegram",
+    tags=["integrations"],
+    dependencies=[Depends(verify_internal_token)],
+)
+
+SessionDep = Annotated[AsyncSession, Depends(get_db_session)]
+
+
+def _access_denied(exc: AccessDeniedError) -> AppError:
+    return AppError(
+        status_code=status.HTTP_403_FORBIDDEN,
+        code="access_denied",
+        message="This Telegram user is not allowed to use Seyvix.",
+        details=access_denied_details(exc.telegram_user_id, exc.username),
     )
 
 
-def _raise_integration_error(exc: Exception) -> None:
-    if isinstance(exc, TelegramUserNotLinkedError):
+def _require_admin(actor_telegram_id: int) -> None:
+    if not is_admin_telegram_id(actor_telegram_id):
         raise AppError(
-            status_code=status.HTTP_404_NOT_FOUND,
-            code="telegram_user_not_linked",
-            message="Telegram user is not linked to a Seyvix account.",
-        ) from exc
-    if isinstance(exc, TelegramCollectionNotFoundError):
-        raise AppError(
-            status_code=status.HTTP_404_NOT_FOUND,
-            code="telegram_collection_not_found",
-            message="Telegram collection was not found.",
-        ) from exc
-    raise exc
+            status_code=status.HTTP_403_FORBIDDEN,
+            code="admin_required",
+            message="Administrator access is required.",
+        )
 
 
-def _parse_source_payload(raw: str | None) -> UniversalSourcePayload | None:
-    if raw is None or not raw.strip():
-        return None
+@router.get(
+    "/users/{telegram_user_id}",
+    response_model=TelegramUserStatusResponse,
+    summary="Access and link status of a Telegram user",
+)
+async def get_user_status(
+    telegram_user_id: int,
+    session: SessionDep,
+    username: Annotated[str | None, Query(max_length=64)] = None,
+) -> TelegramUserStatusResponse:
+    return await TelegramUserStatusService(session).status(
+        telegram_user_id=telegram_user_id,
+        username=username,
+    )
+
+
+@router.get("/state/{telegram_user_id}", response_model=BotStateResponse, summary="Bot state")
+async def get_state(telegram_user_id: int, session: SessionDep) -> BotStateResponse:
+    state = await BotStateStore(session).get_or_create(telegram_user_id)
+    response = state_response(state)
+    await session.commit()
+    return response
+
+
+@router.put(
+    "/state/{telegram_user_id}/mode",
+    response_model=BotStateResponse,
+    summary="Set the bot saving mode",
+)
+async def set_mode(
+    telegram_user_id: int,
+    payload: BotModeRequest,
+    session: SessionDep,
+) -> BotStateResponse:
+    state = await BotStateStore(session).set_mode(telegram_user_id, payload.mode)
+    response = state_response(state)
+    await session.commit()
+    return response
+
+
+@router.post(
+    "/state/{telegram_user_id}/finish",
+    response_model=FinishCollectionResponse,
+    summary="Finish the manual collection",
+)
+async def finish_collection(
+    telegram_user_id: int,
+    session: SessionDep,
+) -> FinishCollectionResponse:
+    finished, state = await BotStateStore(session).finish_collection(telegram_user_id)
+    response = FinishCollectionResponse(finished=finished, state=state_response(state))
+    await session.commit()
+    return response
+
+
+@router.post(
+    "/reminders/claim",
+    response_model=ReminderClaimResponse,
+    summary="Claim manual collections that need an 'still open?' reminder",
+)
+async def claim_reminders(
+    payload: ReminderClaimRequest,
+    session: SessionDep,
+) -> ReminderClaimResponse:
+    ids = await BotStateStore(session).claim_due_reminders(idle_seconds=payload.idle_seconds)
+    await session.commit()
+    return ReminderClaimResponse(telegram_user_ids=ids)
+
+
+@router.get("/access", response_model=AccessListResponse, summary="Admin: list access grants")
+async def list_access(
+    actor_telegram_id: Annotated[int, Query(gt=0)],
+    session: SessionDep,
+) -> AccessListResponse:
+    _require_admin(actor_telegram_id)
+    return await AccessService(session).list_grants()
+
+
+@router.post(
+    "/access",
+    response_model=AccessGrantResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Admin: allow a Telegram user",
+)
+async def grant_access(
+    payload: InternalAccessGrantRequest,
+    session: SessionDep,
+) -> AccessGrantResponse:
+    _require_admin(payload.actor_telegram_id)
     try:
-        return UniversalSourcePayload.model_validate(json.loads(raw))
-    except (json.JSONDecodeError, ValidationError) as exc:
-        raise AppError(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            code="invalid_source_payload",
-            message="Source metadata payload is invalid.",
-        ) from exc
+        return await AccessService(session).create_grant(
+            telegram_user_id=payload.telegram_user_id,
+            username=payload.username,
+            note=payload.note,
+            created_by_telegram_id=payload.actor_telegram_id,
+        )
+    except AccessGrantExistsError as exc:
+        raise grant_exists_error() from exc
 
 
-def _parse_batch_parts(raw: str) -> list[TelegramBatchIngestPart]:
+@router.post(
+    "/access/revoke",
+    response_model=InternalAccessRevokeResponse,
+    summary="Admin: revoke access (signs the user out everywhere)",
+)
+async def revoke_access(
+    payload: InternalAccessRevokeRequest,
+    session: SessionDep,
+) -> InternalAccessRevokeResponse:
+    _require_admin(payload.actor_telegram_id)
     try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise AppError(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            code="invalid_telegram_batch_payload",
-            message="Telegram batch payload is invalid.",
-        ) from exc
-    try:
-        return [TelegramBatchIngestPart.model_validate(item) for item in payload]
-    except (TypeError, ValidationError) as exc:
-        raise AppError(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            code="invalid_telegram_batch_payload",
-            message="Telegram batch payload is invalid.",
-        ) from exc
+        revoked = await AccessService(session).delete_grant_by_identity(
+            telegram_user_id=payload.telegram_user_id,
+            username=payload.username,
+        )
+    except AccessGrantNotFoundError as exc:
+        raise grant_not_found_error() from exc
+    return InternalAccessRevokeResponse(sessions_revoked=revoked)
 
 
 @router.post(
     "/ingest",
     response_model=TelegramIngestResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Ingest Telegram message",
+    summary="Save Telegram messages as notes",
     description=(
-        "Internal endpoint used by the Telegram bot service. It accepts Telegram message "
-        "metadata, optional text/caption, and an optional downloaded file, then creates a "
-        "regular Seyvix note or collection item for the linked Telegram user."
+        "Multipart: `payload` (JSON TelegramIngestRequest) and up to "
+        f"{MAX_INGEST_FILES} `files` referenced by `parts[].file_index`. Files are streamed to "
+        "disk; each is limited to MAX_UPLOAD_BYTES (413)."
     ),
 )
-async def ingest_telegram_message(
-    service: Annotated[TelegramIngestService, Depends(get_telegram_ingest_service)],
-    authorization: Annotated[str | None, Header()] = None,
-    telegram_user_id: Annotated[str, Form(max_length=64)] = "",
-    telegram_chat_id: Annotated[str, Form(max_length=64)] = "",
-    telegram_message_id: Annotated[str, Form(max_length=64)] = "",
-    material_type: Annotated[TelegramMaterialType, Form()] = "text",
-    message_date: Annotated[str | None, Form()] = None,
-    text: Annotated[str | None, Form()] = None,
-    caption: Annotated[str | None, Form()] = None,
-    filename: Annotated[str | None, Form(max_length=512)] = None,
-    mime_type: Annotated[str | None, Form(max_length=255)] = None,
-    target_collection_id: Annotated[str | None, Form(max_length=64)] = None,
-    source: Annotated[str | None, Form()] = None,
-    file: Annotated[UploadFile | None, File()] = None,
-) -> TelegramIngestResponse:
-    _verify_internal_token(authorization)
-    parsed_message_date = datetime.fromisoformat(message_date) if message_date else None
-    upload = None
-    if file is not None:
-        upload = UploadedContent(
-            filename=filename or file.filename or "telegram-file",
-            content_type=mime_type or file.content_type,
-            data=await file.read(),
-        )
-    payload = TelegramIngestPayload(
-        telegram_user_id=telegram_user_id,
-        telegram_chat_id=telegram_chat_id,
-        telegram_message_id=telegram_message_id,
-        material_type=material_type,
-        message_date=parsed_message_date,
-        text=text,
-        caption=caption,
-        filename=filename,
-        mime_type=mime_type,
-        target_collection_id=target_collection_id,
-        source=_parse_source_payload(source),
-    )
-    logger.info(
-        "Telegram ingest request parsed user=%s chat=%s message=%s type=%s "
-        "has_source=%s source_external_id=%s source_title=%s",
-        payload.telegram_user_id,
-        payload.telegram_chat_id,
-        payload.telegram_message_id,
-        payload.material_type,
-        payload.source is not None,
-        payload.source.external_id if payload.source else None,
-        payload.source.title if payload.source else None,
-    )
-    try:
-        return await service.ingest(payload=payload, uploaded=upload)
-    except (TelegramUserNotLinkedError, TelegramCollectionNotFoundError) as exc:
-        _raise_integration_error(exc)
-        raise
-
-
-@router.post(
-    "/ingest/batch",
-    response_model=TelegramIngestResponse,
-    status_code=status.HTTP_201_CREATED,
-    summary="Ingest Telegram logical message",
-    description=(
-        "Internal endpoint used by the Telegram bot service after it groups Telegram updates "
-        "that represent one logical Telegram message. The endpoint creates one Seyvix note "
-        "with all message text and attachments."
-    ),
-)
-async def ingest_telegram_message_batch(
-    service: Annotated[TelegramIngestService, Depends(get_telegram_ingest_service)],
-    authorization: Annotated[str | None, Header()] = None,
-    telegram_user_id: Annotated[str, Form(max_length=64)] = "",
-    telegram_chat_id: Annotated[str, Form(max_length=64)] = "",
-    target_collection_id: Annotated[str | None, Form(max_length=64)] = None,
-    parts: Annotated[str, Form()] = "[]",
+async def ingest(
+    session: SessionDep,
+    content_service: Annotated[ContentService, Depends(get_content_service)],
+    payload: Annotated[str, Form(max_length=2_000_000)],
     files: Annotated[list[UploadFile] | None, File()] = None,
 ) -> TelegramIngestResponse:
-    _verify_internal_token(authorization)
-    uploads = [
-        UploadedContent(
-            filename=file.filename or "telegram-file",
-            content_type=file.content_type,
-            data=await file.read(),
-        )
-        for file in files or []
-    ]
     try:
-        parsed_parts = _parse_batch_parts(parts)
-        logger.info(
-            "Telegram batch ingest request parsed user=%s chat=%s count=%s "
-            "source_count=%s source_external_ids=%s",
-            telegram_user_id,
-            telegram_chat_id,
-            len(parsed_parts),
-            sum(1 for part in parsed_parts if part.source is not None),
-            [part.source.external_id for part in parsed_parts if part.source is not None],
+        request = TelegramIngestRequest.model_validate_json(payload)
+    except ValidationError as exc:
+        raise AppError(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            code="invalid_telegram_ingest_payload",
+            message="Telegram ingest payload is invalid.",
+            details=[
+                {"message": error["msg"], "location": list(error["loc"])} for error in exc.errors()
+            ],
+        ) from exc
+    uploads = files or []
+    if len(uploads) > MAX_INGEST_FILES:
+        raise AppError(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            code="too_many_files",
+            message=f"At most {MAX_INGEST_FILES} files per request.",
         )
-        return await service.ingest_batch(
-            telegram_user_id=telegram_user_id,
-            telegram_chat_id=telegram_chat_id,
-            target_collection_id=target_collection_id,
-            parts=parsed_parts,
-            uploaded=uploads,
+    indexes = request.file_indexes()
+    if any(index >= len(uploads) for index in indexes) or len(set(indexes)) != len(indexes):
+        raise AppError(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            code="invalid_file_index",
+            message="Every file_index must reference a distinct uploaded file.",
         )
-    except (TelegramUserNotLinkedError, TelegramCollectionNotFoundError) as exc:
-        _raise_integration_error(exc)
-        raise
-
-
-@router.get(
-    "/status",
-    response_model=TelegramStatusResponse,
-    summary="Get Telegram link status",
-    description=(
-        "Internal endpoint used by the Telegram bot service to check whether a Telegram "
-        "user id is linked to a Seyvix account. It does not mutate bot ingest state."
-    ),
-)
-async def get_telegram_status(
-    telegram_user_id: Annotated[str, Query(max_length=64)],
-    service: Annotated[TelegramIngestService, Depends(get_telegram_ingest_service)],
-    authorization: Annotated[str | None, Header()] = None,
-) -> TelegramStatusResponse:
-    _verify_internal_token(authorization)
-    return await service.status(telegram_user_id=telegram_user_id)
+    service = TelegramIngestService(session=session, content_service=content_service)
+    async with spool_upload_files(uploads, max_bytes=get_settings().max_upload_bytes) as spooled:
+        try:
+            return await service.ingest(request=request, files=spooled)
+        except AccessDeniedError as exc:
+            raise _access_denied(exc) from exc
+        except TelegramUserNotLinkedError as exc:
+            raise AppError(
+                status_code=status.HTTP_404_NOT_FOUND,
+                code="telegram_user_not_linked",
+                message="Telegram user is not linked to a Seyvix account.",
+            ) from exc

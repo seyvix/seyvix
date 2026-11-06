@@ -1,6 +1,10 @@
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
 
 from app.core.config import get_settings
+from app.modules.auth.security import normalize_telegram_username
 
 
 class TelegramLoginRequest(BaseModel):
@@ -91,6 +95,14 @@ class UserResponse(BaseModel):
 
     @computed_field  # type: ignore[prop-decorator]
     @property
+    def is_admin(self) -> bool:
+        try:
+            return int(self.telegram_id) in get_settings().admin_telegram_ids
+        except ValueError:
+            return False
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
     def avatar_url(self) -> str | None:
         if not self.telegram_photo_url:
             return None
@@ -116,3 +128,39 @@ class AuthSessionResponse(BaseModel):
     is_current: bool = Field(
         description="Whether this is the current session for the bearer token."
     )
+
+
+class AccessGrantResponse(BaseModel):
+    id: str
+    telegram_user_id: int | None
+    username: str | None
+    note: str | None
+    created_at: datetime
+    last_login_at: datetime | None
+    display_name: str | None = Field(
+        default=None,
+        description="Display name of the Seyvix user bound to this grant, if they signed in.",
+    )
+
+
+class AccessListResponse(BaseModel):
+    mode: Literal["allowlist", "open"]
+    admins: list[int]
+    items: list[AccessGrantResponse]
+
+
+class AccessGrantCreateRequest(BaseModel):
+    telegram_user_id: int | None = Field(default=None, gt=0)
+    username: str | None = Field(default=None, max_length=64, description="With or without @.")
+    note: str | None = Field(default=None, max_length=500)
+
+    @field_validator("username")
+    @classmethod
+    def normalize_username(cls, value: str | None) -> str | None:
+        return normalize_telegram_username(value)
+
+    @model_validator(mode="after")
+    def require_identity(self) -> "AccessGrantCreateRequest":
+        if self.telegram_user_id is None and self.username is None:
+            raise ValueError("Either telegram_user_id or username is required.")
+        return self

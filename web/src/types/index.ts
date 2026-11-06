@@ -176,6 +176,8 @@ export interface Note {
   source?: SourceMetadata | null
   searchMatches?: SearchMatch[]
   deferredLinkSnapshots?: DeferredLinkSnapshots | null
+  /** True while snapshot/thumbnail jobs for this note (or its collection items) are queued or running. */
+  processing?: boolean
   /** Стабильный ключ для React — не меняется при tempId→serverId переходе */
   stableKey?: string
   isLocal?: boolean    // хранится локально, ещё не синхронизировано
@@ -213,15 +215,10 @@ export interface NotesPageResult {
   nextOffset?: number | null
 }
 
-export interface FileProgress {
-  name: string
-  status: 'pending' | 'processing' | 'done' | 'error'
-  progress: number  // 0–100
-}
-
-export interface UploadJob {
-  id: string
-  status: 'processing' | 'done' | 'error'
-  files: FileProgress[]
-  noteId?: string
+export interface NotesChangesResult {
+  cursor: string
+  notes: Note[]
+  removedIds: string[]
+  reset: boolean
+  hasMore: boolean
 }

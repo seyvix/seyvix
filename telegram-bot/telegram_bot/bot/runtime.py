@@ -1,28 +1,47 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+import logging
 
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.enums import ParseMode
-from aiogram.types import MenuButtonWebApp, WebAppInfo
+from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError
 
-from telegram_bot.bot.commands import configure_bot_commands
+from telegram_bot.bot.commands import configure_bot
 from telegram_bot.bot.factory import build_dispatcher
-from telegram_bot.config import MANUAL_COLLECTION_REMINDER_SECONDS
-from telegram_bot.infrastructure.backend_client import HttpSeyvixBackend
-from telegram_bot.services.reminders import ManualCollectionReminderService
-from telegram_bot.services.state import BotStateRepository
+from telegram_bot.bot.middlewares import UserStatusCache
+from telegram_bot.config import (
+    MANUAL_COLLECTION_REMINDER_IDLE_SECONDS,
+    MAX_BUFFERED_MATERIALS,
+    MEDIA_GROUP_FLUSH_SECONDS,
+    REMINDER_POLL_SECONDS,
+    TELEGRAM_MAX_DOWNLOAD_BYTES,
+    USER_STATUS_CACHE_SECONDS,
+    Settings,
+)
+from telegram_bot.infrastructure.backend_client import (
+    BackendError,
+    BackendUnavailableError,
+    HttpSeyvixBackend,
+)
+from telegram_bot.infrastructure.telegram_files import TelegramFileFetcher
+from telegram_bot.services.ingest import TelegramIngestService
 from telegram_bot.texts.modes import MANUAL_COLLECTION_REMINDER
+
+logger = logging.getLogger(__name__)
+
+STARTUP_CONFIG_ATTEMPTS = 5
 
 
 def build_bot(token: str, telegram_api_base: str | None = None) -> Bot:
-    session = None
-    if telegram_api_base is not None:
-        session = AiohttpSession(api=TelegramAPIServer.from_base(telegram_api_base))
+    session = (
+        AiohttpSession(api=TelegramAPIServer.from_base(telegram_api_base))
+        if telegram_api_base
+        else None
+    )
     return Bot(
         token=token,
         session=session,
@@ -30,57 +49,65 @@ def build_bot(token: str, telegram_api_base: str | None = None) -> Bot:
     )
 
 
-async def configure_web_app_menu_button(bot: Bot, web_app_url: str | None) -> None:
-    if not web_app_url:
-        return
-    await bot.set_chat_menu_button(
-        menu_button=MenuButtonWebApp(
-            text="Seyvix",
-            web_app=WebAppInfo(url=web_app_url),
-        )
+async def run_bot(settings: Settings, backend: HttpSeyvixBackend) -> None:
+    bot = build_bot(settings.telegram_bot_token, settings.telegram_api_base)
+    ingest_service = TelegramIngestService(
+        backend=backend,
+        fetcher=TelegramFileFetcher(bot),
+        group_window_seconds=settings.group_window_seconds,
+        media_group_seconds=MEDIA_GROUP_FLUSH_SECONDS,
+        max_buffered_materials=MAX_BUFFERED_MATERIALS,
+        # A self-hosted Bot API server (TELEGRAM_API_BASE) has no 20 MB download limit.
+        max_download_bytes=None if settings.telegram_api_base else TELEGRAM_MAX_DOWNLOAD_BYTES,
     )
-
-
-async def run_polling(
-    *,
-    bot: Bot,
-    backend: HttpSeyvixBackend,
-    web_app_url: str | None,
-    state_repository: BotStateRepository,
-    media_group_flush_seconds: float,
-) -> None:
     dispatcher = build_dispatcher(
         backend=backend,
-        web_app_url=web_app_url,
-        state_repository=state_repository,
-        media_group_flush_seconds=media_group_flush_seconds,
+        ingest_service=ingest_service,
+        status_cache=UserStatusCache(backend, ttl_seconds=USER_STATUS_CACHE_SECONDS),
+        web_app_url=settings.web_app_url,
     )
-    await configure_web_app_menu_button(bot, web_app_url)
-    await configure_bot_commands(bot)
-    reminder_task = asyncio.create_task(_run_manual_collection_reminders(bot, state_repository))
+    background = [
+        asyncio.create_task(_configure_with_retry(bot, settings.web_app_url)),
+        asyncio.create_task(_run_reminders(bot, backend)),
+    ]
     try:
-        await dispatcher.start_polling(bot)
+        # aiogram retries getUpdates with backoff on network errors and stops on SIGINT/SIGTERM.
+        await dispatcher.start_polling(bot, allowed_updates=["message", "callback_query"])
     finally:
-        reminder_task.cancel()
+        for task in background:
+            task.cancel()
+        await asyncio.gather(*background, return_exceptions=True)
+        await ingest_service.shutdown()
+        await bot.session.close()
+
+
+async def _configure_with_retry(bot: Bot, web_app_url: str | None) -> None:
+    """Commands/menu button are cosmetic: retry with backoff, never crash the bot."""
+    for attempt in range(1, STARTUP_CONFIG_ATTEMPTS + 1):
         try:
-            await reminder_task
-        except asyncio.CancelledError:
-            pass
+            await configure_bot(bot, web_app_url=web_app_url)
+            return
+        except TelegramAPIError as exc:
+            delay = min(60, 2**attempt)
+            logger.warning("Bot configuration failed (%s); retry in %ss", exc, delay)
+            await asyncio.sleep(delay)
+    logger.error("Giving up configuring bot commands/menu button")
 
 
-async def _run_manual_collection_reminders(
-    bot: Bot,
-    state_repository: BotStateRepository,
-) -> None:
-    service = ManualCollectionReminderService(
-        state_repository,
-        reminder_delay_seconds=MANUAL_COLLECTION_REMINDER_SECONDS,
-    )
+async def _run_reminders(bot: Bot, backend: HttpSeyvixBackend) -> None:
     while True:
-        await asyncio.sleep(60)
-        for state in await service.due_states(now=datetime.now(UTC)):
-            await bot.send_message(
-                chat_id=state.telegram_user_id,
-                text=MANUAL_COLLECTION_REMINDER,
+        await asyncio.sleep(REMINDER_POLL_SECONDS)
+        try:
+            user_ids = await backend.claim_reminders(
+                idle_seconds=MANUAL_COLLECTION_REMINDER_IDLE_SECONDS,
             )
-            await service.mark_sent(state, now=datetime.now(UTC))
+        except (BackendUnavailableError, BackendError) as exc:
+            logger.warning("Could not claim collection reminders: %s", exc)
+            continue
+        for user_id in user_ids:
+            try:
+                await bot.send_message(chat_id=user_id, text=MANUAL_COLLECTION_REMINDER)
+            except TelegramForbiddenError:
+                logger.info("User blocked the bot; reminder skipped")
+            except TelegramAPIError:
+                logger.warning("Could not send collection reminder", exc_info=True)

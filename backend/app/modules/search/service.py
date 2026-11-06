@@ -1,140 +1,233 @@
+"""One search path: Postgres FTS (+ live metadata, + trigram typo fallback) and, when AI is
+available, pgvector — fused with weighted Reciprocal Rank Fusion.
+
+AI on the request path is strictly bounded: query embedding / expansion run concurrently with
+the lexical SQL under `search_ai_timeout_seconds`, results are cached per process, and a
+failure opens a short circuit breaker. Any AI problem silently degrades to lexical search.
+"""
+
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass
-from typing import Any
+import asyncio
+import time
+from array import array
+from collections import OrderedDict, defaultdict
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from typing import Final
 
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
-from app.modules.llm.contracts import (
-    LLMGenerationError,
-    StructuredLLMGenerator,
-    build_structured_llm_generator,
-)
-from app.modules.search.infrastructure.meilisearch import (
-    MeilisearchSearchBackend,
-    build_meilisearch_client,
+from app.core.logging import get_logger
+from app.modules.content.models import ContentObject
+from app.modules.llm.client import AIClient, AIError, get_ai_client
+from app.modules.search.retrieval import (
+    ChunkHit,
+    ContentFilter,
+    Scope,
+    fts_chunks,
+    metadata_notes,
+    title_trigram_notes,
+    tsquery,
+    use_exact_vector_search,
+    vector_chunks,
 )
 from app.modules.search.schemas import (
     HybridSearchResponse,
     HybridSearchResult,
+    SearchCapabilitiesResponse,
     SearchContentMatch,
     SearchFilters,
-    SearchHighlightRange,
     SearchMode,
     SemanticSearchResult,
 )
-from app.modules.vectorization.contracts import (
-    VectorizedChunkFullTextSearchResult,
-    VectorizedChunkSearchFilters,
-    VectorizedChunkSearchReader,
-    VectorizedChunkSearchResult,
-    build_vectorized_chunk_search_reader,
+from app.modules.search.terms import (
+    ParsedQuery,
+    highlight_ranges,
+    highlight_terms,
+    metadata_score,
+    metadata_term_groups,
 )
-from app.modules.vectorization.infrastructure.embedding_providers import (
-    EmbeddingProvider,
-    build_embedding_provider,
-)
+from app.modules.vectorization.documents import SOURCE_CONTENT
+
+logger = get_logger(__name__)
+
+MAX_MATCHES_PER_NOTE: Final = 2
+MAX_CHUNK_CANDIDATES: Final = 400
+MAX_VECTOR_CANDIDATES: Final = 200
+TRIGRAM_MIN_QUERY_CHARS: Final = 4
+TRIGRAM_WHEN_FEWER_NOTES: Final = 10
+TRIGRAM_LIMIT: Final = 50
+BREAKER_SECONDS: Final = 30.0
+CACHE_SIZE: Final = 256
+
+# Weighted RRF: primary retrievers 1.0, recall-oriented helpers lower.
+W_STRICT: Final = 1.0
+W_LOOSE: Final = 0.5
+W_METADATA: Final = 1.0
+W_TRIGRAM: Final = 0.4
+W_VECTOR: Final = 1.0
+W_EXPANSION: Final = 0.5
 
 
 class SearchValidationError(Exception):
-    pass
+    """Empty/invalid query (422)."""
+
+
+class SearchUnavailableError(Exception):
+    """Explicit semantic search requested but AI is disabled or unavailable (503)."""
+
+
+class _Expansion(BaseModel):
+    queries: list[str] = Field(default_factory=list, max_length=5)
+
+
+class _RequestAI:
+    """Process-wide request-path AI helper: LRU caches + circuit breaker."""
+
+    def __init__(self) -> None:
+        self._vectors: OrderedDict[tuple[str, str], array[float]] = OrderedDict()
+        self._expansions: OrderedDict[tuple[str, str], tuple[str, ...]] = OrderedDict()
+        self._open_until = 0.0
+
+    @property
+    def available(self) -> bool:
+        return time.monotonic() >= self._open_until
+
+    def trip(self, reason: str) -> None:
+        self._open_until = time.monotonic() + BREAKER_SECONDS
+        logger.warning("search.ai.degraded", reason=reason, retry_in_seconds=BREAKER_SECONDS)
+
+    async def embed(self, client: AIClient, texts: Sequence[str]) -> list[list[float]]:
+        """Embeds search queries (cached per process)."""
+        model = client.embedding_model(query=True)
+        missing = [text for text in dict.fromkeys(texts) if (model, text) not in self._vectors]
+        if missing:
+            vectors = await client.embed(missing, query=True)
+            for text, vector in zip(missing, vectors, strict=True):
+                _remember(self._vectors, (model, text), array("f", vector))
+        result: list[list[float]] = []
+        for text in texts:
+            self._vectors.move_to_end((model, text))
+            result.append(self._vectors[(model, text)].tolist())
+        return result
+
+    async def expand(self, client: AIClient, query: str, max_queries: int) -> list[str]:
+        key = (client.settings.ai_chat_model, query)
+        cached = self._expansions.get(key)
+        if cached is None:
+            expansion = await client.chat_json(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You rewrite search queries for a personal notes search engine. "
+                            "Return up to "
+                            f"{max_queries - 1} short alternative queries (synonyms, the other "
+                            "language among English/Russian, expanded abbreviations) that keep "
+                            'the intent. JSON: {"queries": ["..."]}'
+                        ),
+                    },
+                    {"role": "user", "content": query},
+                ],
+                _Expansion,
+                temperature=0.2,
+                max_tokens=200,
+            )
+            cached = tuple(expansion.queries)
+            _remember(self._expansions, key, cached)
+        return _dedupe_queries(query, cached, max_queries=max_queries)
+
+
+_REQUEST_AI = _RequestAI()
 
 
 @dataclass(slots=True)
-class _HybridCandidate:
-    source: str
-    source_type: str
-    source_id: str
-    external_id: str
-    chunk_id: str
-    chunk_external_id: str
-    text: str
-    metadata: dict[str, object]
-    score: float = 0
-    distance: float | None = None
-    vector_score: float | None = None
-    full_text_score: float | None = None
-    vector_rank: int | None = None
-    full_text_rank: int | None = None
-
-    def to_result(self) -> HybridSearchResult:
-        return HybridSearchResult(
-            source=self.source,
-            source_type=self.source_type,
-            source_id=self.source_id,
-            external_id=self.external_id,
-            chunk_id=self.chunk_id,
-            chunk_external_id=self.chunk_external_id,
-            text=self.text,
-            metadata=self.metadata,
-            distance=self.distance,
-            score=self.score,
-            vector_score=self.vector_score,
-            full_text_score=self.full_text_score,
-            vector_rank=self.vector_rank,
-            full_text_rank=self.full_text_rank,
-        )
+class _Ranked:
+    weight: float
+    kind: str  # "fts" | "vector" | "metadata" | "trigram"
+    chunks: list[ChunkHit] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
 
 
-class SemanticSearchService:
+@dataclass(slots=True)
+class _Retrieval:
+    queries: list[str]
+    lists: list[_Ranked]
+
+
+class SearchService:
     def __init__(
         self,
         session: AsyncSession,
         *,
         settings: Settings | None = None,
-        embedding_provider: EmbeddingProvider | None = None,
-        chunk_reader: VectorizedChunkSearchReader | None = None,
-        llm_generator: StructuredLLMGenerator | None = None,
+        ai_client: AIClient | None = None,
+        use_ai: bool = True,
     ) -> None:
         self.session = session
         self.settings = settings or get_settings()
-        self.embedding_provider = embedding_provider or build_embedding_provider(
-            provider_name=self.settings.vector_embedding_provider,
-            base_url=self.settings.vector_embedding_base_url,
-            api_key=self.settings.vector_embedding_api_key,
-            timeout_seconds=self.settings.vector_embedding_timeout_seconds,
-        )
-        self.chunk_reader = chunk_reader or build_vectorized_chunk_search_reader(session)
-        self.llm_generator = llm_generator
+        self.ai = ai_client or (get_ai_client(self.settings) if use_ai else None)
 
-    async def semantic_search(
+    # --- capabilities / modes --------------------------------------------------------------
+    def resolve_mode(self, requested: SearchMode) -> SearchMode:
+        return requested if self.ai is not None else "full_text"
+
+    async def capabilities(self, *, owner_user_id: str) -> SearchCapabilitiesResponse:
+        note_count = int(
+            await self.session.scalar(
+                select(func.count())
+                .select_from(ContentObject)
+                .where(
+                    ContentObject.owner_user_id == owner_user_id,
+                    ContentObject.deleted_at.is_(None),
+                )
+            )
+            or 0
+        )
+        ai_enabled = self.ai is not None
+        unlocked: list[SearchMode] = (
+            ["full_text", "semantic", "hybrid"] if ai_enabled else ["full_text"]
+        )
+        return SearchCapabilitiesResponse(
+            note_count=note_count,
+            threshold=0,
+            unlocked_modes=unlocked,
+            default_mode="hybrid" if ai_enabled else "full_text",
+            ai_enabled=ai_enabled,
+        )
+
+    # --- note search (GET /notes?search=) -------------------------------------------------
+    async def search_content_object_matches(
         self,
         *,
         owner_user_id: str,
         query: str,
-        limit: int,
-        source: str | None = None,
-        source_type: str | None = None,
-        source_id: str | None = None,
+        limit: int = 500,
+        mode: SearchMode,
         filters: SearchFilters | None = None,
-    ) -> list[SemanticSearchResult]:
-        normalized_query = _normalize_query(query)
-        vector_filters = _to_vector_filters(
-            filters=filters,
-            source=source,
-            source_type=source_type,
-            source_id=source_id,
-        )
-        query_embedding = (
-            await self.embedding_provider.embed_texts(
-                [normalized_query],
-                model=self.settings.vector_embedding_model,
-                dimensions=self.settings.vector_embedding_dimensions,
-            )
-        )[0]
-        matches = await self.chunk_reader.search_similar_chunks(
+    ) -> dict[str, list[SearchContentMatch]]:
+        """Matching note ids, best first, with up to two matching chunks each."""
+        normalized = _normalize_query(query)
+        scope = Scope(
             owner_user_id=owner_user_id,
-            query_embedding=query_embedding,
-            provider=self.settings.vector_embedding_provider,
-            model=self.settings.vector_embedding_model,
-            dimensions=self.settings.vector_embedding_dimensions,
-            limit=limit,
-            filters=vector_filters,
+            source=SOURCE_CONTENT[0],
+            source_type=SOURCE_CONTENT[1],
+            content=_content_filter(filters),
         )
-        return [SemanticSearchResult.model_validate(match.model_dump()) for match in matches]
+        retrieval = await self._retrieve(
+            scope,
+            normalized,
+            mode=self.resolve_mode(mode),
+            limit=limit,
+            expand=self.settings.ai_query_expansion_enabled,
+        )
+        return _fuse_notes(retrieval.lists, normalized, k=self.settings.search_rrf_k, limit=limit)
 
+    # --- generic chunk search (REST /search/*) --------------------------------------------
     async def hybrid_search(
         self,
         *,
@@ -148,414 +241,369 @@ class SemanticSearchService:
         expand_query: bool | None = None,
         mode: SearchMode = "hybrid",
     ) -> HybridSearchResponse:
-        normalized_query = _normalize_query(query)
-        if self._should_use_meilisearch():
-            candidate_limit = max(limit, limit * self.settings.search_hybrid_candidate_multiplier)
-            backend = MeilisearchSearchBackend(
-                client=build_meilisearch_client(self.settings),
-                embedding_provider=self.embedding_provider,
-                settings=self.settings,
-            )
-            results = await backend.search(
-                owner_user_id=owner_user_id,
-                query=normalized_query,
-                limit=candidate_limit,
-                mode=mode,
-                filters=filters,
-                source=source,
-                source_type=source_type,
-                source_id=source_id,
-            )
-            return HybridSearchResponse(
-                query=normalized_query,
-                expanded_queries=[normalized_query],
-                results=results[:limit],
-            )
-
-        vector_filters = _to_vector_filters(
-            filters=filters,
-            source=source,
-            source_type=source_type,
-            source_id=source_id,
+        normalized = _normalize_query(query)
+        scope = _scope(owner_user_id, source, source_type, source_id, filters)
+        expand = (
+            expand_query if expand_query is not None else self.settings.ai_query_expansion_enabled
         )
-        expanded_queries = await self._expanded_queries(
-            normalized_query,
-            expand_query=expand_query,
-        )
-        candidate_limit = max(limit, limit * self.settings.search_hybrid_candidate_multiplier)
-        query_embeddings = await self.embedding_provider.embed_texts(
-            expanded_queries,
-            model=self.settings.vector_embedding_model,
-            dimensions=self.settings.vector_embedding_dimensions,
-        )
-        candidates: dict[str, _HybridCandidate] = {}
-
-        for query_embedding in query_embeddings:
-            vector_matches = await self.chunk_reader.search_similar_chunks(
-                owner_user_id=owner_user_id,
-                query_embedding=query_embedding,
-                provider=self.settings.vector_embedding_provider,
-                model=self.settings.vector_embedding_model,
-                dimensions=self.settings.vector_embedding_dimensions,
-                limit=candidate_limit,
-                filters=vector_filters,
-            )
-            for rank, match in enumerate(vector_matches, start=1):
-                candidate = candidates.setdefault(
-                    match.chunk_id,
-                    _candidate_from_vector(match),
-                )
-                candidate.score += _rrf(rank, self.settings.search_rrf_k)
-                candidate.vector_rank = _best_rank(candidate.vector_rank, rank)
-                candidate.vector_score = _best_score(candidate.vector_score, match.score)
-                candidate.distance = _best_distance(candidate.distance, match.distance)
-
-        for expanded_query in expanded_queries:
-            full_text_matches = await self.chunk_reader.search_full_text_chunks(
-                owner_user_id=owner_user_id,
-                query=expanded_query,
-                limit=candidate_limit,
-                search_config=self.settings.search_fts_config,
-                filters=vector_filters,
-            )
-            for rank, full_text_match in enumerate(full_text_matches, start=1):
-                candidate = candidates.setdefault(
-                    full_text_match.chunk_id,
-                    _candidate_from_full_text(full_text_match),
-                )
-                candidate.score += _rrf(rank, self.settings.search_rrf_k)
-                candidate.full_text_rank = _best_rank(candidate.full_text_rank, rank)
-                candidate.full_text_score = _best_score(
-                    candidate.full_text_score,
-                    full_text_match.full_text_score,
-                )
-
-        ranked = sorted(
-            candidates.values(),
-            key=lambda item: (
-                item.score,
-                item.vector_score or 0,
-                item.full_text_score or 0,
-                item.text,
-            ),
-            reverse=True,
+        retrieval = await self._retrieve(
+            scope,
+            normalized,
+            mode=self.resolve_mode(mode),
+            limit=limit,
+            expand=expand,
+            chunk_only=True,
         )
         return HybridSearchResponse(
-            query=normalized_query,
-            expanded_queries=expanded_queries,
-            results=[candidate.to_result() for candidate in ranked[:limit]],
+            query=normalized,
+            expanded_queries=retrieval.queries,
+            results=_fuse_chunks(retrieval.lists, k=self.settings.search_rrf_k)[:limit],
         )
 
-    async def search_content_object_ids(
+    async def semantic_search(
         self,
         *,
         owner_user_id: str,
         query: str,
         limit: int,
-        mode: SearchMode,
+        source: str | None = None,
+        source_type: str | None = None,
+        source_id: str | None = None,
         filters: SearchFilters | None = None,
-    ) -> list[str]:
-        matches_by_source_id = await self.search_content_object_matches(
-            owner_user_id=owner_user_id,
-            query=query,
-            limit=limit,
-            mode=mode,
-            filters=filters,
-        )
-        return list(matches_by_source_id)
-
-    async def search_content_object_matches(
-        self,
-        *,
-        owner_user_id: str,
-        query: str,
-        limit: int,
-        mode: SearchMode,
-        filters: SearchFilters | None = None,
-    ) -> dict[str, list[SearchContentMatch]]:
-        normalized_query = _normalize_query(query)
-        if self._should_use_meilisearch():
-            backend = MeilisearchSearchBackend(
-                client=build_meilisearch_client(self.settings),
-                embedding_provider=self.embedding_provider,
-                settings=self.settings,
-            )
-            results = await backend.search(
-                owner_user_id=owner_user_id,
-                query=normalized_query,
-                limit=limit * self.settings.search_hybrid_candidate_multiplier,
-                mode=mode,
-                filters=filters,
-                source="content",
-                source_type="content_object",
-            )
-        elif mode == "full_text":
-            vector_filters = _to_vector_filters(
-                filters=filters,
-                source="content",
-                source_type="content_object",
-                source_id=None,
-            )
-            results = [
-                _candidate_from_full_text(item).to_result()
-                for item in await self.chunk_reader.search_full_text_chunks(
-                    owner_user_id=owner_user_id,
-                    query=normalized_query,
-                    limit=limit * self.settings.search_hybrid_candidate_multiplier,
-                    search_config=self.settings.search_fts_config,
-                    filters=vector_filters,
-                )
-            ]
-        elif mode == "semantic":
-            results = [
-                HybridSearchResult.model_validate(item.model_dump())
-                for item in await self.semantic_search(
-                    owner_user_id=owner_user_id,
-                    query=normalized_query,
-                    limit=limit * self.settings.search_hybrid_candidate_multiplier,
-                    source="content",
-                    source_type="content_object",
-                    filters=filters,
-                )
-            ]
-        else:
-            results = (
-                await self.hybrid_search(
-                    owner_user_id=owner_user_id,
-                    query=normalized_query,
-                    limit=limit * self.settings.search_hybrid_candidate_multiplier,
-                    source="content",
-                    source_type="content_object",
-                    filters=filters,
-                    expand_query=False,
-                    mode="hybrid",
-                )
-            ).results
-
-        return build_search_matches_by_source_id(
-            query=normalized_query,
-            results=results,
-            max_matches_per_note=2,
-            max_notes=limit,
-        )
-
-    async def _expanded_queries(
-        self,
-        query: str,
-        *,
-        expand_query: bool | None,
-    ) -> list[str]:
-        should_expand = (
-            expand_query
-            if expand_query is not None
-            else self.settings.search_query_expansion_enabled
-        )
-        max_queries = max(1, self.settings.search_query_expansion_max_queries)
-        if not should_expand or max_queries == 1:
-            return [query]
+    ) -> list[SemanticSearchResult]:
+        normalized = _normalize_query(query)
+        if self.ai is None:
+            raise SearchUnavailableError("AI is disabled.")
         try:
-            generator = self.llm_generator or build_structured_llm_generator()
-            raw = await generator.generate_structured(
-                prompt=(
-                    "Rewrite the search query into short alternative queries that preserve intent "
-                    "and improve recall. Return concise variants only.\n\n"
-                    f"Query: {query}"
-                ),
-                schema={
-                    "type": "object",
-                    "properties": {
-                        "queries": {
-                            "type": "array",
-                            "items": {
-                                "type": "string",
-                                "minLength": 1,
-                                "maxLength": 4000,
-                            },
-                            "maxItems": max_queries - 1,
-                        }
-                    },
-                    "required": ["queries"],
-                    "additionalProperties": False,
-                },
-                model_config={
-                    "model": self.settings.search_query_expansion_model,
-                    "temperature": 0.2,
-                    "max_tokens": 512,
-                },
+            vectors = await asyncio.wait_for(
+                _REQUEST_AI.embed(self.ai, [normalized]),
+                timeout=self.settings.search_ai_timeout_seconds,
             )
-        except LLMGenerationError:
-            return [query]
-        return _dedupe_queries(query, raw.get("queries"), max_queries=max_queries)
-
-    def _should_use_meilisearch(self) -> bool:
-        return (
-            self.settings.search_engine == "meilisearch"
-            and self.settings.search_meilisearch_url is not None
+        except (AIError, TimeoutError) as exc:
+            _REQUEST_AI.trip(type(exc).__name__)
+            raise SearchUnavailableError("Embedding provider is unavailable.") from exc
+        scope = _scope(owner_user_id, source, source_type, source_id, filters)
+        hits = await vector_chunks(
+            self.session,
+            scope,
+            vectors[0],
+            settings=self.settings,
+            limit=limit,
+            exact=await use_exact_vector_search(self.session, owner_user_id, self.settings),
         )
+        return [
+            SemanticSearchResult(
+                source=hit.source,
+                source_type=hit.source_type,
+                source_id=hit.source_id,
+                external_id=_external_id(hit),
+                chunk_id=hit.chunk_id,
+                chunk_external_id=_chunk_external_id(hit),
+                text=hit.text,
+                metadata={},
+                distance=hit.distance if hit.distance is not None else 1.0 - hit.score,
+                score=hit.score,
+            )
+            for hit in hits
+        ]
+
+    # --- retrieval -------------------------------------------------------------------------
+    async def _retrieve(
+        self,
+        scope: Scope,
+        query: str,
+        *,
+        mode: SearchMode,
+        limit: int,
+        expand: bool,
+        chunk_only: bool = False,
+    ) -> _Retrieval:
+        chunk_limit = min(max(limit, 20) * 2, MAX_CHUNK_CANDIDATES)
+        ai_task: asyncio.Task[tuple[list[str], list[list[float]]]] | None = None
+        if mode != "full_text" and self.ai is not None and _REQUEST_AI.available:
+            ai_task = asyncio.create_task(self._query_vectors(self.ai, query, expand=expand))
+        lists: list[_Ranked] = []
+        queries = [query]
+        try:
+            if mode != "semantic":
+                lists.extend(await self._lexical(scope, query, chunk_limit, chunk_only=chunk_only))
+            if ai_task is not None:
+                vectors: list[list[float]] = []
+                try:
+                    queries, vectors = await asyncio.wait_for(
+                        ai_task, timeout=self.settings.search_ai_timeout_seconds
+                    )
+                except (AIError, TimeoutError) as exc:
+                    _REQUEST_AI.trip(f"{type(exc).__name__}: {exc}")
+                if vectors:
+                    lists.extend(await self._semantic(scope, vectors, chunk_limit))
+                if mode != "semantic":
+                    for variant in queries[1:]:
+                        variant_query = ParsedQuery.parse(variant).strict_tsquery()
+                        if variant_query is not None:
+                            hits = await fts_chunks(
+                                self.session, scope, tsquery(variant_query), limit=chunk_limit
+                            )
+                            lists.append(_Ranked(W_EXPANSION, "fts", chunks=hits))
+        finally:
+            if ai_task is not None and not ai_task.done():
+                ai_task.cancel()
+        if mode == "semantic" and not any(item.kind == "vector" for item in lists):
+            # Semantic requested but AI is unavailable: degrade to lexical search.
+            lists.extend(await self._lexical(scope, query, chunk_limit, chunk_only=chunk_only))
+        return _Retrieval(queries=queries, lists=lists)
+
+    async def _query_vectors(
+        self, client: AIClient, query: str, *, expand: bool
+    ) -> tuple[list[str], list[list[float]]]:
+        queries = [query]
+        max_queries = self.settings.search_query_expansion_max_queries
+        if expand and max_queries > 1:
+            try:
+                queries = await _REQUEST_AI.expand(client, query, max_queries)
+            except AIError as exc:
+                logger.info("search.expansion.skipped", error=str(exc))
+        return queries, await _REQUEST_AI.embed(client, queries)
+
+    async def _lexical(
+        self, scope: Scope, query: str, chunk_limit: int, *, chunk_only: bool
+    ) -> list[_Ranked]:
+        parsed = ParsedQuery.parse(query)
+        lists: list[_Ranked] = []
+        strict = (
+            tsquery(query, websearch=True)
+            if parsed.websearch
+            else (tsquery(text) if (text := parsed.strict_tsquery()) else None)
+        )
+        if strict is not None:
+            hits = await fts_chunks(self.session, scope, strict, limit=chunk_limit)
+            lists.append(_Ranked(W_STRICT, "fts", chunks=hits))
+        loose = None if parsed.websearch else parsed.loose_tsquery()
+        if loose is not None:
+            hits = await fts_chunks(self.session, scope, tsquery(loose), limit=chunk_limit)
+            lists.append(_Ranked(W_LOOSE, "fts", chunks=hits))
+        if chunk_only or not scope.is_content:
+            return lists
+
+        groups = metadata_term_groups(query)
+        variants = list(dict.fromkeys(v for group in groups for v in group.variants))
+        candidates = await metadata_notes(
+            self.session,
+            owner_user_id=scope.owner_user_id,
+            variants=variants,
+            content=scope.content,
+        )
+        scored = [
+            (score, note.id)
+            for note in candidates
+            if (score := metadata_score(query, groups, note.parts())) > 0
+        ]
+        scored.sort(key=lambda item: item[0], reverse=True)
+        if scored:
+            lists.append(_Ranked(W_METADATA, "metadata", notes=[note_id for _, note_id in scored]))
+
+        found = {hit.source_id for item in lists for hit in item.chunks}
+        found.update(note_id for _, note_id in scored)
+        if len(query) >= TRIGRAM_MIN_QUERY_CHARS and len(found) < TRIGRAM_WHEN_FEWER_NOTES:
+            similar = await title_trigram_notes(
+                self.session,
+                owner_user_id=scope.owner_user_id,
+                query=query,
+                content=scope.content,
+                limit=TRIGRAM_LIMIT,
+            )
+            if similar:
+                lists.append(
+                    _Ranked(W_TRIGRAM, "trigram", notes=[note_id for note_id, _ in similar])
+                )
+        return lists
+
+    async def _semantic(
+        self, scope: Scope, vectors: list[list[float]], chunk_limit: int
+    ) -> list[_Ranked]:
+        exact = await use_exact_vector_search(self.session, scope.owner_user_id, self.settings)
+        lists: list[_Ranked] = []
+        for index, vector in enumerate(vectors):
+            hits = await vector_chunks(
+                self.session,
+                scope,
+                vector,
+                settings=self.settings,
+                limit=min(chunk_limit, MAX_VECTOR_CANDIDATES),
+                exact=exact,
+            )
+            lists.append(_Ranked(W_VECTOR if index == 0 else W_EXPANSION, "vector", chunks=hits))
+        return lists
 
 
-def _normalize_query(query: str) -> str:
-    normalized_query = query.strip()
-    if not normalized_query:
-        raise SearchValidationError("Search query must not be empty.")
-    return normalized_query
-
-
-def build_search_matches_by_source_id(
-    *,
-    query: str,
-    results: list[HybridSearchResult],
-    max_matches_per_note: int,
-    max_notes: int | None = None,
+# --- fusion ------------------------------------------------------------------------------
+def _fuse_notes(
+    lists: list[_Ranked], query: str, *, k: int, limit: int
 ) -> dict[str, list[SearchContentMatch]]:
-    terms = _highlight_terms(query)
-    matches: dict[str, list[SearchContentMatch]] = {}
-    for result in results:
-        if result.source != "content" or result.source_type != "content_object":
+    note_scores: dict[str, float] = defaultdict(float)
+    chunk_scores: dict[str, float] = defaultdict(float)
+    chunks: dict[str, ChunkHit] = {}
+    for ranked in lists:
+        if ranked.notes:
+            for rank, note_id in enumerate(ranked.notes, start=1):
+                note_scores[note_id] += ranked.weight / (k + rank)
             continue
-        if result.source_id not in matches:
-            if max_notes is not None and len(matches) >= max_notes:
-                break
-            matches[result.source_id] = []
-        if len(matches[result.source_id]) >= max_matches_per_note:
-            continue
-        matches[result.source_id].append(
+        note_rank: dict[str, int] = {}
+        for rank, hit in enumerate(ranked.chunks, start=1):
+            chunk_scores[hit.chunk_id] += ranked.weight / (k + rank)
+            chunks.setdefault(hit.chunk_id, hit)
+            note_rank.setdefault(hit.source_id, len(note_rank) + 1)
+        for note_id, rank in note_rank.items():
+            note_scores[note_id] += ranked.weight / (k + rank)
+
+    chunks_by_note: dict[str, list[ChunkHit]] = defaultdict(list)
+    for hit in chunks.values():
+        chunks_by_note[hit.source_id].append(hit)
+    best_chunk = {
+        note_id: max(chunk_scores[hit.chunk_id] for hit in hits)
+        for note_id, hits in chunks_by_note.items()
+    }
+    ordered = sorted(
+        note_scores,
+        key=lambda note_id: (note_scores[note_id], best_chunk.get(note_id, 0.0)),
+        reverse=True,
+    )[:limit]
+    terms = highlight_terms(query)
+    result: dict[str, list[SearchContentMatch]] = {}
+    for note_id in ordered:
+        top = sorted(
+            chunks_by_note.get(note_id, []),
+            key=lambda hit: chunk_scores[hit.chunk_id],
+            reverse=True,
+        )[:MAX_MATCHES_PER_NOTE]
+        result[note_id] = [
             SearchContentMatch(
-                chunk_id=result.chunk_id,
-                chunk_external_id=result.chunk_external_id,
-                text=result.text.strip(),
-                score=result.score,
-                highlight_ranges=_highlight_ranges(result.text, terms),
+                chunk_id=hit.chunk_id,
+                chunk_external_id=_chunk_external_id(hit),
+                text=hit.text.strip(),
+                score=chunk_scores[hit.chunk_id],
+                highlight_ranges=highlight_ranges(hit.text.strip(), terms),
             )
+            for hit in top
+        ]
+    return result
+
+
+@dataclass(slots=True)
+class _FusedChunk:
+    hit: ChunkHit
+    score: float = 0.0
+    vector_score: float | None = None
+    full_text_score: float | None = None
+    distance: float | None = None
+    vector_rank: int | None = None
+    full_text_rank: int | None = None
+
+
+def _fuse_chunks(lists: list[_Ranked], *, k: int) -> list[HybridSearchResult]:
+    fused: dict[str, _FusedChunk] = {}
+    for ranked in lists:
+        for rank, hit in enumerate(ranked.chunks, start=1):
+            item = fused.setdefault(hit.chunk_id, _FusedChunk(hit=hit))
+            item.score += ranked.weight / (k + rank)
+            if ranked.kind == "vector":
+                item.vector_rank = min(item.vector_rank or rank, rank)
+                item.vector_score = max(item.vector_score or hit.score, hit.score)
+                if hit.distance is not None:
+                    item.distance = min(item.distance or hit.distance, hit.distance)
+            else:
+                item.full_text_rank = min(item.full_text_rank or rank, rank)
+                item.full_text_score = max(item.full_text_score or hit.score, hit.score)
+    ordered = sorted(fused.values(), key=lambda item: item.score, reverse=True)
+    return [
+        HybridSearchResult(
+            source=item.hit.source,
+            source_type=item.hit.source_type,
+            source_id=item.hit.source_id,
+            external_id=_external_id(item.hit),
+            chunk_id=item.hit.chunk_id,
+            chunk_external_id=_chunk_external_id(item.hit),
+            text=item.hit.text,
+            metadata={},
+            distance=item.distance,
+            score=item.score,
+            vector_score=item.vector_score,
+            full_text_score=item.full_text_score,
+            vector_rank=item.vector_rank,
+            full_text_rank=item.full_text_rank,
         )
-    return matches
+        for item in ordered
+    ]
 
 
-def _highlight_terms(query: str) -> list[str]:
-    terms = []
-    seen: set[str] = set()
-    for term in re.findall(r"[0-9A-Za-zА-Яа-яЁё_]{2,}", query):
-        normalized = term.casefold()
-        if normalized in seen:
-            continue
-        seen.add(normalized)
-        terms.append(normalized)
-    return sorted(terms, key=len, reverse=True)
+# --- helpers -----------------------------------------------------------------------------
+def _normalize_query(query: str) -> str:
+    normalized = " ".join(query.split())
+    if not normalized:
+        raise SearchValidationError("Search query must not be empty.")
+    return normalized[:512]
 
 
-def _highlight_ranges(text: str, terms: list[str]) -> list[SearchHighlightRange]:
-    if not terms:
-        return []
-    lowered = text.casefold()
-    raw_ranges: list[tuple[int, int]] = []
-    for term in terms:
-        start = 0
-        while True:
-            index = lowered.find(term, start)
-            if index == -1:
-                break
-            raw_ranges.append((index, index + len(term)))
-            start = index + len(term)
-    ranges: list[SearchHighlightRange] = []
-    occupied_until = -1
-    for start, end in sorted(raw_ranges):
-        if start < occupied_until:
-            continue
-        ranges.append(SearchHighlightRange(start=start, end=end))
-        occupied_until = end
-    return ranges
+def _content_filter(filters: SearchFilters | None) -> ContentFilter | None:
+    if filters is None:
+        return None
+    content_types = [value.strip() for value in filters.content_types if value.strip()]
+    if filters.content_type and filters.content_type.strip():
+        content_types.append(filters.content_type.strip())
+    return ContentFilter(
+        content_types=tuple(content_types),
+        is_favorite=filters.is_favorite,
+        created_from=filters.created_at_from or filters.date_from,
+        created_to=filters.created_at_to or filters.date_to,
+        updated_from=filters.updated_at_from,
+        updated_to=filters.updated_at_to,
+    )
 
 
-def _to_vector_filters(
-    *,
-    filters: SearchFilters | None,
+def _scope(
+    owner_user_id: str,
     source: str | None,
     source_type: str | None,
     source_id: str | None,
-) -> VectorizedChunkSearchFilters | None:
-    if filters is None:
-        if source is None and source_type is None and source_id is None:
-            return None
-        return VectorizedChunkSearchFilters(
-            source=source,
-            source_type=source_type,
-            source_id=source_id,
-        )
-    content_types = [value.strip() for value in filters.content_types if value.strip()]
-    if filters.content_type is not None and filters.content_type.strip():
-        content_types.append(filters.content_type.strip())
-    return VectorizedChunkSearchFilters(
-        source=filters.source or source,
-        source_type=filters.source_type or source_type,
-        source_id=filters.source_id or source_id,
-        content_types=content_types,
-        content_source=filters.content_source,
-        created_at_from=filters.created_at_from,
-        created_at_to=filters.created_at_to,
-        updated_at_from=filters.updated_at_from,
-        updated_at_to=filters.updated_at_to,
+    filters: SearchFilters | None,
+) -> Scope:
+    if filters is not None:
+        source = filters.source or source
+        source_type = filters.source_type or source_type
+        source_id = filters.source_id or source_id
+    content = _content_filter(filters) if (source, source_type) == SOURCE_CONTENT else None
+    return Scope(
+        owner_user_id=owner_user_id,
+        source=source,
+        source_type=source_type,
+        source_id=source_id,
+        content=content,
     )
 
 
-def _dedupe_queries(query: str, raw_queries: Any, *, max_queries: int) -> list[str]:
+def _external_id(hit: ChunkHit) -> str:
+    return f"{hit.source_type}:{hit.source_id}"
+
+
+def _chunk_external_id(hit: ChunkHit) -> str:
+    return f"{hit.source_type}:{hit.source_id}:chunk:{hit.chunk_index}"
+
+
+def _dedupe_queries(query: str, candidates: Sequence[str], *, max_queries: int) -> list[str]:
     queries = [query]
     seen = {query.casefold()}
-    if isinstance(raw_queries, list):
-        for raw_query in raw_queries:
-            if not isinstance(raw_query, str):
-                continue
-            candidate = raw_query.strip()
-            if not candidate or candidate.casefold() in seen:
-                continue
-            seen.add(candidate.casefold())
-            queries.append(candidate)
-            if len(queries) >= max_queries:
-                break
+    for candidate in candidates:
+        cleaned = " ".join(candidate.split())[:512]
+        if cleaned and cleaned.casefold() not in seen:
+            seen.add(cleaned.casefold())
+            queries.append(cleaned)
+        if len(queries) >= max_queries:
+            break
     return queries
 
 
-def _candidate_from_vector(match: VectorizedChunkSearchResult) -> _HybridCandidate:
-    return _HybridCandidate(
-        source=match.source,
-        source_type=match.source_type,
-        source_id=match.source_id,
-        external_id=match.external_id,
-        chunk_id=match.chunk_id,
-        chunk_external_id=match.chunk_external_id,
-        text=match.text,
-        metadata=match.metadata,
-        distance=match.distance,
-        vector_score=match.score,
-    )
-
-
-def _candidate_from_full_text(
-    match: VectorizedChunkFullTextSearchResult,
-) -> _HybridCandidate:
-    return _HybridCandidate(
-        source=match.source,
-        source_type=match.source_type,
-        source_id=match.source_id,
-        external_id=match.external_id,
-        chunk_id=match.chunk_id,
-        chunk_external_id=match.chunk_external_id,
-        text=match.text,
-        metadata=match.metadata,
-        full_text_score=match.full_text_score,
-    )
-
-
-def _rrf(rank: int, k: int) -> float:
-    return 1.0 / (k + rank)
-
-
-def _best_rank(current: int | None, candidate: int) -> int:
-    return candidate if current is None else min(current, candidate)
-
-
-def _best_score(current: float | None, candidate: float) -> float:
-    return candidate if current is None else max(current, candidate)
-
-
-def _best_distance(current: float | None, candidate: float) -> float:
-    return candidate if current is None else min(current, candidate)
+def _remember[K, V](cache: OrderedDict[K, V], key: K, value: V) -> None:
+    cache[key] = value
+    cache.move_to_end(key)
+    while len(cache) > CACHE_SIZE:
+        cache.popitem(last=False)

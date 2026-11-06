@@ -1,18 +1,31 @@
+"""Telegram sign-in and session endpoints.
+
+No GET endpoint creates a session (login-CSRF): browser redirects only carry data back to the SPA,
+which then calls a JSON POST endpoint (cross-site JSON POSTs need a CORS preflight we never allow).
+"""
+
 import base64
+import binascii
 import json
 from typing import Annotated
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import urlencode
 
-import httpx
-from fastapi import APIRouter, Depends, Query, Request, Response, Security, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.responses import RedirectResponse
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import ValidationError
 
-from app.api.dependencies import get_db_session
 from app.api.errors import AppError
 from app.api.schemas import ErrorResponse
 from app.core.config import get_settings
+from app.modules.auth.access import AccessDeniedError, access_denied_details
+from app.modules.auth.avatar import get_telegram_avatar
+from app.modules.auth.dependencies import (
+    auth_app_error,
+    bearer_auth_scheme,
+    get_auth_context,
+    get_auth_context_from_bearer_or_refresh_cookie,
+    get_auth_service,
+)
 from app.modules.auth.schemas import (
     AuthSessionResponse,
     AuthTokensResponse,
@@ -24,282 +37,147 @@ from app.modules.auth.schemas import (
     UserResponse,
 )
 from app.modules.auth.security import (
-    build_access_token,
+    TelegramIdentity,
     build_pkce_code_challenge,
-    generate_refresh_token,
+    generate_token,
+    tokens_equal,
 )
 from app.modules.auth.service import (
     AuthContext,
+    AuthError,
     AuthService,
-    InvalidAccessTokenError,
-    InvalidRefreshTokenError,
-    InvalidTelegramLoginCodeError,
-    InvalidTelegramLoginError,
-    InvalidTelegramOidcLoginError,
-    InvalidTelegramWebAppLoginError,
-    SessionNotFoundError,
     TelegramAuthNotConfiguredError,
-    TelegramDevLoginDisabledError,
 )
 
+__all__ = [
+    "bearer_auth_scheme",
+    "get_auth_context",
+    "get_auth_context_from_bearer_or_refresh_cookie",
+    "get_auth_service",
+    "router",
+]
+
 router = APIRouter(prefix="/auth", tags=["auth"])
-bearer_auth_scheme = HTTPBearer(scheme_name="BearerAuth", auto_error=False)
 
 TELEGRAM_OIDC_STATE_COOKIE = "telegram_oidc_state"
 TELEGRAM_OIDC_CODE_VERIFIER_COOKIE = "telegram_oidc_code_verifier"
-TELEGRAM_OIDC_COOKIE_MAX_AGE_SECONDS = 600
+TELEGRAM_LOGIN_STATE_COOKIE = "telegram_login_state"
+LOGIN_STATE_MAX_AGE_SECONDS = 600
+
+LOGIN_RESPONSES: dict[int | str, dict[str, object]] = {
+    401: {"model": ErrorResponse, "description": "Invalid Telegram login data."},
+    403: {"model": ErrorResponse, "description": "access_denied or account_disabled."},
+    503: {"model": ErrorResponse, "description": "Telegram authentication is not configured."},
+}
+
+AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
+AuthContextDep = Annotated[AuthContext, Depends(get_auth_context)]
 
 
-def get_auth_service(
-    session: Annotated[AsyncSession, Depends(get_db_session)],
-) -> AuthService:
-    return AuthService(session)
+def _auth_cookie_path() -> str:
+    return f"{get_settings().api_prefix}/auth"
 
 
-async def get_auth_context(
-    service: Annotated[AuthService, Depends(get_auth_service)],
-    authorization: Annotated[
-        HTTPAuthorizationCredentials | None,
-        Security(bearer_auth_scheme),
-    ] = None,
-) -> AuthContext:
-    if not authorization or not authorization.credentials:
-        raise AppError(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            code="missing_access_token",
-            message="Missing access token.",
-        )
-
-    access_token = authorization.credentials.strip()
-    try:
-        return await service.get_auth_context(access_token)
-    except InvalidAccessTokenError as exc:
-        raise AppError(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            code="invalid_access_token",
-            message="Invalid access token.",
-        ) from exc
+def _set_short_lived_cookie(response: Response, name: str, value: str) -> None:
+    settings = get_settings()
+    response.set_cookie(
+        key=name,
+        value=value,
+        httponly=True,
+        secure=settings.refresh_cookie_secure,
+        samesite="lax",
+        path=_auth_cookie_path(),
+        max_age=LOGIN_STATE_MAX_AGE_SECONDS,
+    )
 
 
-async def get_auth_context_from_bearer_or_refresh_cookie(
-    request: Request,
-    service: Annotated[AuthService, Depends(get_auth_service)],
-    authorization: Annotated[
-        HTTPAuthorizationCredentials | None,
-        Security(bearer_auth_scheme),
-    ] = None,
-) -> AuthContext:
-    if authorization and authorization.credentials:
-        access_token = authorization.credentials.strip()
-        try:
-            return await service.get_auth_context(access_token)
-        except InvalidAccessTokenError as exc:
-            raise AppError(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                code="invalid_access_token",
-                message="Invalid access token.",
-            ) from exc
-
-    raw_refresh_token = request.cookies.get(get_settings().refresh_cookie_name)
-    if raw_refresh_token is None:
-        raise AppError(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            code="missing_access_token",
-            message="Missing access token.",
-        )
-
-    try:
-        return await service.get_auth_context_by_refresh_token(raw_refresh_token)
-    except InvalidRefreshTokenError as exc:
-        raise AppError(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            code="invalid_refresh_token",
-            message="Invalid refresh token.",
-        ) from exc
+def _clear_cookies(response: Response, *names: str) -> None:
+    for name in names:
+        response.delete_cookie(key=name, path=_auth_cookie_path())
 
 
 def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
     settings = get_settings()
-    legacy_path = f"{settings.api_prefix}/auth"
-    response.delete_cookie(
-        key=settings.refresh_cookie_name,
-        path=legacy_path,
-    )
+    # Scoped to the API (cookie-authenticated asset URLs live there), never sent to the SPA.
+    response.delete_cookie(key=settings.refresh_cookie_name, path="/")
     response.set_cookie(
         key=settings.refresh_cookie_name,
         value=refresh_token,
         httponly=True,
         secure=settings.refresh_cookie_secure,
         samesite=settings.refresh_cookie_samesite,
-        path="/",
+        path=settings.api_prefix,
+        max_age=settings.refresh_token_absolute_ttl_days * 86400,
     )
 
 
 def _clear_refresh_cookie(response: Response) -> None:
     settings = get_settings()
-    for path in ("/", f"{settings.api_prefix}/auth"):
-        response.delete_cookie(
-            key=settings.refresh_cookie_name,
-            path=path,
+    for path in ("/", settings.api_prefix):
+        response.delete_cookie(key=settings.refresh_cookie_name, path=path)
+
+
+def _client_meta(request: Request) -> dict[str, str | None]:
+    return {
+        "user_agent": request.headers.get("user-agent"),
+        "ip_address": request.client.host if request.client else None,
+    }
+
+
+def _login_error(exc: AuthError | AccessDeniedError) -> AppError:
+    if isinstance(exc, AccessDeniedError):
+        return AppError(
+            status_code=status.HTTP_403_FORBIDDEN,
+            code="access_denied",
+            message=(
+                f"Access is restricted. Ask the administrator to allow Telegram ID "
+                f"{exc.telegram_user_id}."
+            ),
+            details=access_denied_details(exc.telegram_user_id, exc.username),
         )
+    return auth_app_error(exc)
 
 
-def _set_telegram_oidc_cookies(
+async def _login(
+    service: AuthService,
+    identity: TelegramIdentity,
+    request: Request,
     response: Response,
-    *,
-    state: str,
-    code_verifier: str,
-) -> None:
-    settings = get_settings()
-    for name, value in (
-        (TELEGRAM_OIDC_STATE_COOKIE, state),
-        (TELEGRAM_OIDC_CODE_VERIFIER_COOKIE, code_verifier),
-    ):
-        response.set_cookie(
-            key=name,
-            value=value,
-            httponly=True,
-            secure=settings.refresh_cookie_secure,
-            samesite=settings.refresh_cookie_samesite,
-            path=f"{settings.api_prefix}/auth",
-            max_age=TELEGRAM_OIDC_COOKIE_MAX_AGE_SECONDS,
-        )
-
-
-def _clear_telegram_oidc_cookies(response: Response) -> None:
-    settings = get_settings()
-    for name in (TELEGRAM_OIDC_STATE_COOKIE, TELEGRAM_OIDC_CODE_VERIFIER_COOKIE):
-        response.delete_cookie(
-            key=name,
-            path=f"{settings.api_prefix}/auth",
-        )
-
-
-async def _fetch_remote_avatar(
-    client: httpx.AsyncClient,
-    photo_url: str,
-) -> tuple[bytes, str] | None:
+) -> AuthTokensResponse:
     try:
-        avatar_response = await client.get(photo_url)
-        avatar_response.raise_for_status()
-    except httpx.HTTPError:
-        return None
-
-    return (
-        avatar_response.content,
-        avatar_response.headers.get("content-type", "image/jpeg"),
-    )
+        tokens, refresh_token = await service.login(identity, **_client_meta(request))
+    except (AuthError, AccessDeniedError) as exc:
+        raise _login_error(exc) from exc
+    _set_refresh_cookie(response, refresh_token)
+    return tokens
 
 
-def _largest_telegram_photo_file_id(photo_sizes: object) -> str | None:
-    if not isinstance(photo_sizes, list):
-        return None
-
-    candidates = [
-        size
-        for size in photo_sizes
-        if isinstance(size, dict) and isinstance(size.get("file_id"), str)
-    ]
-    if not candidates:
-        return None
-
-    largest = max(
-        candidates,
-        key=lambda size: (
-            int(size.get("file_size") or 0),
-            int(size.get("width") or 0) * int(size.get("height") or 0),
-        ),
-    )
-    return str(largest["file_id"])
-
-
-async def _fetch_telegram_profile_avatar(
-    client: httpx.AsyncClient,
-    *,
-    telegram_id: str,
-    bot_token: str | None,
-    api_base: str,
-) -> tuple[bytes, str] | None:
-    if not bot_token:
-        return None
-
-    base_url = api_base.rstrip("/")
+def _dev_login_redirect() -> RedirectResponse:
+    """Dev only: bind a single-use nonce to this browser, then let the SPA POST it back."""
     try:
-        photos_response = await client.get(
-            f"{base_url}/bot{bot_token}/getUserProfilePhotos",
-            params={"user_id": telegram_id, "limit": 1},
-        )
-        photos_response.raise_for_status()
-        photos_payload = photos_response.json()
-        if not isinstance(photos_payload, dict) or photos_payload.get("ok") is not True:
-            return None
-
-        result = photos_payload.get("result")
-        if not isinstance(result, dict):
-            return None
-
-        photos = result.get("photos")
-        if not isinstance(photos, list) or not photos:
-            return None
-
-        file_id = _largest_telegram_photo_file_id(photos[0])
-        if file_id is None:
-            return None
-
-        file_response = await client.get(
-            f"{base_url}/bot{bot_token}/getFile",
-            params={"file_id": file_id},
-        )
-        file_response.raise_for_status()
-        file_payload = file_response.json()
-        if not isinstance(file_payload, dict) or file_payload.get("ok") is not True:
-            return None
-
-        file_result = file_payload.get("result")
-        if not isinstance(file_result, dict):
-            return None
-
-        file_path = file_result.get("file_path")
-        if not isinstance(file_path, str) or not file_path:
-            return None
-
-        return await _fetch_remote_avatar(
-            client,
-            f"{base_url}/file/bot{bot_token}/{file_path.lstrip('/')}",
-        )
-    except (httpx.HTTPError, ValueError, TypeError):
-        return None
-
-
-def _build_telegram_redirect_url(**params: str) -> str:
-    settings = get_settings()
-    if settings.telegram_login_redirect_url is None:
-        raise TelegramAuthNotConfiguredError
-
-    parts = urlsplit(settings.telegram_login_redirect_url)
-    query = dict(parse_qsl(parts.query))
-    query.update(params)
-    return urlunsplit(
-        (
-            parts.scheme,
-            parts.netloc,
-            parts.path,
-            urlencode(query),
-            parts.fragment,
-        ),
+        AuthService.dev_identity()
+    except AuthError as exc:
+        raise auth_app_error(exc) from exc
+    nonce = generate_token()
+    response = RedirectResponse(
+        f"{get_settings().telegram_login_redirect_url}?{urlencode({'code': nonce})}",
+        status_code=status.HTTP_302_FOUND,
     )
+    _set_short_lived_cookie(response, TELEGRAM_LOGIN_STATE_COOKIE, nonce)
+    return response
 
 
-def _build_telegram_oidc_authorization_url(*, state: str, code_verifier: str) -> str:
+@router.get("/telegram-login", include_in_schema=False)
+async def telegram_login_redirect() -> RedirectResponse:
+    """Start sign-in: Telegram OIDC (PKCE + state cookie), or the dev login when enabled."""
     settings = get_settings()
-    if (
-        not settings.telegram_oidc_client_id
-        or not settings.telegram_oidc_client_secret
-        or not settings.telegram_login_redirect_url
-    ):
-        raise TelegramAuthNotConfiguredError
-
-    return f"{settings.telegram_oidc_authorization_url}?" + urlencode(
+    if settings.telegram_dev_login_enabled and not settings.is_production:
+        return _dev_login_redirect()
+    if not settings.telegram_oidc_client_id or not settings.telegram_oidc_client_secret:
+        raise auth_app_error(TelegramAuthNotConfiguredError())
+    state = generate_token()
+    code_verifier = generate_token()
+    authorization_url = f"{settings.telegram_oidc_authorization_url}?" + urlencode(
         {
             "client_id": settings.telegram_oidc_client_id,
             "redirect_uri": settings.telegram_login_redirect_url,
@@ -310,511 +188,221 @@ def _build_telegram_oidc_authorization_url(*, state: str, code_verifier: str) ->
             "code_challenge_method": "S256",
         },
     )
-
-
-@router.get(
-    "/telegram-login",
-    include_in_schema=False,
-    summary="Initiate Telegram login",
-)
-async def telegram_login_redirect(
-    request: Request,
-    service: Annotated[AuthService, Depends(get_auth_service)],
-) -> RedirectResponse:
-    """
-    Единая точка входа для авторизации через Telegram.
-    В dev-режиме делегирует в telegram-dev-login.
-    В prod-режиме строит OIDC authorization code redirect на oauth.telegram.org.
-    """
-    settings = get_settings()
-
-    if settings.telegram_dev_login_enabled:
-        try:
-            login_code, refresh_token = await service.telegram_dev_redirect_login(
-                user_agent=request.headers.get("user-agent"),
-                ip_address=request.client.host if request.client else None,
-            )
-        except TelegramDevLoginDisabledError as exc:
-            raise AppError(
-                status_code=status.HTTP_404_NOT_FOUND,
-                code="telegram_dev_login_disabled",
-                message="Telegram dev login is disabled.",
-            ) from exc
-        except TelegramAuthNotConfiguredError as exc:
-            raise AppError(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                code="telegram_auth_not_configured",
-                message="Telegram authentication is not configured.",
-            ) from exc
-
-        response = RedirectResponse(_build_telegram_redirect_url(code=login_code))
-        _set_refresh_cookie(response, refresh_token)
-        return response
-
-    try:
-        state = generate_refresh_token()
-        code_verifier = generate_refresh_token()
-        authorization_url = _build_telegram_oidc_authorization_url(
-            state=state,
-            code_verifier=code_verifier,
-        )
-    except TelegramAuthNotConfiguredError as exc:
-        raise AppError(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            code="telegram_auth_not_configured",
-            message="Telegram OIDC authentication is not configured.",
-        ) from exc
-
-    response = RedirectResponse(authorization_url)
-    _set_telegram_oidc_cookies(response, state=state, code_verifier=code_verifier)
+    response = RedirectResponse(authorization_url, status_code=status.HTTP_302_FOUND)
+    _set_short_lived_cookie(response, TELEGRAM_OIDC_STATE_COOKIE, state)
+    _set_short_lived_cookie(response, TELEGRAM_OIDC_CODE_VERIFIER_COOKIE, code_verifier)
     return response
 
 
-@router.get(
-    "/telegram-dev-login",
-    include_in_schema=False,
-)
-async def telegram_dev_login(
-    request: Request,
-    service: Annotated[AuthService, Depends(get_auth_service)],
-) -> RedirectResponse:
-    try:
-        login_code, refresh_token = await service.telegram_dev_redirect_login(
-            user_agent=request.headers.get("user-agent"),
-            ip_address=request.client.host if request.client else None,
-        )
-    except TelegramDevLoginDisabledError as exc:
-        raise AppError(
-            status_code=status.HTTP_404_NOT_FOUND,
-            code="telegram_dev_login_disabled",
-            message="Telegram dev login is disabled.",
-        ) from exc
-    except TelegramAuthNotConfiguredError as exc:
-        raise AppError(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            code="telegram_auth_not_configured",
-            message="Telegram authentication is not configured.",
-        ) from exc
-
-    response = RedirectResponse(_build_telegram_redirect_url(code=login_code))
-    _set_refresh_cookie(response, refresh_token)
-    return response
+@router.get("/telegram-dev-login", include_in_schema=False)
+async def telegram_dev_login() -> RedirectResponse:
+    return _dev_login_redirect()
 
 
 @router.get(
     "/telegram-callback",
-    summary="Telegram redirect callback",
+    summary="Telegram Login Widget redirect target",
     description=(
-        "Receives Telegram Login Widget redirect data, verifies it, starts a session, "
-        "sets the refresh cookie, and redirects to the frontend with a one-time login code. "
-        "Accepts either tgAuthResult (base64 JSON from oauth.telegram.org) or individual "
-        "query params."
+        "Forwards the signed Login Widget parameters to the SPA as a `#tgAuthResult=` fragment; "
+        "the SPA exchanges it via POST /auth/telegram-result. Creates no session itself."
     ),
-    responses={
-        307: {"description": "Redirects to the configured frontend Telegram callback URL."},
-        503: {"model": ErrorResponse, "description": "Telegram authentication is not configured."},
-    },
+    responses={302: {"description": "Redirect to the SPA auth callback."}},
 )
-async def telegram_callback(
-    request: Request,
-    service: Annotated[AuthService, Depends(get_auth_service)],
-    tg_auth_result: Annotated[str | None, Query(alias="tgAuthResult")] = None,
-    telegram_id: Annotated[int | None, Query(alias="id", gt=0)] = None,
-    first_name: Annotated[str | None, Query(min_length=1, max_length=255)] = None,
-    auth_date: Annotated[int | None, Query(gt=0)] = None,
-    telegram_hash: Annotated[str | None, Query(alias="hash")] = None,
-    last_name: Annotated[str | None, Query(max_length=255)] = None,
-    username: Annotated[str | None, Query(max_length=255)] = None,
-    photo_url: Annotated[str | None, Query(max_length=2048)] = None,
-) -> RedirectResponse:
-    # Only handles the Login Widget individual-param redirect (not oauth.telegram.org flow).
-    # The oauth.telegram.org flow sends #tgAuthResult in fragment — handled on the frontend
-    # via POST /telegram-result.
-    if telegram_id and first_name and auth_date and telegram_hash:
-        payload = TelegramLoginRequest(
-            id=telegram_id,
-            first_name=first_name,
-            last_name=last_name,
-            username=username,
-            photo_url=photo_url,
-            auth_date=auth_date,
-            hash=telegram_hash,
+async def telegram_callback(request: Request) -> RedirectResponse:
+    redirect_url = get_settings().telegram_login_redirect_url
+    params = dict(request.query_params)
+    if not params.get("hash"):
+        return RedirectResponse(
+            f"{redirect_url}?{urlencode({'error': 'invalid_telegram_login'})}",
+            status_code=status.HTTP_302_FOUND,
         )
-        try:
-            login_code, refresh_token = await service.telegram_redirect_login(
-                payload=payload,
-                user_agent=request.headers.get("user-agent"),
-                ip_address=request.client.host if request.client else None,
-            )
-        except InvalidTelegramLoginError:
-            return RedirectResponse(_build_telegram_redirect_url(error="invalid_telegram_login"))
-        except TelegramAuthNotConfiguredError as exc:
-            raise AppError(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                code="telegram_auth_not_configured",
-                message="Telegram authentication is not configured.",
-            ) from exc
-
-        response = RedirectResponse(_build_telegram_redirect_url(code=login_code))
-        _set_refresh_cookie(response, refresh_token)
-        return response
-
-    return RedirectResponse(_build_telegram_redirect_url(error="invalid_telegram_login"))
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(params, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii")
+    return RedirectResponse(
+        f"{redirect_url}#{urlencode({'tgAuthResult': encoded.rstrip('=')})}",
+        status_code=status.HTTP_302_FOUND,
+    )
 
 
 @router.post(
     "/telegram-login",
     response_model=AuthTokensResponse,
-    summary="Login with Telegram",
-    description=(
-        "Verifies Telegram Login Widget data, creates or updates the user profile, "
-        "starts an authenticated session, returns an access token, and sets a refresh token "
-        "in an httpOnly cookie."
-    ),
-    responses={
-        200: {"description": "User authenticated with Telegram."},
-        401: {"model": ErrorResponse, "description": "Invalid Telegram login data."},
-        503: {"model": ErrorResponse, "description": "Telegram authentication is not configured."},
-        422: {"model": ErrorResponse, "description": "Validation error in input payload."},
-    },
+    summary="Login with Telegram Login Widget data",
+    responses=LOGIN_RESPONSES,
 )
 async def telegram_login(
     payload: TelegramLoginRequest,
     request: Request,
     response: Response,
-    service: Annotated[AuthService, Depends(get_auth_service)],
+    service: AuthServiceDep,
 ) -> AuthTokensResponse:
     try:
-        auth_response, refresh_token = await service.telegram_login(
-            payload=payload,
-            user_agent=request.headers.get("user-agent"),
-            ip_address=request.client.host if request.client else None,
-        )
-    except InvalidTelegramLoginError as exc:
-        raise AppError(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            code="invalid_telegram_login",
-            message="Invalid Telegram login data.",
-        ) from exc
-    except TelegramAuthNotConfiguredError as exc:
-        raise AppError(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            code="telegram_auth_not_configured",
-            message="Telegram authentication is not configured.",
-        ) from exc
-
-    _set_refresh_cookie(response, refresh_token)
-    return auth_response
+        identity = service.verify_widget_login(payload)
+    except AuthError as exc:
+        raise auth_app_error(exc) from exc
+    return await _login(service, identity, request, response)
 
 
 @router.post(
     "/telegram-result",
     response_model=AuthTokensResponse,
-    summary="Exchange tgAuthResult from oauth.telegram.org",
-    description=(
-        "Decodes the base64url tgAuthResult fragment set by oauth.telegram.org, verifies the "
-        "Telegram signature, creates or updates the user, starts a session, and returns tokens."
-    ),
-    responses={
-        200: {"description": "User authenticated."},
-        401: {"model": ErrorResponse, "description": "Invalid or expired Telegram auth result."},
-        503: {"model": ErrorResponse, "description": "Telegram authentication is not configured."},
-    },
+    summary="Exchange tgAuthResult (oauth.telegram.org / widget redirect)",
+    responses=LOGIN_RESPONSES,
 )
 async def exchange_telegram_auth_result(
     payload: TelegramAuthResultRequest,
     request: Request,
     response: Response,
-    service: Annotated[AuthService, Depends(get_auth_service)],
+    service: AuthServiceDep,
 ) -> AuthTokensResponse:
     try:
-        padding = (4 - len(payload.tg_auth_result) % 4) % 4
-        raw_data = json.loads(base64.urlsafe_b64decode(payload.tg_auth_result + "=" * padding))
-        tg_payload = TelegramLoginRequest(**raw_data)
-    except Exception as exc:
+        padding = "=" * ((4 - len(payload.tg_auth_result) % 4) % 4)
+        raw_data = json.loads(base64.urlsafe_b64decode(payload.tg_auth_result + padding))
+        if not isinstance(raw_data, dict):
+            raise ValueError("tgAuthResult is not an object")
+        identity = service.verify_widget_login(TelegramLoginRequest.model_validate(raw_data))
+    except (ValueError, binascii.Error, ValidationError) as exc:
         raise AppError(
             status_code=status.HTTP_401_UNAUTHORIZED,
             code="invalid_telegram_result",
             message="Invalid Telegram auth result.",
         ) from exc
-
-    try:
-        auth_response, refresh_token = await service.telegram_login(
-            payload=tg_payload,
-            user_agent=request.headers.get("user-agent"),
-            ip_address=request.client.host if request.client else None,
-        )
-    except InvalidTelegramLoginError as exc:
-        raise AppError(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            code="invalid_telegram_login",
-            message="Invalid Telegram login data.",
-        ) from exc
-    except TelegramAuthNotConfiguredError as exc:
-        raise AppError(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            code="telegram_auth_not_configured",
-            message="Telegram authentication is not configured.",
-        ) from exc
-
-    _set_refresh_cookie(response, refresh_token)
-    return auth_response
+    except AuthError as exc:
+        raise auth_app_error(exc) from exc
+    return await _login(service, identity, request, response)
 
 
 @router.post(
     "/telegram-oidc-code",
     response_model=AuthTokensResponse,
     summary="Exchange Telegram OIDC authorization code",
-    description=(
-        "Exchanges a Telegram OpenID Connect authorization code for Telegram tokens, verifies "
-        "the ID token with Telegram JWKS, creates or updates the user, starts an authenticated "
-        "session, and sets a refresh token in an httpOnly cookie."
-    ),
-    responses={
-        200: {"description": "User authenticated with Telegram OIDC."},
-        401: {"model": ErrorResponse, "description": "Invalid Telegram OIDC code or state."},
-        503: {"model": ErrorResponse, "description": "Telegram OIDC is not configured."},
-        422: {"model": ErrorResponse, "description": "Validation error in input payload."},
-    },
+    responses=LOGIN_RESPONSES,
 )
 async def exchange_telegram_oidc_code(
     payload: TelegramOidcCodeExchangeRequest,
     request: Request,
     response: Response,
-    service: Annotated[AuthService, Depends(get_auth_service)],
+    service: AuthServiceDep,
 ) -> AuthTokensResponse:
     expected_state = request.cookies.get(TELEGRAM_OIDC_STATE_COOKIE)
     code_verifier = request.cookies.get(TELEGRAM_OIDC_CODE_VERIFIER_COOKIE)
-    if not expected_state or not code_verifier or expected_state != payload.state:
-        _clear_telegram_oidc_cookies(response)
+    _clear_cookies(response, TELEGRAM_OIDC_STATE_COOKIE, TELEGRAM_OIDC_CODE_VERIFIER_COOKIE)
+    if not code_verifier or not tokens_equal(expected_state, payload.state):
         raise AppError(
             status_code=status.HTTP_401_UNAUTHORIZED,
             code="invalid_telegram_oidc_state",
             message="Invalid Telegram OIDC state.",
         )
-
     try:
-        auth_response, refresh_token = await service.telegram_oidc_login(
-            payload=payload,
-            code_verifier=code_verifier,
-            user_agent=request.headers.get("user-agent"),
-            ip_address=request.client.host if request.client else None,
-        )
-    except InvalidTelegramOidcLoginError as exc:
-        _clear_telegram_oidc_cookies(response)
-        raise AppError(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            code="invalid_telegram_oidc_login",
-            message="Invalid Telegram OIDC login data.",
-        ) from exc
-    except TelegramAuthNotConfiguredError as exc:
-        _clear_telegram_oidc_cookies(response)
-        raise AppError(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            code="telegram_auth_not_configured",
-            message="Telegram OIDC authentication is not configured.",
-        ) from exc
-
-    _clear_telegram_oidc_cookies(response)
-    _set_refresh_cookie(response, refresh_token)
-    return auth_response
+        identity = await service.verify_oidc_login(code=payload.code, code_verifier=code_verifier)
+    except AuthError as exc:
+        raise auth_app_error(exc) from exc
+    return await _login(service, identity, request, response)
 
 
 @router.post(
     "/telegram-web-app",
     response_model=AuthTokensResponse,
-    summary="Login with Telegram Mini App",
-    description=(
-        "Verifies Telegram.WebApp.initData from a Telegram Mini App, creates or updates "
-        "the user profile, starts an authenticated session, returns an access token, and "
-        "sets a refresh token in an httpOnly cookie."
-    ),
-    responses={
-        200: {"description": "User authenticated with Telegram Mini App initData."},
-        401: {"model": ErrorResponse, "description": "Invalid Telegram Mini App initData."},
-        503: {"model": ErrorResponse, "description": "Telegram authentication is not configured."},
-        422: {"model": ErrorResponse, "description": "Validation error in input payload."},
-    },
+    summary="Login with Telegram Mini App initData",
+    responses=LOGIN_RESPONSES,
 )
 async def telegram_web_app_login(
     payload: TelegramWebAppLoginRequest,
     request: Request,
     response: Response,
-    service: Annotated[AuthService, Depends(get_auth_service)],
+    service: AuthServiceDep,
 ) -> AuthTokensResponse:
     try:
-        auth_response, refresh_token = await service.telegram_web_app_login(
-            payload=payload,
-            user_agent=request.headers.get("user-agent"),
-            ip_address=request.client.host if request.client else None,
-        )
-    except InvalidTelegramWebAppLoginError as exc:
-        raise AppError(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            code="invalid_telegram_web_app_login",
-            message="Invalid Telegram Mini App login data.",
-        ) from exc
-    except TelegramAuthNotConfiguredError as exc:
-        raise AppError(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            code="telegram_auth_not_configured",
-            message="Telegram authentication is not configured.",
-        ) from exc
-
-    _set_refresh_cookie(response, refresh_token)
-    return auth_response
+        identity = service.verify_web_app_login(payload.init_data)
+    except AuthError as exc:
+        raise auth_app_error(exc) from exc
+    return await _login(service, identity, request, response)
 
 
 @router.post(
     "/telegram-code",
     response_model=AuthTokensResponse,
-    summary="Exchange Telegram login code",
-    description="Exchanges a one-time Telegram redirect login code for a bearer access token.",
-    responses={
-        200: {"description": "Access token returned."},
-        401: {"model": ErrorResponse, "description": "Invalid Telegram login code."},
-        422: {"model": ErrorResponse, "description": "Validation error in input payload."},
-    },
+    summary="Exchange the dev login code",
+    description=(
+        "Development only. Completes GET /auth/telegram-dev-login: the code must match the "
+        "single-use state cookie set on that redirect."
+    ),
+    responses=LOGIN_RESPONSES,
 )
 async def exchange_telegram_login_code(
     payload: TelegramLoginCodeExchangeRequest,
-    service: Annotated[AuthService, Depends(get_auth_service)],
+    request: Request,
+    response: Response,
+    service: AuthServiceDep,
 ) -> AuthTokensResponse:
-    try:
-        return await service.exchange_telegram_login_code(payload=payload)
-    except InvalidTelegramLoginCodeError as exc:
+    expected = request.cookies.get(TELEGRAM_LOGIN_STATE_COOKIE)
+    _clear_cookies(response, TELEGRAM_LOGIN_STATE_COOKIE)
+    if not tokens_equal(expected, payload.code):
         raise AppError(
             status_code=status.HTTP_401_UNAUTHORIZED,
             code="invalid_telegram_login_code",
             message="Invalid Telegram login code.",
-        ) from exc
+        )
+    try:
+        identity = service.dev_identity()
+    except AuthError as exc:
+        raise auth_app_error(exc) from exc
+    return await _login(service, identity, request, response)
 
 
 @router.post(
     "/refresh",
     response_model=AuthTokensResponse,
     summary="Refresh session",
-    description=(
-        "Rotates the refresh token stored in the httpOnly cookie and returns a new access token."
-    ),
+    description="Rotates the httpOnly refresh cookie and returns a new access token.",
     responses={
-        200: {"description": "Session refreshed."},
-        401: {
-            "model": ErrorResponse,
-            "description": "Missing or invalid refresh token.",
-            "content": {
-                "application/json": {
-                    "examples": {
-                        "missing": {"value": {"detail": "missing refresh token"}},
-                        "invalid": {"value": {"detail": "invalid refresh token"}},
-                    }
-                }
-            },
-        },
+        401: {"model": ErrorResponse, "description": "Missing or invalid refresh token."},
+        403: {"model": ErrorResponse, "description": "Access was revoked (access_denied)."},
     },
 )
 async def refresh(
     request: Request,
     response: Response,
-    service: Annotated[AuthService, Depends(get_auth_service)],
+    service: AuthServiceDep,
 ) -> AuthTokensResponse:
-    settings = get_settings()
-    raw_refresh_token = request.cookies.get(settings.refresh_cookie_name)
-    if raw_refresh_token is None:
+    raw_refresh_token = request.cookies.get(get_settings().refresh_cookie_name)
+    if not raw_refresh_token:
         raise AppError(
             status_code=status.HTTP_401_UNAUTHORIZED,
             code="missing_refresh_token",
             message="Missing refresh token.",
         )
-
     try:
-        auth_response, new_refresh_token = await service.refresh(
-            raw_refresh_token=raw_refresh_token,
-        )
-    except InvalidRefreshTokenError as exc:
-        raise AppError(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            code="invalid_refresh_token",
-            message="Invalid refresh token.",
-        ) from exc
-
-    _set_refresh_cookie(response, new_refresh_token)
-    return auth_response
-
-
-@router.get(
-    "/bootstrap",
-    response_model=AuthTokensResponse,
-    summary="Bootstrap session from refresh cookie",
-    description=(
-        "Returns the current user and a short-lived access token from the httpOnly refresh "
-        "cookie without rotating that cookie. Intended for server-side page rendering."
-    ),
-    responses={
-        200: {"description": "Session bootstrap returned."},
-        401: {"model": ErrorResponse, "description": "Missing or invalid refresh token."},
-    },
-)
-async def bootstrap(
-    request: Request,
-    service: Annotated[AuthService, Depends(get_auth_service)],
-) -> AuthTokensResponse:
-    settings = get_settings()
-    raw_refresh_token = request.cookies.get(settings.refresh_cookie_name)
-    if raw_refresh_token is None:
-        raise AppError(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            code="missing_refresh_token",
-            message="Missing refresh token.",
-        )
-
-    try:
-        context = await service.get_auth_context_by_refresh_token(raw_refresh_token)
-    except InvalidRefreshTokenError as exc:
-        raise AppError(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            code="invalid_refresh_token",
-            message="Invalid refresh token.",
-        ) from exc
-
-    return AuthTokensResponse(
-        user=UserResponse.model_validate(context.user, from_attributes=True),
-        access_token=build_access_token(user_id=context.user.id, session_id=context.session.id),
-    )
+        tokens, new_refresh_token = await service.refresh(raw_refresh_token=raw_refresh_token)
+    except (AuthError, AccessDeniedError) as exc:
+        raise _login_error(exc) from exc
+    if new_refresh_token is not None:
+        _set_refresh_cookie(response, new_refresh_token)
+    return tokens
 
 
 @router.post(
     "/logout",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Logout user",
-    description="Revokes the current refresh session and clears the refresh cookie.",
-    responses={204: {"description": "Session revoked and refresh cookie cleared."}},
+    summary="Logout",
+    description="Revokes the current session and clears the refresh cookie.",
 )
-async def logout(
-    request: Request,
-    response: Response,
-    service: Annotated[AuthService, Depends(get_auth_service)],
-) -> Response:
-    settings = get_settings()
-    await service.logout(raw_refresh_token=request.cookies.get(settings.refresh_cookie_name))
+async def logout(request: Request, service: AuthServiceDep) -> Response:
+    await service.logout(raw_refresh_token=request.cookies.get(get_settings().refresh_cookie_name))
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
     _clear_refresh_cookie(response)
-    response.status_code = status.HTTP_204_NO_CONTENT
     return response
 
 
 @router.get(
     "/sessions",
     response_model=list[AuthSessionResponse],
-    summary="List sessions",
-    description="Returns active sessions for the current authenticated user.",
-    responses={
-        200: {"description": "Active sessions returned."},
-        401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
-    },
+    summary="List active sessions of the current user",
 )
 async def list_sessions(
-    context: Annotated[AuthContext, Depends(get_auth_context)],
-    service: Annotated[AuthService, Depends(get_auth_service)],
+    context: AuthContextDep,
+    service: AuthServiceDep,
 ) -> list[AuthSessionResponse]:
     return await service.list_sessions(
         user_id=context.user.id,
@@ -826,143 +414,61 @@ async def list_sessions(
     "/logout-all",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Logout all sessions",
-    description="Revokes all active sessions for the current user and clears the refresh cookie.",
-    responses={
-        204: {"description": "All sessions revoked."},
-        401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
-    },
 )
-async def logout_all(
-    response: Response,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
-    service: Annotated[AuthService, Depends(get_auth_service)],
-) -> Response:
+async def logout_all(context: AuthContextDep, service: AuthServiceDep) -> Response:
     await service.logout_all(user_id=context.user.id)
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
     _clear_refresh_cookie(response)
-    response.status_code = status.HTTP_204_NO_CONTENT
     return response
 
 
 @router.delete(
     "/sessions/{session_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Revoke session",
-    description="Revokes a specific session belonging to the current user.",
-    responses={
-        204: {"description": "Target session revoked."},
-        401: {"model": ErrorResponse, "description": "Missing or invalid access token."},
-        404: {"model": ErrorResponse, "description": "Session not found."},
-    },
+    summary="Revoke a session of the current user",
+    responses={404: {"model": ErrorResponse, "description": "Session not found."}},
 )
 async def revoke_session(
     session_id: str,
-    response: Response,
-    request: Request,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
-    service: Annotated[AuthService, Depends(get_auth_service)],
+    context: AuthContextDep,
+    service: AuthServiceDep,
 ) -> Response:
     try:
         await service.revoke_session(user_id=context.user.id, session_id=session_id)
-    except SessionNotFoundError as exc:
-        raise AppError(
-            status_code=status.HTTP_404_NOT_FOUND,
-            code="session_not_found",
-            message="Session not found.",
-        ) from exc
-
+    except AuthError as exc:
+        raise auth_app_error(exc) from exc
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
     if session_id == context.session.id:
         _clear_refresh_cookie(response)
-    response.status_code = status.HTTP_204_NO_CONTENT
     return response
 
 
 @router.get(
     "/me/avatar",
-    summary="Get current user avatar",
-    description=(
-        "Proxies the current user's Telegram avatar through the API using the refresh cookie. "
-        "This avoids browser-side failures when Telegram blocks direct image embedding."
-    ),
-    responses={
-        200: {"description": "Avatar image returned."},
-        401: {"model": ErrorResponse, "description": "Missing or invalid refresh token."},
-        404: {"model": ErrorResponse, "description": "Avatar is not available."},
-    },
+    summary="Current user's Telegram avatar",
+    description="Proxies the Telegram avatar (Telegram hosts only, images only, cached).",
+    responses={404: {"model": ErrorResponse, "description": "Avatar is not available."}},
 )
 async def current_user_avatar(
-    request: Request,
-    service: Annotated[AuthService, Depends(get_auth_service)],
+    context: Annotated[AuthContext, Depends(get_auth_context_from_bearer_or_refresh_cookie)],
 ) -> Response:
-    settings = get_settings()
-    raw_refresh_token = request.cookies.get(settings.refresh_cookie_name)
-    if raw_refresh_token is None:
-        raise AppError(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            code="missing_refresh_token",
-            message="Missing refresh token.",
-        )
-
-    try:
-        context = await service.get_auth_context_by_refresh_token(raw_refresh_token)
-    except InvalidRefreshTokenError as exc:
-        raise AppError(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            code="invalid_refresh_token",
-            message="Invalid refresh token.",
-        ) from exc
-
-    avatar: tuple[bytes, str] | None = None
-    async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
-        photo_url = context.user.telegram_photo_url
-        if photo_url and urlsplit(photo_url).scheme in {"http", "https"}:
-            avatar = await _fetch_remote_avatar(client, photo_url)
-
-        if avatar is None:
-            avatar = await _fetch_telegram_profile_avatar(
-                client,
-                telegram_id=context.user.telegram_id,
-                bot_token=settings.telegram_bot_token,
-                api_base=settings.telegram_api_base,
-            )
-
+    avatar = await get_telegram_avatar(
+        telegram_id=context.user.telegram_id,
+        photo_url=context.user.telegram_photo_url,
+    )
     if avatar is None:
         raise AppError(
             status_code=status.HTTP_404_NOT_FOUND,
             code="avatar_not_available",
             message="Avatar is not available.",
         )
-
-    content, media_type = avatar
-
     return Response(
-        content=content,
-        media_type=media_type,
-        headers={"Cache-Control": "private, max-age=3600"},
+        content=avatar.content,
+        media_type=avatar.media_type,
+        headers={"Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff"},
     )
 
 
-@router.get(
-    "/me",
-    response_model=UserResponse,
-    summary="Get current user",
-    description="Returns the current authenticated user from the bearer access token.",
-    responses={
-        200: {"description": "Authenticated user returned."},
-        401: {
-            "model": ErrorResponse,
-            "description": "Missing or invalid access token.",
-            "content": {
-                "application/json": {
-                    "examples": {
-                        "missing": {"value": {"detail": "missing access token"}},
-                        "invalid": {"value": {"detail": "invalid access token"}},
-                    }
-                }
-            },
-        },
-    },
-)
-async def current_user(
-    context: Annotated[AuthContext, Depends(get_auth_context)],
-) -> UserResponse:
+@router.get("/me", response_model=UserResponse, summary="Current user")
+async def current_user(context: AuthContextDep) -> UserResponse:
     return UserResponse.model_validate(context.user, from_attributes=True)

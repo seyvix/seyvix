@@ -11,10 +11,7 @@ EventName = Literal[
     "content.object.updated",
     "content.object.deleted",
     "content.tags.completed",
-    "snapshot.requested",
     "snapshot.text_representation.completed",
-    "snapshot.completed",
-    "snapshot.failed",
     "taxonomy.classification.completed",
 ]
 

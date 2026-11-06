@@ -3,21 +3,25 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from app.core.database import Base
 from sqlalchemy import (
-    JSON,
     Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
-    Integer,
     String,
     Text,
     UniqueConstraint,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.core.database import Base
+from app.platform.jobs import JobColumnsMixin, job_queue_indexes
+
+ACTIVE_ASSIGNMENT_STATUSES = ("suggested", "accepted")
+TAGGING_JOB_SUGGEST = "suggest_content_tags"
 
 
 def utcnow() -> datetime:
@@ -29,23 +33,24 @@ class Tag(Base):
     __table_args__ = (
         Index("uq_tags_owner_user_id_slug", "owner_user_id", "slug", unique=True),
         Index("ix_tags_owner_user_id_is_archived", "owner_user_id", "is_archived"),
+        # Alias lookups (`aliases ?| array[...]`) when resolving suggested/typed names.
+        Index("ix_tags_aliases", "aliases", postgresql_using="gin"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    owner_user_id: Mapped[str] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), index=True
-    )
+    owner_user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(String(255))
     slug: Mapped[str] = mapped_column(String(255))
     description: Mapped[str | None] = mapped_column(Text(), nullable=True)
     tag_kind: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    aliases: Mapped[list[str]] = mapped_column(JSON(), default=list)
+    # Alias slugs (see `app.modules.tags.text.slugify_label`).
+    aliases: Mapped[list[str]] = mapped_column(JSONB(), default=list)
     created_by_type: Mapped[str] = mapped_column(String(32))
     created_by_user_id: Mapped[str | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
     source: Mapped[str] = mapped_column(String(64))
-    source_detail: Mapped[dict[str, object]] = mapped_column(JSON(), default=dict)
+    source_detail: Mapped[dict[str, object]] = mapped_column(JSONB(), default=dict)
     confidence: Mapped[float | None] = mapped_column(nullable=True)
     is_archived: Mapped[bool] = mapped_column(Boolean(), default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -66,7 +71,7 @@ class ContentTagAssignment(Base):
         Index("ix_content_tag_assignments_owner_status", "owner_user_id", "status"),
         CheckConstraint(
             "status in ('suggested', 'accepted', 'rejected', 'removed')",
-            name="ck_content_tag_assignments_status",
+            name="status",
         ),
         Index(
             "uq_content_tag_assignments_active",
@@ -79,9 +84,7 @@ class ContentTagAssignment(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    owner_user_id: Mapped[str] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), index=True
-    )
+    owner_user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     content_object_id: Mapped[str] = mapped_column(
         ForeignKey("content_objects.id", ondelete="CASCADE"), index=True
     )
@@ -92,7 +95,7 @@ class ContentTagAssignment(Base):
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
     source: Mapped[str] = mapped_column(String(64))
-    source_detail: Mapped[dict[str, object]] = mapped_column(JSON(), default=dict)
+    source_detail: Mapped[dict[str, object]] = mapped_column(JSONB(), default=dict)
     confidence: Mapped[float | None] = mapped_column(nullable=True)
     reasoning: Mapped[str | None] = mapped_column(Text(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -105,43 +108,32 @@ class ContentTagAssignment(Base):
     tag: Mapped[Tag] = relationship(back_populates="assignments")
 
 
-class TaggingJob(Base):
+class TaggingJob(JobColumnsMixin, Base):
+    """At most one row per (content object, job type); re-runs reset the row.
+
+    `rerun_requested` is set when new input arrives while the job is processing: the
+    running attempt finishes, then the row goes back to pending instead of succeeded.
+    """
+
     __tablename__ = "tagging_jobs"
     __table_args__ = (
-        Index("ix_tagging_jobs_status_run_after_priority", "status", "run_after", "priority"),
-        Index("ix_tagging_jobs_owner_content", "owner_user_id", "content_object_id"),
-        UniqueConstraint("source_event_id", name="uq_tagging_jobs_source_event_id"),
+        *job_queue_indexes("tagging_jobs"),
+        UniqueConstraint(
+            "content_object_id", "job_type", name="uq_tagging_jobs_content_object_id_job_type"
+        ),
+        Index("ix_tagging_jobs_owner_status", "owner_user_id", "status"),
         CheckConstraint(
-            "status in ('pending', 'processing', 'succeeded', 'failed', 'cancelled', 'stale')",
-            name="ck_tagging_jobs_status",
+            "status in ('pending', 'processing', 'succeeded', 'failed', 'cancelled')",
+            name="status",
         ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    owner_user_id: Mapped[str] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), index=True
-    )
-    job_type: Mapped[str] = mapped_column(String(64))
+    owner_user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     content_object_id: Mapped[str] = mapped_column(
-        ForeignKey("content_objects.id", ondelete="CASCADE"), index=True
+        ForeignKey("content_objects.id", ondelete="CASCADE")
     )
-    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
-    priority: Mapped[int] = mapped_column(Integer(), default=100)
-    attempts: Mapped[int] = mapped_column(Integer(), default=0)
-    max_attempts: Mapped[int] = mapped_column(Integer(), default=3)
-    run_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    locked_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    job_type: Mapped[str] = mapped_column(String(64), default=TAGGING_JOB_SUGGEST)
+    rerun_requested: Mapped[bool] = mapped_column(Boolean(), default=False)
     source_event_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     correlation_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    content_updated_at_snapshot: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True),
-        nullable=True,
-    )
-    last_error: Mapped[str | None] = mapped_column(Text(), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=utcnow,
-        onupdate=utcnow,
-    )

@@ -193,9 +193,7 @@ def test_note_card_to_app_card_note_omits_heavy_detail_fields() -> None:
             "external_id": "message-1",
             "raw_payload": {"body": "x" * 50_000},
             "metadata": {
-                "custom_emoji_assets": {
-                    "1": {"data_url": "data:image/png;base64," + "a" * 10_000}
-                }
+                "custom_emoji_assets": {"1": {"data_url": "data:image/png;base64," + "a" * 10_000}}
             },
         },
         assets=[

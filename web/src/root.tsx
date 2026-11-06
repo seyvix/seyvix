@@ -1,47 +1,21 @@
-import { dehydrate } from '@tanstack/react-query'
-import type { LoaderFunctionArgs } from 'react-router'
 import {
   Links,
   Meta,
   Outlet,
   Scripts,
   ScrollRestoration,
-  data,
-  useLoaderData,
+  isRouteErrorResponse,
 } from 'react-router'
+import type { Route } from './+types/root'
 import './styles/reset.css'
 import './styles/variables.css'
 import './styles/loaders.css'
-import { AppProviders, createQueryClient } from './AppProviders'
-import { loadServerAuth } from './framework/auth.server'
-import { prefetchNotesRoute } from './framework/notes.server'
-import { shouldRenderBeforeAuthRefresh } from './utils/authBootstrap'
-
-export async function loader({ request }: LoaderFunctionArgs) {
-  const auth = await loadServerAuth(request)
-  const queryClient = createQueryClient()
-  await prefetchNotesRoute(queryClient, request, auth.accessToken)
-
-  const pathname = new URL(request.url).pathname
-  const headers = new Headers(auth.headers)
-  headers.set('Cache-Control', 'private, no-store, max-age=0')
-  headers.set('Pragma', 'no-cache')
-
-  return data(
-    {
-      user: auth.user,
-      authInitialReady: Boolean(auth.user) || shouldRenderBeforeAuthRefresh(pathname),
-      dehydratedState: dehydrate(queryClient),
-    },
-    {
-      headers,
-    },
-  )
-}
+import { AppProviders } from './AppProviders'
+import { FullPageLoader } from './components/LoaderSpinner'
 
 export function Layout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="ru" suppressHydrationWarning>
+    <html lang="ru">
       <head>
         <meta charSet="UTF-8" />
         <meta
@@ -54,9 +28,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
         <link rel="shortcut icon" href="/favicon.ico" />
         <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+        <link rel="manifest" href="/site.webmanifest" />
         <meta name="apple-mobile-web-app-title" content="Seyvix" />
 
-        <script src="https://telegram.org/js/telegram-web-app.js?62" />
+        {/* Deferred classic scripts run before the (deferred) module entry, in document order,
+            so `window.Telegram.WebApp` is available when the app boots without blocking parsing. */}
+        <script src="https://telegram.org/js/telegram-web-app.js?62" defer />
         <Meta />
         <Links />
       </head>
@@ -69,16 +46,45 @@ export function Layout({ children }: { children: React.ReactNode }) {
   )
 }
 
-export default function Root() {
-  const { user, authInitialReady, dehydratedState } = useLoaderData<typeof loader>()
+/** Rendered into the static index.html at build time and shown until the bundle boots. */
+export function HydrateFallback() {
+  return <FullPageLoader />
+}
 
+export default function Root() {
   return (
-    <AppProviders
-      authInitialReady={authInitialReady}
-      authInitialUser={user}
-      dehydratedState={dehydratedState}
-    >
+    <AppProviders>
       <Outlet />
     </AppProviders>
+  )
+}
+
+export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
+  const title = isRouteErrorResponse(error) && error.status === 404
+    ? 'Страница не найдена'
+    : 'Что-то пошло не так'
+  if (!isRouteErrorResponse(error)) console.error('[root] unhandled error', error)
+
+  return (
+    <main
+      style={{
+        minHeight: '100dvh',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 16,
+        padding: 24,
+        textAlign: 'center',
+      }}
+    >
+      <h1 style={{ fontSize: 22 }}>{title}</h1>
+      <div style={{ display: 'flex', gap: 12 }}>
+        <a href="/notes">К заметкам</a>
+        <button type="button" onClick={() => window.location.reload()}>
+          Обновить страницу
+        </button>
+      </div>
+    </main>
   )
 }

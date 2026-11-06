@@ -1,3 +1,5 @@
+import { ensureOk, readJson } from '../lib/apiError.ts'
+
 const BASE = '/api/v1/auth'
 
 export interface UserResponse {
@@ -8,6 +10,7 @@ export interface UserResponse {
   avatar_url?: string | null
   display_name: string
   is_active: boolean
+  is_admin: boolean
 }
 
 export interface AuthSessionResponse {
@@ -26,123 +29,34 @@ export interface AuthTokensResponse {
   token_type: string
 }
 
-export interface ApiError {
-  code: string
-  message: string
-  details: unknown
-}
-
-export class AuthApiError extends Error {
-  readonly status: number
-  readonly code: string
-
-  constructor(status: number, code: string, message: string) {
-    super(message)
-    this.status = status
-    this.code = code
-  }
-}
-
-async function parseError(res: Response): Promise<AuthApiError> {
-  try {
-    const body = await res.json()
-    const err: ApiError = body.error ?? body
-    return new AuthApiError(res.status, err.code ?? 'unknown_error', err.message ?? 'Unknown error')
-  } catch {
-    return new AuthApiError(res.status, 'unknown_error', res.statusText)
-  }
-}
-
-export async function apiRegister(
-  email: string,
-  display_name: string,
-  password: string,
-): Promise<AuthTokensResponse> {
-  const res = await fetch(`${BASE}/register`, {
+/** Login exchanges are unauthenticated POSTs that set the refresh cookie and return tokens. */
+async function exchange(path: string, body: Record<string, string>, failure: string) {
+  const res = await fetch(`${BASE}/${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, display_name, password }),
-    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(body),
   })
-  if (!res.ok) throw await parseError(res)
-  return res.json()
+  return readJson<AuthTokensResponse>(res, failure)
 }
 
-export async function apiLogin(
-  email: string,
-  password: string,
-): Promise<AuthTokensResponse> {
-  const res = await fetch(`${BASE}/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
-    credentials: 'include',
-  })
-  if (!res.ok) throw await parseError(res)
-  return res.json()
+export function apiTelegramResult(tgAuthResult: string): Promise<AuthTokensResponse> {
+  return exchange('telegram-result', { tg_auth_result: tgAuthResult }, 'Telegram login failed')
 }
 
-export async function apiRefresh(): Promise<AuthTokensResponse> {
-  const res = await fetch(`${BASE}/refresh`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-  })
-  if (!res.ok) throw await parseError(res)
-  return res.json()
+export function apiTelegramWebApp(initData: string): Promise<AuthTokensResponse> {
+  return exchange('telegram-web-app', { init_data: initData }, 'Telegram Mini App login failed')
 }
 
+export function apiTelegramCode(code: string): Promise<AuthTokensResponse> {
+  return exchange('telegram-code', { code }, 'Telegram login failed')
+}
+
+export function apiTelegramOidcCode(code: string, state: string): Promise<AuthTokensResponse> {
+  return exchange('telegram-oidc-code', { code, state }, 'Telegram login failed')
+}
+
+/** Revokes the current refresh session server-side and clears the refresh cookie. */
 export async function apiLogout(): Promise<void> {
-  await fetch(`${BASE}/logout`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-  })
-}
-
-export async function apiTelegramResult(tgAuthResult: string): Promise<AuthTokensResponse> {
-  const res = await fetch(`${BASE}/telegram-result`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tg_auth_result: tgAuthResult }),
-    credentials: 'include',
-  })
-  if (!res.ok) throw await parseError(res)
-  return res.json()
-}
-
-export async function apiTelegramWebApp(initData: string): Promise<AuthTokensResponse> {
-  const res = await fetch(`${BASE}/telegram-web-app`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ init_data: initData }),
-    credentials: 'include',
-  })
-  if (!res.ok) throw await parseError(res)
-  return res.json()
-}
-
-export async function apiTelegramCode(code: string): Promise<AuthTokensResponse> {
-  const res = await fetch(`${BASE}/telegram-code`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code }),
-    credentials: 'include',
-  })
-  if (!res.ok) throw await parseError(res)
-  return res.json()
-}
-
-export async function apiTelegramOidcCode(
-  code: string,
-  state: string,
-): Promise<AuthTokensResponse> {
-  const res = await fetch(`${BASE}/telegram-oidc-code`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code, state }),
-    credentials: 'include',
-  })
-  if (!res.ok) throw await parseError(res)
-  return res.json()
+  const res = await fetch(`${BASE}/logout`, { method: 'POST' })
+  await ensureOk(res, 'Logout failed')
 }

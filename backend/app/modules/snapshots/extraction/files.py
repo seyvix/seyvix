@@ -4,10 +4,11 @@ import csv
 import io
 import json
 import zipfile
-from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 from xml.etree import ElementTree
+
+import fitz  # type: ignore[import-untyped]
 
 from app.modules.snapshots.extraction.core import (
     ExtractionPage,
@@ -16,7 +17,6 @@ from app.modules.snapshots.extraction.core import (
     plain_text_from_markdown,
 )
 from app.modules.snapshots.extraction.html import html_to_markdown
-from app.modules.snapshots.extraction.providers import OcrProvider, SttProvider, VisionProvider
 
 
 def extract_plain_text(value: str, *, source_kind: str = "text") -> ExtractionResult:
@@ -143,220 +143,101 @@ def _docx_table_markdown(table: ElementTree.Element, namespace: str) -> str:
     return "\n".join(lines)
 
 
-def extract_pdf(
-    source_path: Path,
-    *,
-    ocr_provider: OcrProvider,
-    render_page_image: Callable[[Any, int], Path],
-    max_pages: int,
-) -> ExtractionResult | None:
-    try:
-        import fitz  # type: ignore[import-untyped]
-    except ImportError:
-        return None
-
-    doc = fitz.open(str(source_path))
-    try:
-        pages: list[ExtractionPage] = []
-        page_markdown: list[str] = []
-        warnings: list[str] = []
-        for index, page in enumerate(doc, start=1):
-            if index > max_pages:
-                warnings.append(f"PDF extraction stopped after {max_pages} pages.")
-                break
-            embedded = normalize_blank_lines(page.get_text("text"))
-            method = "pdf-text"
-            selected = embedded
-            page_warnings: list[str] = []
-            quality = _text_quality(embedded)
-
-            if quality < 0.2:
-                image_path = render_page_image(page, index)
-                try:
-                    ocr_text, ocr_warning = _safe_ocr_text(ocr_provider, image_path)
-                finally:
-                    image_path.unlink(missing_ok=True)
-                if ocr_text:
-                    selected = ocr_text
-                    method = "ocr"
-                    quality = _text_quality(ocr_text)
-                else:
-                    page_warnings.append(ocr_warning or "ocr_unavailable")
-            elif quality < 0.5:
-                image_path = render_page_image(page, index)
-                try:
-                    ocr_text, ocr_warning = _safe_ocr_text(ocr_provider, image_path)
-                finally:
-                    image_path.unlink(missing_ok=True)
-                if ocr_warning:
-                    page_warnings.append(ocr_warning)
-                if ocr_text and _text_distance_hint(embedded, ocr_text) > 0.45:
-                    page_warnings.append("pdf_text_ocr_mismatch")
-                    warnings.append(f"Page {index}: embedded PDF text differs from OCR text.")
-                    if _text_quality(ocr_text) > quality:
-                        selected = ocr_text
-                        method = "ocr"
-                        quality = _text_quality(ocr_text)
-
-            if selected:
-                page_markdown.append(f"## Page {index}\n\n{selected}")
-            pages.append(
-                ExtractionPage(
-                    page_number=index,
-                    method=method,
-                    char_count=len(selected),
-                    quality=quality,
-                    warnings=page_warnings,
-                )
-            )
-        markdown = normalize_blank_lines("\n\n".join(page_markdown))
-        if not markdown:
-            return None
-        return ExtractionResult(
-            markdown=markdown,
-            plain_text=plain_text_from_markdown(markdown),
-            source_kind="pdf",
-            method="pdf",
-            warnings=warnings,
-            pages=pages,
-            quality=_text_quality(markdown),
-        )
-    finally:
-        doc.close()
-
-
-def extract_image(
-    source_path: Path, *, ocr_provider: OcrProvider, vision_provider: VisionProvider
-) -> ExtractionResult:
-    ocr_text, ocr_warning = _safe_ocr_text(ocr_provider, source_path)
-    description, description_warning = _safe_image_description(vision_provider, source_path)
-    blocks: list[str] = []
-    warnings = [warning for warning in (ocr_warning, description_warning) if warning is not None]
-    methods: list[str] = []
-
-    if description:
-        blocks.append(f"## Image description\n\n{description}")
-        methods.append("vision")
-    if ocr_text:
-        blocks.append(f"## OCR text\n\n{ocr_text}")
-        methods.append("ocr")
-
-    markdown = normalize_blank_lines("\n\n".join(blocks))
-    if not markdown:
-        return ExtractionResult(
-            markdown="",
-            plain_text="",
-            source_kind="image",
-            method="vision+ocr",
-            warnings=warnings or ["Vision/OCR providers are disabled or returned no text."],
-            quality=0.0,
-        )
-    return ExtractionResult(
-        markdown=markdown,
-        plain_text=plain_text_from_markdown(markdown),
-        source_kind="image",
-        method="+".join(methods),
-        warnings=warnings,
-        quality=_text_quality(markdown),
-    )
-
-
-def extract_media(
-    source_path: Path,
-    *,
-    stt_provider: SttProvider,
-    vision_provider: VisionProvider,
-    source_kind: str,
-    max_description_seconds: int,
-) -> ExtractionResult:
-    transcript, stt_warning = _safe_stt_text(stt_provider, source_path)
-    description = ""
-    description_warning: str | None = None
-    if source_kind == "video":
-        description, description_warning = _safe_video_description(
-            vision_provider,
-            source_path,
-            max_seconds=max_description_seconds,
-        )
-    blocks: list[str] = []
-    warnings = [warning for warning in (stt_warning, description_warning) if warning is not None]
-    methods: list[str] = []
-
-    if description:
-        blocks.append(f"## Video description\n\n{description}")
-        methods.append("vision")
-    if transcript:
-        blocks.append(f"## Transcript\n\n{transcript}")
-        methods.append("stt")
-
-    markdown = normalize_blank_lines("\n\n".join(blocks))
-    if not markdown:
-        return ExtractionResult(
-            markdown="",
-            plain_text="",
-            source_kind=source_kind,
-            method="vision+stt" if source_kind == "video" else "stt",
-            warnings=warnings
-            or [
-                (
-                    "Vision/speech-to-text providers are disabled or returned no text."
-                    if source_kind == "video"
-                    else "Speech-to-text provider is disabled or returned no text."
-                )
-            ],
-            quality=0.0,
-        )
-    return ExtractionResult(
-        markdown=markdown,
-        plain_text=plain_text_from_markdown(markdown),
-        source_kind=source_kind,
-        method="+".join(methods),
-        warnings=warnings,
-        quality=_text_quality(markdown),
-    )
-
-
 def extract_html_file(value: str) -> ExtractionResult:
     return html_to_markdown(value, source_kind="html")
 
 
+OCR_REPLACE_QUALITY = 0.2
+OCR_COMPARE_QUALITY = 0.5
+
+
+@dataclass(frozen=True, slots=True)
+class PdfPageText:
+    number: int
+    text: str
+    quality: float
+
+    @property
+    def needs_ocr(self) -> bool:
+        return self.quality < OCR_COMPARE_QUALITY
+
+
+def read_pdf_text(source_path: Path, *, max_pages: int) -> tuple[list[PdfPageText], int]:
+    """Embedded text of the first `max_pages` pages plus the total page count."""
+    with fitz.open(str(source_path)) as doc:
+        pages = [
+            PdfPageText(index + 1, text, _text_quality(text))
+            for index in range(min(doc.page_count, max_pages))
+            for text in [normalize_blank_lines(doc[index].get_text("text"))]
+        ]
+        return pages, doc.page_count
+
+
+def build_pdf_result(
+    pages: list[PdfPageText],
+    *,
+    total_pages: int,
+    ocr_texts: dict[int, str],
+    ocr_warnings: dict[int, str],
+) -> ExtractionResult | None:
+    """Choose embedded text or OCR text per page and assemble the document markdown."""
+    warnings: list[str] = []
+    if total_pages > len(pages):
+        warnings.append(f"PDF extraction stopped after {len(pages)} pages.")
+    page_records: list[ExtractionPage] = []
+    page_markdown: list[str] = []
+    for page in pages:
+        selected, method, quality = page.text, "pdf-text", page.quality
+        page_warnings: list[str] = []
+        ocr_text = normalize_blank_lines(ocr_texts.get(page.number, ""))
+        if page.number in ocr_warnings:
+            page_warnings.append(ocr_warnings[page.number])
+        if page.quality < OCR_REPLACE_QUALITY:
+            if ocr_text:
+                selected, method, quality = ocr_text, "ocr", _text_quality(ocr_text)
+            elif not page_warnings:
+                page_warnings.append("ocr_unavailable")
+        elif page.needs_ocr and ocr_text and _text_distance_hint(page.text, ocr_text) > 0.45:
+            page_warnings.append("pdf_text_ocr_mismatch")
+            warnings.append(f"Page {page.number}: embedded PDF text differs from OCR text.")
+            if _text_quality(ocr_text) > quality:
+                selected, method, quality = ocr_text, "ocr", _text_quality(ocr_text)
+        if selected:
+            page_markdown.append(f"## Page {page.number}\n\n{selected}")
+        page_records.append(
+            ExtractionPage(
+                page_number=page.number,
+                method=method,
+                char_count=len(selected),
+                quality=quality,
+                warnings=page_warnings,
+            )
+        )
+    markdown = normalize_blank_lines("\n\n".join(page_markdown))
+    if not markdown:
+        return None
+    return ExtractionResult(
+        markdown=markdown,
+        plain_text=plain_text_from_markdown(markdown),
+        source_kind="pdf",
+        method="pdf",
+        warnings=warnings,
+        pages=page_records,
+        quality=_text_quality(markdown),
+    )
+
+
+def decode_text(data: bytes) -> str | None:
+    for encoding in ("utf-8", "utf-16", "cp1251"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return None
+
+
 def _escape_table_cell(value: str) -> str:
     return value.strip().replace("|", "\\|")
-
-
-def _safe_ocr_text(provider: OcrProvider, image_path: Path) -> tuple[str, str | None]:
-    try:
-        return normalize_blank_lines(provider.extract_image_text(image_path) or ""), None
-    except Exception as exc:  # noqa: BLE001
-        return "", f"OCR provider failed: {exc}"
-
-
-def _safe_stt_text(provider: SttProvider, media_path: Path) -> tuple[str, str | None]:
-    try:
-        return normalize_blank_lines(provider.transcribe_media(media_path) or ""), None
-    except Exception as exc:  # noqa: BLE001
-        return "", f"Speech-to-text provider failed: {exc}"
-
-
-def _safe_image_description(provider: VisionProvider, image_path: Path) -> tuple[str, str | None]:
-    try:
-        return normalize_blank_lines(provider.describe_image(image_path) or ""), None
-    except Exception as exc:  # noqa: BLE001
-        return "", f"Vision description provider failed: {exc}"
-
-
-def _safe_video_description(
-    provider: VisionProvider, video_path: Path, *, max_seconds: int
-) -> tuple[str, str | None]:
-    try:
-        return (
-            normalize_blank_lines(
-                provider.describe_video(video_path, max_seconds=max_seconds) or ""
-            ),
-            None,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return "", f"Vision description provider failed: {exc}"
 
 
 def _text_quality(value: str) -> float:

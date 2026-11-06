@@ -1,19 +1,16 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Annotated, Literal
-from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile, status
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from starlette.background import BackgroundTask
 
 from app.api.dependencies import get_db_session
 from app.api.errors import AppError
 from app.api.schemas import ErrorResponse
-from app.core.logging import get_logger
+from app.core.config import get_settings
 from app.modules.auth.presentation.rest.router import (
     get_auth_context,
     get_auth_context_from_bearer_or_refresh_cookie,
@@ -25,11 +22,17 @@ from app.modules.content.app_note import (
     AppNoteListResponse,
     FileUploadAppResponse,
     FolderDetailAppResponse,
+    NoteChangesResponse,
     note_card_to_app_card_note,
     note_card_to_app_note,
     upload_result_to_json_bytes,
 )
-from app.modules.content.infrastructure.repositories import ContentRepository
+from app.modules.content.presentation.rest.files import (
+    IMMUTABLE_FILE_CACHE,
+    MUTABLE_FILE_CACHE,
+    content_disposition,
+    storage_file_response,
+)
 from app.modules.content.schemas import (
     BulkDeleteRequest,
     CreateNoteRequest,
@@ -37,6 +40,7 @@ from app.modules.content.schemas import (
     FolderTreeResponse,
     LinkSnapshotDecisionRequest,
     MergeNotesRequest,
+    NoteCardResponse,
     NoteSort,
     RemoveCollectionItemsRequest,
     ReorderNotesRequest,
@@ -48,32 +52,24 @@ from app.modules.content.service import (
     NoteNotFoundError,
     ThumbnailPendingError,
     ThumbnailUnavailableError,
-    UploadedContent,
 )
-from app.modules.search.infrastructure.meilisearch import MeilisearchUnavailableError
+from app.modules.content.uploads import spool_upload_files
 from app.modules.search.schemas import SearchFilters, SearchMode
-from app.modules.search.service import SearchValidationError, SemanticSearchService
-
-logger = get_logger(__name__)
+from app.modules.search.service import SearchService, SearchValidationError
 
 router = APIRouter(tags=["content"])
 NoteListView = Literal["full", "card"]
 CARD_VIEW_TEXT_CONTENT_LIMIT = 240
 CARD_VIEW_MAX_OBJECTS = 6
 CARD_VIEW_SEARCH_MATCH_TEXT_LIMIT = 240
-
-
-class InvalidRangeHeader(Exception):
-    pass
+SEARCH_CANDIDATE_LIMIT = 500
 
 
 def get_content_service(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> ContentService:
-    storage_root = getattr(request.app.state, "content_storage_root", Path("data/content"))
-    storage_backend = getattr(request.app.state, "storage_backend", None)
-    return ContentService(session, Path(storage_root), storage_backend=storage_backend)
+    return ContentService(session, request.app.state.storage)
 
 
 def _not_found(exc: Exception) -> AppError:
@@ -98,39 +94,16 @@ def _parse_filter_datetime(value: str | None, field_name: str) -> datetime | Non
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
-def _parse_range_header(range_header: str | None, size_bytes: int) -> tuple[int, int] | None:
-    if range_header is None:
-        return None
-    value = range_header.strip()
-    if not value.startswith("bytes="):
-        raise InvalidRangeHeader
-    range_spec = value.removeprefix("bytes=").strip()
-    if "," in range_spec:
-        raise InvalidRangeHeader
-    start_text, separator, end_text = range_spec.partition("-")
-    if separator != "-" or (not start_text and not end_text) or size_bytes <= 0:
-        raise InvalidRangeHeader
-    try:
-        if start_text:
-            start = int(start_text)
-            end = int(end_text) if end_text else size_bytes - 1
-        else:
-            suffix_length = int(end_text)
-            if suffix_length <= 0:
-                raise InvalidRangeHeader
-            start = max(size_bytes - suffix_length, 0)
-            end = size_bytes - 1
-    except ValueError as exc:
-        raise InvalidRangeHeader from exc
-    if start < 0 or end < start or start >= size_bytes:
-        raise InvalidRangeHeader
-    return start, min(end, size_bytes - 1)
-
-
-def _inline_content_disposition(filename: str) -> str:
-    ascii_fallback = filename.encode("ascii", "ignore").decode("ascii").strip() or "file"
-    ascii_fallback = ascii_fallback.replace("\\", "_").replace("/", "_").replace('"', "'")
-    return f"inline; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quote(filename, safe='')}"
+def _card_json(cards: list[NoteCardResponse]) -> list[object]:
+    return [
+        note_card_to_app_card_note(
+            card,
+            text_content_limit=CARD_VIEW_TEXT_CONTENT_LIMIT,
+            max_objects=CARD_VIEW_MAX_OBJECTS,
+            search_match_text_limit=CARD_VIEW_SEARCH_MATCH_TEXT_LIMIT,
+        )
+        for card in cards
+    ]
 
 
 @router.post(
@@ -239,24 +212,21 @@ async def upload_note_files(
                 }
             ],
         )
-
-    uploaded_files = [
-        UploadedContent(
-            filename=f.filename or "file",
-            content_type=f.content_type,
-            data=await f.read(),
-        )
-        for f in files_to_upload
-    ]
-    result = await service.upload_files(
-        owner_user_id=context.user.id,
-        files=uploaded_files,
-        title=title,
-        folder_path=folder_path,
-        tag_names=tag_names or [],
-        create_or_attach_object=create_object or object_id is not None,
-        object_id=object_id,
-    )
+    async with spool_upload_files(
+        files_to_upload, max_bytes=get_settings().max_upload_bytes
+    ) as uploaded_files:
+        try:
+            result = await service.upload_files(
+                owner_user_id=context.user.id,
+                files=uploaded_files,
+                title=title,
+                folder_path=folder_path,
+                tag_names=tag_names or [],
+                create_or_attach_object=create_object or object_id is not None,
+                object_id=object_id,
+            )
+        except NoteNotFoundError as exc:
+            raise _not_found(exc) from exc
     return Response(
         content=upload_result_to_json_bytes(result),
         media_type="application/json",
@@ -295,42 +265,21 @@ async def list_notes(
         Query(description="Use 'card' to trim large text bodies for dashboard cards."),
     ] = "full",
 ) -> AppNoteListResponse | Response:
-    search_service = SemanticSearchService(service.session)
-    settings = search_service.settings
-    normalized_search = search.strip() if search else None
     created_after_dt = _parse_filter_datetime(created_after, "created_after")
     created_before_dt = _parse_filter_datetime(created_before, "created_before")
-    if normalized_search and search_mode in ("semantic", "hybrid"):
-        meilisearch_available = settings.search_engine == "meilisearch" and bool(
-            settings.search_meilisearch_url
-        )
-        below_threshold = False
-        if meilisearch_available:
-            content_repo = ContentRepository(service.session)
-            note_count = await content_repo.count_owned_notes(
-                owner_user_id=context.user.id,
-            )
-            below_threshold = note_count < settings.search_vector_modes_min_notes
-        if not meilisearch_available or below_threshold:
-            logger.info(
-                "search.mode.downgrade",
-                requested=search_mode,
-                applied="full_text",
-                owner_user_id=context.user.id,
-            )
-            search_mode = "full_text"
-    search_result_ids: list[str] | None = None
-    search_matches_by_object_id = None
-    if normalized_search and (settings.search_engine == "meilisearch" or search_mode != "hybrid"):
+    folder_path = folders or folder
+    normalized_search = search.strip() if search else None
+    search_matches = None
+    if normalized_search:
         try:
-            search_matches_by_object_id = await search_service.search_content_object_matches(
+            search_matches = await SearchService(service.session).search_content_object_matches(
                 owner_user_id=context.user.id,
                 query=normalized_search,
-                limit=200,
+                limit=SEARCH_CANDIDATE_LIMIT,
                 mode=search_mode,
                 filters=SearchFilters(
                     tags=tags or [],
-                    folder_path=folders or folder,
+                    folder_path=folder_path,
                     content_types=types or [],
                     source_providers=sources or [],
                     is_favorite=favorite,
@@ -338,40 +287,18 @@ async def list_notes(
                     created_at_to=created_before_dt,
                 ),
             )
-            search_result_ids = list(search_matches_by_object_id)
-            if (
-                settings.search_engine != "meilisearch"
-                and search_mode in ("full_text", "hybrid")
-                and not search_result_ids
-            ):
-                logger.info(
-                    "search.mode.empty_external_result_fallback",
-                    requested=search_mode,
-                    applied="full_text",
-                    owner_user_id=context.user.id,
-                )
-                search_result_ids = None
-                search_matches_by_object_id = None
         except SearchValidationError as exc:
             raise AppError(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 code="validation_error",
                 message="Search query must not be empty.",
             ) from exc
-        except (ValueError, MeilisearchUnavailableError) as exc:
-            raise AppError(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                code="search_unavailable",
-                message="Search provider is not available.",
-            ) from exc
     lst = await service.list_notes(
         owner_user_id=context.user.id,
-        search=search,
-        search_result_ids=search_result_ids,
-        search_matches_by_object_id=search_matches_by_object_id,
-        include_local_search_matches=search_mode == "hybrid",
+        search_result_ids=list(search_matches) if search_matches is not None else None,
+        search_matches_by_object_id=search_matches,
         tag_slugs=tags or [],
-        folder_path=folders or folder,
+        folder_path=folder_path,
         content_types=types or [],
         source_providers=sources or [],
         is_favorite=favorite,
@@ -384,25 +311,47 @@ async def list_notes(
     )
     if view == "card":
         payload = AppCardNoteListResponse(
-            items=[
-                note_card_to_app_card_note(
-                    n,
-                    text_content_limit=CARD_VIEW_TEXT_CONTENT_LIMIT,
-                    max_objects=CARD_VIEW_MAX_OBJECTS,
-                    search_match_text_limit=CARD_VIEW_SEARCH_MATCH_TEXT_LIMIT,
-                )
-                for n in lst.items
-            ],
+            items=_card_json(lst.items),  # type: ignore[arg-type]
             nextOffset=lst.next_offset,
         )
         return Response(
             content=payload.model_dump_json(by_alias=True, exclude_none=True),
             media_type="application/json",
         )
-
     return AppNoteListResponse(
         items=[note_card_to_app_note(n) for n in lst.items],
         nextOffset=lst.next_offset,
+    )
+
+
+@router.get(
+    "/notes/changes",
+    response_model=NoteChangesResponse,
+    summary="Note change feed",
+    description=(
+        "Cards (same schema as `GET /notes?view=card`) changed since `since`, ids removed from "
+        "the top-level list (trashed, deleted or moved into a collection) and the next cursor. "
+        "`reset=true` (cursor missing, invalid or too old) means: refetch lists, keep cursor. "
+        "When `has_more` is true call again immediately with the new cursor."
+    ),
+    responses={401: {"model": ErrorResponse, "description": "Missing or invalid access token."}},
+)
+async def list_note_changes(
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    service: Annotated[ContentService, Depends(get_content_service)],
+    since: Annotated[str | None, Query(max_length=64)] = None,
+) -> Response:
+    result = await service.list_changes(owner_user_id=context.user.id, since=since)
+    payload = NoteChangesResponse(
+        cursor=result.changes.cursor,
+        notes=_card_json(result.cards),  # type: ignore[arg-type]
+        removed_ids=result.changes.removed_ids,
+        reset=result.changes.reset,
+        has_more=result.changes.has_more,
+    )
+    return Response(
+        content=payload.model_dump_json(by_alias=True, exclude_none=True),
+        media_type="application/json",
     )
 
 
@@ -667,19 +616,18 @@ async def download_note(
     note_slug: str,
     context: Annotated[AuthContext, Depends(get_auth_context)],
     service: Annotated[ContentService, Depends(get_content_service)],
-) -> FileResponse:
+) -> StreamingResponse:
     try:
-        archive_path = await service.get_download_path(
-            owner_user_id=context.user.id, slug=note_slug
-        )
+        filename, body = await service.note_archive(owner_user_id=context.user.id, slug=note_slug)
     except NoteNotFoundError as exc:
         raise _not_found(exc) from exc
-
-    return FileResponse(
-        archive_path,
+    return StreamingResponse(
+        body,
         media_type="application/zip",
-        filename=f"{note_slug}.zip",
-        background=BackgroundTask(archive_path.unlink, missing_ok=True),
+        headers={
+            "Content-Disposition": content_disposition(filename, "attachment"),
+            "Cache-Control": "private, no-store",
+        },
     )
 
 
@@ -703,61 +651,21 @@ async def get_asset_file(
     request: Request,
     context: Annotated[AuthContext, Depends(get_auth_context_from_bearer_or_refresh_cookie)],
     service: Annotated[ContentService, Depends(get_content_service)],
-) -> FileResponse | StreamingResponse | Response:
+) -> Response:
     try:
         asset_file = await service.get_asset_file(
             owner_user_id=context.user.id, slug=note_slug, asset_id=asset_id
         )
     except NoteNotFoundError as exc:
         raise _not_found(exc) from exc
-
-    if asset_file.local_path is not None:
-        return FileResponse(asset_file.local_path, media_type=asset_file.mime_type)
-
-    try:
-        range_bounds = _parse_range_header(
-            request.headers.get("range"),
-            asset_file.size_bytes,
-        )
-    except InvalidRangeHeader:
-        return Response(
-            status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
-            headers={
-                "Accept-Ranges": "bytes",
-                "Content-Range": f"bytes */{asset_file.size_bytes}",
-            },
-        )
-
-    if range_bounds is None:
-        start = 0
-        end = max(asset_file.size_bytes - 1, 0)
-        response_status = status.HTTP_200_OK
-    else:
-        start, end = range_bounds
-        response_status = status.HTTP_206_PARTIAL_CONTENT
-
-    content_length = max(end - start + 1, 0)
-    headers = {
-        "Accept-Ranges": "bytes",
-        "Content-Length": str(content_length),
-        "Content-Disposition": _inline_content_disposition(asset_file.filename),
-    }
-    if response_status == status.HTTP_206_PARTIAL_CONTENT:
-        headers["Content-Range"] = f"bytes {start}-{end}/{asset_file.size_bytes}"
-
-    if content_length == 0:
-        content = iter(())
-    else:
-        content = service.storage.backend.iter_object_bytes(
-            asset_file.storage_key,
-            offset=start,
-            length=content_length,
-        )
-    return StreamingResponse(
-        content,
-        status_code=response_status,
+    await service.session.close()  # do not hold a DB connection while streaming
+    return await storage_file_response(
+        request,
+        service.storage,
+        key=asset_file.storage_key,
+        filename=asset_file.filename,
         media_type=asset_file.mime_type,
-        headers=headers,
+        cache_control=MUTABLE_FILE_CACHE if asset_file.mutable else IMMUTABLE_FILE_CACHE,
     )
 
 
@@ -783,11 +691,12 @@ async def get_asset_file(
 async def get_asset_thumbnail(
     note_slug: str,
     asset_id: str,
+    request: Request,
     context: Annotated[AuthContext, Depends(get_auth_context_from_bearer_or_refresh_cookie)],
     service: Annotated[ContentService, Depends(get_content_service)],
 ) -> Response:
     try:
-        path, mime_type = await service.get_asset_thumbnail(
+        thumbnail = await service.get_asset_thumbnail(
             owner_user_id=context.user.id, slug=note_slug, asset_id=asset_id
         )
     except NoteNotFoundError as exc:
@@ -796,7 +705,15 @@ async def get_asset_thumbnail(
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except ThumbnailPendingError:
         return Response(status_code=status.HTTP_202_ACCEPTED)
-    return FileResponse(path, media_type=mime_type)
+    await service.session.close()
+    assert thumbnail.key is not None  # guaranteed by get_asset_thumbnail
+    return await storage_file_response(
+        request,
+        service.storage,
+        key=thumbnail.key,
+        filename=thumbnail.filename,
+        media_type=thumbnail.mime_type,
+    )
 
 
 @router.delete(

@@ -1,22 +1,34 @@
+"""Snapshot API service plus the helpers other modules use to read snapshot results.
+
+Scheduling (`schedule_content_object`) runs inside the worker's event handler; processing
+lives in `app.modules.snapshots.worker`. Nothing here touches Chromium, LibreOffice or AI.
+"""
+
 from __future__ import annotations
 
-import json
+import re
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from pathlib import Path
-from tempfile import NamedTemporaryFile
+from typing import Any, Final
+from uuid import uuid4
 
+from sqlalchemy import or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
 from app.modules.content.models import ContentAsset, ContentObject
-from app.modules.snapshots.infrastructure.repositories import (
-    SnapshotArtifactRepository,
-    SnapshotContentRepository,
-    SnapshotJobRepository,
-    SnapshotSettingsRepository,
+from app.modules.snapshots.models import SnapshotArtifact, SnapshotJob, SnapshotUserSettings
+from app.modules.snapshots.planning import (
+    AssetFacts,
+    SnapshotJobType,
+    effective_settings,
+    plan_snapshot_job_types,
+    source_fingerprint,
+    text_extractable,
 )
-from app.modules.snapshots.models import SnapshotUserSettings
+from app.modules.snapshots.rewriter import mime_for_resource
 from app.modules.snapshots.schemas import (
     ReprocessSnapshotsRequest,
     ReprocessSnapshotsResponse,
@@ -30,97 +42,45 @@ from app.modules.snapshots.schemas import (
     SnapshotSettingsResponse,
     UpdateSnapshotSettingsRequest,
 )
-from app.platform.storage.factory import build_storage_backend
-from app.platform.storage.service import StorageBackend
+from app.platform.jobs import (
+    JOB_CANCELLED,
+    JOB_FAILED,
+    JOB_PENDING,
+    JOB_SUCCEEDED,
+    utcnow,
+)
+from app.platform.storage.service import StorageBackend, StorageObjectNotFoundError
 
 logger = get_logger(__name__)
 
-SNAPSHOT_JOB_TYPES = (
-    "thumbnail",
-    "thumbnail_text",
-    "markdown",
-    "screenshot",
-    "webpage_html",
-    "pdf",
-    "archive_org",
+THUMBNAIL_TEXT_MAX_CHARS: Final = 5000
+PRIORITY_AUTOMATIC: Final = 100
+PRIORITY_USER: Final = 200
+# Job status values exposed by the REST API (the web client predates JOB_* names).
+API_JOB_STATUS: Final = {JOB_SUCCEEDED: "done"}
+RESOURCE_NAME_RE: Final = re.compile(r"^r\d{4}\.[a-z0-9]{1,8}$")
+
+FORMAT_OPTIONS: Final = (
+    ("screenshot", "Screenshot", "Visual webpage screenshot for link materials."),
+    ("webpage_html", "HTML archive", "Stored HTML copy of a linked webpage."),
+    ("pdf", "PDF", "PDF representation for documents, text files, and links."),
+    ("markdown", "Markdown", "Markdown text extracted from supported files and webpages."),
 )
 
-SNAPSHOT_FORMAT_OPTIONS = (
-    (
-        "screenshot",
-        "Screenshot",
-        "Visual webpage screenshot for link materials.",
-        "snapshot_archive_screenshot_enabled",
-    ),
-    (
-        "webpage_html",
-        "HTML archive",
-        "Stored HTML copy of a linked webpage.",
-        "snapshot_archive_webpage_html_enabled",
-    ),
-    (
-        "pdf",
-        "PDF",
-        "PDF representation for documents, text files, and links.",
-        "snapshot_archive_pdf_enabled",
-    ),
-    (
-        "markdown",
-        "Markdown",
-        "Markdown text extracted from supported files and webpages.",
-        "snapshot_archive_markdown_enabled",
-    ),
-    (
-        "archive_org",
-        "Archive.org",
-        "External Internet Archive snapshot for link materials.",
-        "snapshot_archive_org_enabled",
-    ),
-)
 
-MARKDOWN_SUFFIXES = {".md", ".markdown"}
-OFFICE_PDF_SUFFIXES = {
-    ".doc",
-    ".docx",
-    ".odp",
-    ".ods",
-    ".odt",
-    ".ppt",
-    ".pptx",
-    ".rtf",
-    ".xls",
-    ".xlsx",
-}
-OFFICE_PDF_MIME_TYPES = {
-    "application/msword",
-    "application/rtf",
-    "application/vnd.ms-excel",
-    "application/vnd.ms-powerpoint",
-    "application/vnd.oasis.opendocument.presentation",
-    "application/vnd.oasis.opendocument.spreadsheet",
-    "application/vnd.oasis.opendocument.text",
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-}
-TEXT_PDF_SUFFIXES = {".csv", ".htm", ".html", ".json", ".txt"}
-TEXT_PDF_MIME_TYPES = {
-    "application/json",
-    "text/csv",
-    "text/html",
-    "text/markdown",
-    "text/plain",
-}
-TEXT_THUMBNAIL_SUFFIXES = {".md", ".markdown", ".txt"}
+class SnapshotNotFoundError(Exception):
+    pass
 
 
-@dataclass(slots=True)
-class EffectiveSnapshotSettings:
-    screenshot: bool
-    webpage_html: bool
-    pdf: bool
-    markdown: bool
-    archive_org: bool
+@dataclass(frozen=True, slots=True)
+class SnapshotFile:
+    """A servable artifact. `key` is set for stored files; `text` for inline text artifacts."""
+
+    key: str | None
+    mime_type: str
+    filename: str
+    size_bytes: int
+    text: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,101 +91,93 @@ class SnapshotArtifactReference:
     size_bytes: int
 
 
-class SnapshotArtifactNotFoundError(Exception):
-    pass
+@dataclass(frozen=True, slots=True)
+class AssetPreview:
+    has_thumbnail: bool = False
+    thumbnail_text: str | None = None
 
 
-def plan_snapshot_job_types(
-    asset: ContentAsset,
-    effective: EffectiveSnapshotSettings,
-) -> tuple[str, ...]:
-    job_types: list[str] = ["markdown"]
-    job_types.append("thumbnail_text" if _uses_text_thumbnail(asset) else "thumbnail")
-    if effective.pdf and _should_generate_pdf(asset):
-        job_types.append("pdf")
-    if _is_site_asset(asset):
-        if effective.screenshot:
-            job_types.append("screenshot")
-        if effective.webpage_html:
-            job_types.append("webpage_html")
+def artifact_dir(storage_key: str) -> str:
+    """Storage prefix (ending with `/`) holding an artifact file and its resources."""
+    return storage_key.rsplit("/", 1)[0] + "/"
 
-    return tuple(job_types)
+
+def api_job_status(status: str) -> str:
+    return API_JOB_STATUS.get(status, status)
 
 
 class SnapshotService:
     def __init__(
         self,
         session: AsyncSession,
-        storage_root: Path | None = None,
-        storage_backend: StorageBackend | None = None,
+        storage: StorageBackend,
+        settings: Settings | None = None,
     ) -> None:
         self.session = session
-        self.storage_root = storage_root or Path("data/content")
-        self.storage_backend = storage_backend or build_storage_backend(
-            get_settings(),
-            local_root=self.storage_root,
-        )
-        self.settings = SnapshotSettingsRepository(session)
-        self.jobs = SnapshotJobRepository(session)
-        self.artifacts = SnapshotArtifactRepository(session)
-        self.content = SnapshotContentRepository(session)
-        self.api_prefix = get_settings().api_prefix
+        self.storage = storage
+        self.settings = settings or get_settings()
+        self.api_prefix = self.settings.api_prefix
 
+    # --- settings ------------------------------------------------------------------------
     async def get_user_settings(self, owner_user_id: str) -> SnapshotSettingsResponse:
-        stored = await self.settings.get(owner_user_id)
-        effective = self._effective_settings(stored)
-        logger.info(
-            "snapshots.settings.effective",
-            owner_user_id=owner_user_id,
-            stored_webpage_html=stored.archive_as_webpage_html if stored is not None else None,
-            effective_webpage_html=effective.webpage_html,
-            default_webpage_html=get_settings().snapshot_archive_webpage_html_enabled,
+        stored = await self.session.get(SnapshotUserSettings, owner_user_id)
+        return self._settings_response(stored)
+
+    async def update_user_settings(
+        self, *, owner_user_id: str, payload: UpdateSnapshotSettingsRequest
+    ) -> SnapshotSettingsResponse:
+        await self.session.execute(
+            pg_insert(SnapshotUserSettings)
+            .values(owner_user_id=owner_user_id, created_at=utcnow(), updated_at=utcnow())
+            .on_conflict_do_nothing(index_elements=[SnapshotUserSettings.owner_user_id])
         )
+        stored = await self.session.get(
+            SnapshotUserSettings, owner_user_id, with_for_update=True, populate_existing=True
+        )
+        if stored is None:  # pragma: no cover - the row was inserted above
+            raise SnapshotNotFoundError
+        update_values = payload.model_dump(exclude_unset=True)
+        for key in ("screenshot", "webpage_html", "pdf", "markdown"):
+            if key in update_values:
+                setattr(stored, f"archive_as_{key}", update_values[key])
+        await self.session.commit()
+        return self._settings_response(stored)
+
+    def _settings_response(self, stored: SnapshotUserSettings | None) -> SnapshotSettingsResponse:
+        effective = effective_settings(self.settings, stored)
+        server = effective_settings(self.settings, None)
         return SnapshotSettingsResponse(
-            available=self._available_format_options(),
+            available=[
+                SnapshotFormatOption(
+                    key=key,
+                    label=label,
+                    description=description,
+                    server_enabled=getattr(server, key),
+                )
+                for key, label, description in FORMAT_OPTIONS
+            ],
             effective=SnapshotFormatSettings(
                 screenshot=effective.screenshot,
                 webpage_html=effective.webpage_html,
                 pdf=effective.pdf,
                 markdown=effective.markdown,
-                archive_org=effective.archive_org,
             ),
-            overrides=self._overrides(stored),
+            overrides=SnapshotFormatOverrides(
+                screenshot=stored.archive_as_screenshot if stored else None,
+                webpage_html=stored.archive_as_webpage_html if stored else None,
+                pdf=stored.archive_as_pdf if stored else None,
+                markdown=stored.archive_as_markdown if stored else None,
+            ),
         )
 
-    async def update_user_settings(
-        self,
-        *,
-        owner_user_id: str,
-        payload: UpdateSnapshotSettingsRequest,
-    ) -> SnapshotSettingsResponse:
-        stored = await self.settings.get_or_create(owner_user_id)
-
-        update = payload.model_dump(exclude_unset=True)
-        if "screenshot" in update:
-            stored.archive_as_screenshot = payload.screenshot
-        if "webpage_html" in update:
-            stored.archive_as_webpage_html = payload.webpage_html
-        if "pdf" in update:
-            stored.archive_as_pdf = payload.pdf
-        if "markdown" in update:
-            stored.archive_as_markdown = payload.markdown
-        if "archive_org" in update:
-            stored.archive_as_archive_org = payload.archive_org
-
-        await self.session.commit()
-        return await self.get_user_settings(owner_user_id)
-
+    # --- listing -------------------------------------------------------------------------
     async def list_jobs(
-        self,
-        *,
-        owner_user_id: str,
-        content_object_id: str | None,
+        self, *, owner_user_id: str, content_object_id: str | None
     ) -> SnapshotJobListResponse:
-        jobs = await self.jobs.list_for_user(
-            owner_user_id=owner_user_id,
-            content_object_id=content_object_id,
-        )
+        query = select(SnapshotJob).where(SnapshotJob.owner_user_id == owner_user_id)
+        if content_object_id is not None:
+            query = query.where(SnapshotJob.content_object_id == content_object_id)
+        jobs = await self.session.scalars(query.order_by(SnapshotJob.created_at.asc()).limit(500))
         return SnapshotJobListResponse(
             items=[
                 SnapshotJobResponse(
@@ -233,23 +185,22 @@ class SnapshotService:
                     content_object_id=job.content_object_id,
                     source_asset_id=job.source_asset_id,
                     job_type=job.job_type,
-                    status=job.status,
+                    status=api_job_status(job.status),
                     attempts=job.attempts,
-                    error_message=job.error_message,
+                    error_message=job.last_error,
                 )
                 for job in jobs
             ]
         )
 
     async def list_artifacts(
-        self,
-        *,
-        owner_user_id: str,
-        content_object_id: str | None,
+        self, *, owner_user_id: str, content_object_id: str | None
     ) -> SnapshotArtifactListResponse:
-        artifacts = await self.artifacts.list_for_user(
-            owner_user_id=owner_user_id,
-            content_object_id=content_object_id,
+        query = select(SnapshotArtifact).where(SnapshotArtifact.owner_user_id == owner_user_id)
+        if content_object_id is not None:
+            query = query.where(SnapshotArtifact.content_object_id == content_object_id)
+        artifacts = await self.session.scalars(
+            query.order_by(SnapshotArtifact.created_at.asc()).limit(500)
         )
         return SnapshotArtifactListResponse(
             items=[
@@ -261,380 +212,385 @@ class SnapshotService:
                     filename=artifact.filename,
                     mime_type=artifact.mime_type,
                     size_bytes=artifact.size_bytes,
-                    status=artifact.status,
-                    url=f"{self.api_prefix}/snapshots/artifacts/{artifact.id}",
+                    status="ready",
+                    url=self._artifact_url(artifact.id),
                 )
                 for artifact in artifacts
             ]
         )
 
+    # --- reprocessing --------------------------------------------------------------------
     async def reprocess(
-        self,
-        *,
-        owner_user_id: str,
-        payload: ReprocessSnapshotsRequest,
+        self, *, owner_user_id: str, payload: ReprocessSnapshotsRequest
     ) -> ReprocessSnapshotsResponse:
-        job_types = payload.job_types or ["markdown"]
-        assets: list[ContentAsset]
+        query = (
+            select(ContentAsset, ContentObject.owner_user_id)
+            .join(ContentObject, ContentObject.id == ContentAsset.content_object_id)
+            .where(ContentObject.owner_user_id == owner_user_id)
+        )
         if payload.source_asset_id is not None:
-            asset = await self.content.get_asset_for_user(
-                owner_user_id=owner_user_id,
-                source_asset_id=payload.source_asset_id,
-            )
-            if asset is None:
-                raise SnapshotArtifactNotFoundError
-            if (
-                payload.content_object_id is not None
-                and asset.content_object_id != payload.content_object_id
-            ):
-                raise SnapshotArtifactNotFoundError
-            assets = [asset]
+            query = query.where(ContentAsset.id == payload.source_asset_id)
+            if payload.content_object_id is not None:
+                query = query.where(ContentAsset.content_object_id == payload.content_object_id)
         elif payload.content_object_id is not None:
-            content_object = await self.content.get_object_for_user(
-                owner_user_id=owner_user_id,
-                content_object_id=payload.content_object_id,
+            query = query.where(
+                ContentAsset.content_object_id == payload.content_object_id,
+                ContentAsset.role == "original",
             )
-            if content_object is None:
-                raise SnapshotArtifactNotFoundError
-            assets = [asset for asset in content_object.assets if asset.role == "original"]
         else:
-            raise SnapshotArtifactNotFoundError
+            raise SnapshotNotFoundError
+        rows = (await self.session.execute(query)).all()
+        if not rows:
+            raise SnapshotNotFoundError
 
-        job_ids: list[str] = []
-        source_asset_ids: list[str] = []
-        for asset in assets:
-            for job_type in job_types:
-                job_id = await self.jobs.requeue(
-                    owner_user_id=owner_user_id,
-                    content_object_id=asset.content_object_id,
-                    source_asset_id=asset.id,
-                    job_type=job_type,
-                    force=payload.force,
+        job_types: list[SnapshotJobType] = list(dict.fromkeys(payload.job_types or ["markdown"]))
+        assets = [asset for asset, _ in rows]
+        await queue_jobs(
+            self.session,
+            [
+                _job_row(asset, owner_user_id, job_type, priority=PRIORITY_USER)
+                for asset in assets
+                for job_type in job_types
+            ],
+            force=payload.force,
+        )
+        job_ids = list(
+            await self.session.scalars(
+                select(SnapshotJob.id).where(
+                    SnapshotJob.source_asset_id.in_([asset.id for asset in assets]),
+                    SnapshotJob.job_type.in_(job_types),
                 )
-                job_ids.append(job_id)
-                if asset.id not in source_asset_ids:
-                    source_asset_ids.append(asset.id)
+            )
+        )
         await self.session.commit()
         return ReprocessSnapshotsResponse(
             queued_count=len(job_ids),
             job_ids=job_ids,
-            source_asset_ids=source_asset_ids,
+            source_asset_ids=[asset.id for asset in assets],
         )
 
-    async def get_artifact_file(
-        self,
-        *,
-        owner_user_id: str,
-        artifact_id: str,
-    ) -> tuple[Path, str, str]:
-        artifact = await self.artifacts.get_for_user(
-            owner_user_id=owner_user_id,
-            artifact_id=artifact_id,
-        )
-        if artifact is None:
-            raise SnapshotArtifactNotFoundError
-        path = self.storage_root / artifact.storage_path
-        if not path.exists():
-            temp_file = NamedTemporaryFile(prefix=f"{artifact.id}-", delete=False)
-            temp_file.write(
-                self.storage_backend.get_bytes(artifact.storage_key or artifact.storage_path)
-            )
-            temp_file.close()
-            path = Path(temp_file.name)
-        return path, artifact.mime_type, artifact.filename
-
-    async def enqueue_for_content_object(
-        self,
-        content_object: ContentObject,
-        *,
-        correlation_id: str | None = None,
-        source_event_id: str | None = None,
-    ) -> None:
-        stored = await self.settings.get(content_object.owner_user_id)
-        effective = self._effective_settings(stored)
-        source_assets = [asset for asset in content_object.assets if asset.role == "original"]
-        logger.info(
-            "snapshots.enqueue.start",
-            owner_user_id=content_object.owner_user_id,
-            content_object_id=content_object.id,
-            kind=content_object.kind,
-            media_type=content_object.media_type,
-            effective_screenshot=effective.screenshot,
-            effective_webpage_html=effective.webpage_html,
-            effective_pdf=effective.pdf,
-            effective_markdown=effective.markdown,
-            source_asset_ids=[asset.id for asset in source_assets],
-            source_asset_media_types=[asset.media_type for asset in source_assets],
-        )
-
-        for asset in source_assets:
-            # For link notes, skip non-link assets — their text is note metadata,
-            # not a site to snapshot.
-            if content_object.media_type == "link" and asset.media_type != "link":
-                logger.info(
-                    "snapshots.enqueue.asset_skipped",
-                    content_object_id=content_object.id,
-                    asset_id=asset.id,
-                    asset_media_type=asset.media_type,
-                    reason="link_note_non_link_asset",
-                )
-                continue
-            job_types = plan_snapshot_job_types(asset, effective)
-            logger.info(
-                "snapshots.enqueue.asset_plan",
-                owner_user_id=content_object.owner_user_id,
-                content_object_id=content_object.id,
-                asset_id=asset.id,
-                asset_media_type=asset.media_type,
-                asset_mime_type=asset.mime_type,
-                planned_job_types=list(job_types),
-            )
-            for job_type in job_types:
-                await self._enqueue_job(
-                    content_object,
-                    asset,
-                    job_type,
-                    correlation_id=correlation_id,
-                    source_event_id=source_event_id,
-                )
-
-        if effective.archive_org and self._is_site_object(content_object):
-            await self._enqueue_job(
-                content_object,
-                None,
-                "archive_org",
-                correlation_id=correlation_id,
-                source_event_id=source_event_id,
-            )
-
-    async def get_thumbnail_path(self, *, source_asset_id: str) -> tuple[Path, str] | None:
-        artifact = await self.artifacts.get_ready(
-            source_asset_id=source_asset_id,
-            artifact_type="thumbnail",
-        )
-        if artifact is None:
-            return None
-        path = self.storage_root / artifact.storage_path
-        if not path.exists():
-            temp_file = NamedTemporaryFile(prefix=f"{artifact.id}-", delete=False)
-            temp_file.write(
-                self.storage_backend.get_bytes(artifact.storage_key or artifact.storage_path)
-            )
-            temp_file.close()
-            path = Path(temp_file.name)
-        return path, artifact.mime_type
-
-    async def get_asset_artifact_references(
-        self,
-        *,
-        source_asset_id: str,
-    ) -> dict[str, SnapshotArtifactReference]:
-        artifacts = await self.artifacts.list_ready_for_asset(source_asset_id=source_asset_id)
-        logger.info(
-            "snapshots.artifact_refs.ready",
-            source_asset_id=source_asset_id,
-            artifact_types=[artifact.artifact_type for artifact in artifacts],
-            artifact_ids=[artifact.id for artifact in artifacts],
-        )
-        return {
-            artifact.artifact_type: SnapshotArtifactReference(
-                url=f"{self.api_prefix}/snapshots/artifacts/{artifact.id}",
-                filename=artifact.filename,
-                mime_type=artifact.mime_type,
-                size_bytes=artifact.size_bytes,
-            )
-            for artifact in artifacts
-        }
-
-    async def get_thumbnail_text(
-        self,
-        *,
-        source_asset_id: str,
-        max_chars: int = 5000,
-    ) -> str | None:
-        artifact = await self.artifacts.get_ready(
-            source_asset_id=source_asset_id,
-            artifact_type="thumbnail_text",
-        )
-        if artifact is None:
-            return None
-        path = self.storage_root / artifact.storage_path
-        if path.exists():
-            data = path.read_bytes()
-        else:
-            data = self.storage_backend.get_bytes(artifact.storage_key or artifact.storage_path)
-        return data.decode("utf-8", errors="replace")[:max_chars]
-
-    async def get_markdown_text(
-        self,
-        *,
-        source_asset_id: str,
-        max_chars: int = 50000,
-    ) -> str | None:
-        artifact = await self.artifacts.get_ready(
-            source_asset_id=source_asset_id,
-            artifact_type="markdown",
-        )
-        if artifact is None:
-            return None
-        path = self.storage_root / artifact.storage_path
-        if path.exists():
-            data = path.read_bytes()
-        else:
-            data = self.storage_backend.get_bytes(artifact.storage_key or artifact.storage_path)
-        text = data.decode("utf-8", errors="replace").strip()
-        return text[:max_chars] if text else None
+    # --- files ---------------------------------------------------------------------------
+    async def get_artifact_file(self, *, owner_user_id: str, artifact_id: str) -> SnapshotFile:
+        artifact = await self._owned_artifact(owner_user_id, artifact_id)
+        return _snapshot_file(artifact)
 
     async def get_artifact_resource(
-        self,
-        *,
-        owner_user_id: str,
-        artifact_id: str,
-        filename: str,
-    ) -> tuple[bytes, str]:
-        artifact = await self.artifacts.get_for_user(
-            owner_user_id=owner_user_id,
-            artifact_id=artifact_id,
-        )
-        if artifact is None:
-            raise SnapshotArtifactNotFoundError
-
-        storage_key = artifact.storage_key or artifact.storage_path
-        prefix = storage_key.rsplit("/", 1)[0]
-
+        self, *, owner_user_id: str, artifact_id: str, filename: str
+    ) -> SnapshotFile:
+        if not RESOURCE_NAME_RE.fullmatch(filename):
+            raise SnapshotNotFoundError
+        artifact = await self._owned_artifact(owner_user_id, artifact_id)
+        if artifact.artifact_type != "webpage_html" or artifact.storage_key is None:
+            raise SnapshotNotFoundError
+        key = f"{artifact_dir(artifact.storage_key)}resources/{filename}"
         try:
-            manifest_bytes = self.storage_backend.get_bytes(f"{prefix}/manifest.json")
-            content_type_map: dict[str, str] = json.loads(manifest_bytes)
-            data = self.storage_backend.get_bytes(f"{prefix}/resources/{filename}")
-        except Exception as exc:  # noqa: BLE001
-            raise SnapshotArtifactNotFoundError from exc
+            info = await self.storage.stat(key)
+        except StorageObjectNotFoundError as exc:
+            raise SnapshotNotFoundError from exc
+        return SnapshotFile(
+            key=key,
+            mime_type=mime_for_resource(filename),
+            filename=filename,
+            size_bytes=info.size_bytes,
+        )
 
-        return data, content_type_map.get(filename, "application/octet-stream")
+    async def get_thumbnail(self, *, source_asset_id: str) -> SnapshotFile | None:
+        artifact = await self._artifact(source_asset_id, "thumbnail")
+        return _snapshot_file(artifact) if artifact is not None else None
 
     async def is_thumbnail_unavailable(self, *, source_asset_id: str) -> bool:
-        job = await self.jobs.get_for_asset(source_asset_id=source_asset_id, job_type="thumbnail")
-        if job is not None:
-            return job.status == "failed"
-
-        text_job = await self.jobs.get_for_asset(
-            source_asset_id=source_asset_id,
-            job_type="thumbnail_text",
+        """True when no image thumbnail will ever appear for this asset (until reprocessed)."""
+        statuses = dict(
+            (
+                await self.session.execute(
+                    select(SnapshotJob.job_type, SnapshotJob.status).where(
+                        SnapshotJob.source_asset_id == source_asset_id,
+                        SnapshotJob.job_type.in_(("thumbnail", "thumbnail_text")),
+                    )
+                )
+            ).tuples()
         )
-        return text_job is not None and text_job.status in {"done", "failed"}
+        if "thumbnail" in statuses:
+            return statuses["thumbnail"] in {JOB_FAILED, JOB_CANCELLED}
+        return statuses.get("thumbnail_text") in {JOB_SUCCEEDED, JOB_FAILED, JOB_CANCELLED}
 
-    async def _enqueue_job(
-        self,
-        content_object: ContentObject,
-        asset: ContentAsset | None,
-        job_type: str,
-        correlation_id: str | None = None,
-        source_event_id: str | None = None,
-    ) -> None:
-        await self.jobs.add_once(
-            owner_user_id=content_object.owner_user_id,
-            content_object_id=content_object.id,
-            source_asset_id=asset.id if asset is not None else None,
-            job_type=job_type,
-            status="pending",
-            correlation_id=correlation_id,
-            source_event_id=source_event_id,
+    async def get_asset_artifact_references(
+        self, *, source_asset_id: str
+    ) -> dict[str, SnapshotArtifactReference]:
+        return (await self.asset_artifact_references([source_asset_id])).get(source_asset_id, {})
+
+    async def asset_artifact_references(
+        self, asset_ids: Iterable[str]
+    ) -> dict[str, dict[str, SnapshotArtifactReference]]:
+        ids = list(dict.fromkeys(asset_ids))
+        if not ids:
+            return {}
+        rows = await self.session.execute(
+            select(
+                SnapshotArtifact.id,
+                SnapshotArtifact.source_asset_id,
+                SnapshotArtifact.artifact_type,
+                SnapshotArtifact.filename,
+                SnapshotArtifact.mime_type,
+                SnapshotArtifact.size_bytes,
+            ).where(SnapshotArtifact.source_asset_id.in_(ids))
         )
-        logger.info(
-            "snapshots.enqueue.job_requested",
-            owner_user_id=content_object.owner_user_id,
-            content_object_id=content_object.id,
-            source_asset_id=asset.id if asset is not None else None,
-            job_type=job_type,
-            correlation_id=correlation_id,
-            source_event_id=source_event_id,
-        )
-
-    @staticmethod
-    def _is_site_object(content_object: ContentObject) -> bool:
-        return content_object.media_type == "link"
-
-    @staticmethod
-    def _overrides(stored: SnapshotUserSettings | None) -> SnapshotFormatOverrides:
-        if stored is None:
-            return SnapshotFormatOverrides()
-        return SnapshotFormatOverrides(
-            screenshot=stored.archive_as_screenshot,
-            webpage_html=stored.archive_as_webpage_html,
-            pdf=stored.archive_as_pdf,
-            markdown=stored.archive_as_markdown,
-            archive_org=stored.archive_as_archive_org,
-        )
-
-    @staticmethod
-    def _effective_settings(
-        stored: SnapshotUserSettings | None,
-    ) -> EffectiveSnapshotSettings:
-        settings = get_settings()
-        return EffectiveSnapshotSettings(
-            screenshot=(
-                stored.archive_as_screenshot
-                if stored is not None and stored.archive_as_screenshot is not None
-                else settings.snapshot_archive_screenshot_enabled
-            ),
-            webpage_html=(
-                stored.archive_as_webpage_html
-                if stored is not None and stored.archive_as_webpage_html is not None
-                else settings.snapshot_archive_webpage_html_enabled
-            ),
-            pdf=(
-                stored.archive_as_pdf
-                if stored is not None and stored.archive_as_pdf is not None
-                else settings.snapshot_archive_pdf_enabled
-            ),
-            markdown=(
-                stored.archive_as_markdown
-                if stored is not None and stored.archive_as_markdown is not None
-                else settings.snapshot_archive_markdown_enabled
-            ),
-            archive_org=(
-                stored.archive_as_archive_org
-                if stored is not None and stored.archive_as_archive_org is not None
-                else settings.snapshot_archive_org_enabled
-            ),
-        )
-
-    @staticmethod
-    def _available_format_options() -> list[SnapshotFormatOption]:
-        settings = get_settings()
-        return [
-            SnapshotFormatOption(
-                key=key,
-                label=label,
-                description=description,
-                server_enabled=bool(getattr(settings, setting_name)),
+        references: dict[str, dict[str, SnapshotArtifactReference]] = {}
+        for artifact_id, asset_id, artifact_type, filename, mime_type, size in rows.tuples():
+            references.setdefault(asset_id, {})[artifact_type] = SnapshotArtifactReference(
+                url=self._artifact_url(artifact_id),
+                filename=filename,
+                mime_type=mime_type,
+                size_bytes=size,
             )
-            for key, label, description, setting_name in SNAPSHOT_FORMAT_OPTIONS
-        ]
+        return references
+
+    async def asset_previews(
+        self, *, owner_user_id: str, asset_ids: Iterable[str]
+    ) -> dict[str, AssetPreview]:
+        """Card previews for many assets in one query (no storage reads)."""
+        ids = list(dict.fromkeys(asset_ids))
+        if not ids:
+            return {}
+        rows = await self.session.execute(
+            select(
+                SnapshotArtifact.source_asset_id,
+                SnapshotArtifact.artifact_type,
+                SnapshotArtifact.text_content,
+            ).where(
+                SnapshotArtifact.owner_user_id == owner_user_id,
+                SnapshotArtifact.source_asset_id.in_(ids),
+                SnapshotArtifact.artifact_type.in_(("thumbnail", "thumbnail_text")),
+            )
+        )
+        previews: dict[str, AssetPreview] = {}
+        for asset_id, artifact_type, text in rows.tuples():
+            current = previews.get(asset_id, AssetPreview())
+            if artifact_type == "thumbnail":
+                previews[asset_id] = AssetPreview(True, current.thumbnail_text)
+            else:
+                previews[asset_id] = AssetPreview(current.has_thumbnail, text)
+        return previews
+
+    async def get_thumbnail_text(
+        self, *, source_asset_id: str, max_chars: int = THUMBNAIL_TEXT_MAX_CHARS
+    ) -> str | None:
+        text = await self.session.scalar(
+            select(SnapshotArtifact.text_content).where(
+                SnapshotArtifact.source_asset_id == source_asset_id,
+                SnapshotArtifact.artifact_type == "thumbnail_text",
+            )
+        )
+        return text[:max_chars] if text else None
+
+    async def get_markdown_text(
+        self, *, source_asset_id: str, max_chars: int = 50_000
+    ) -> str | None:
+        key = await self.session.scalar(
+            select(SnapshotArtifact.storage_key).where(
+                SnapshotArtifact.source_asset_id == source_asset_id,
+                SnapshotArtifact.artifact_type == "markdown",
+            )
+        )
+        if key is None:
+            return None
+        chunks: list[bytes] = []
+        try:
+            # UTF-8 needs at most 4 bytes per character: never read more than needed.
+            async for chunk in self.storage.iter_bytes(key, 0, max_chars * 4):
+                chunks.append(chunk)
+        except StorageObjectNotFoundError:
+            logger.warning("snapshots.markdown.missing", source_asset_id=source_asset_id, key=key)
+            return None
+        text = b"".join(chunks).decode("utf-8", errors="ignore").strip()
+        return text[:max_chars] or None
+
+    # --- internals -----------------------------------------------------------------------
+    def _artifact_url(self, artifact_id: str) -> str:
+        return f"{self.api_prefix}/snapshots/artifacts/{artifact_id}"
+
+    async def _artifact(self, source_asset_id: str, artifact_type: str) -> SnapshotArtifact | None:
+        value: SnapshotArtifact | None = await self.session.scalar(
+            select(SnapshotArtifact).where(
+                SnapshotArtifact.source_asset_id == source_asset_id,
+                SnapshotArtifact.artifact_type == artifact_type,
+            )
+        )
+        return value
+
+    async def _owned_artifact(self, owner_user_id: str, artifact_id: str) -> SnapshotArtifact:
+        artifact = await self.session.get(SnapshotArtifact, artifact_id)
+        if artifact is None or artifact.owner_user_id != owner_user_id:
+            raise SnapshotNotFoundError
+        return artifact
 
 
-def _uses_text_thumbnail(asset: ContentAsset) -> bool:
-    suffix = Path(asset.filename).suffix.lower()
-    return (
-        asset.media_type == "text"
-        or asset.mime_type in {"text/markdown", "text/plain"}
-        or suffix in TEXT_THUMBNAIL_SUFFIXES
+def _snapshot_file(artifact: SnapshotArtifact) -> SnapshotFile:
+    return SnapshotFile(
+        key=artifact.storage_key,
+        mime_type=artifact.mime_type,
+        filename=artifact.filename,
+        size_bytes=artifact.size_bytes,
+        text=artifact.text_content if artifact.storage_key is None else None,
     )
 
 
-def _should_generate_pdf(asset: ContentAsset) -> bool:
-    suffix = Path(asset.filename).suffix.lower()
-    if asset.mime_type == "application/pdf" or suffix == ".pdf":
-        return False
-    if asset.mime_type in OFFICE_PDF_MIME_TYPES:
-        return True
-    if asset.mime_type in TEXT_PDF_MIME_TYPES:
-        return True
-    if asset.media_type == "document":
-        return suffix in OFFICE_PDF_SUFFIXES | TEXT_PDF_SUFFIXES
-    if asset.media_type == "text":
-        return suffix in MARKDOWN_SUFFIXES | TEXT_PDF_SUFFIXES
-    return _is_site_asset(asset)
+# --- scheduling (used by the worker's event handler and by reprocess) -----------------------
+def _job_row(
+    asset: ContentAsset,
+    owner_user_id: str,
+    job_type: SnapshotJobType,
+    *,
+    priority: int,
+    correlation_id: str | None = None,
+    source_event_id: str | None = None,
+) -> dict[str, Any]:
+    now = utcnow()
+    return {
+        "id": str(uuid4()),
+        "owner_user_id": owner_user_id,
+        "content_object_id": asset.content_object_id,
+        "source_asset_id": asset.id,
+        "job_type": job_type,
+        "source_fingerprint": source_fingerprint(
+            storage_key=asset.storage_key or "",
+            size_bytes=asset.size_bytes,
+            checksum=asset.checksum,
+            text_content=asset.text_content,
+        ),
+        "correlation_id": correlation_id,
+        "source_event_id": source_event_id,
+        "metadata": {},
+        "status": JOB_PENDING,
+        "priority": priority,
+        "attempts": 0,
+        "max_attempts": get_settings().worker_max_job_attempts,
+        "run_after": now,
+        "created_at": now,
+        "updated_at": now,
+    }
 
 
-def _is_site_asset(asset: ContentAsset) -> bool:
-    return asset.media_type == "link"
+async def queue_jobs(session: AsyncSession, rows: Sequence[dict[str, Any]], *, force: bool) -> None:
+    """Insert jobs; an existing job is re-queued when `force`, when its source changed, or
+    when it previously failed. Unchanged done/pending jobs are left alone, so duplicate or
+    unrelated update events never cause duplicate work."""
+    if not rows:
+        return
+    # Table (not ORM entity) insert: row keys are column names (`metadata` would otherwise
+    # resolve to the declarative `Base.metadata`).
+    statement = pg_insert(SnapshotJob.__table__)  # type: ignore[arg-type]
+    excluded = statement.excluded
+    table = SnapshotJob.__table__.c
+    statement = statement.on_conflict_do_update(
+        constraint="uq_snapshot_jobs_asset_type",
+        set_={
+            "status": JOB_PENDING,
+            "attempts": 0,
+            "run_after": excluded.run_after,
+            "locked_at": None,
+            "locked_by": None,
+            "last_error": None,
+            "priority": excluded.priority,
+            "content_object_id": excluded.content_object_id,
+            "source_fingerprint": excluded.source_fingerprint,
+            "correlation_id": excluded.correlation_id,
+            "source_event_id": excluded.source_event_id,
+            "updated_at": excluded.updated_at,
+        },
+        where=None
+        if force
+        else or_(
+            table.source_fingerprint.is_distinct_from(excluded.source_fingerprint),
+            table.status.in_((JOB_FAILED, JOB_CANCELLED)),
+        ),
+    )
+    await session.execute(statement)
+
+
+async def schedule_content_object(
+    session: AsyncSession,
+    content_object_id: str,
+    *,
+    correlation_id: str | None = None,
+    source_event_id: str | None = None,
+) -> int | None:
+    """Plan and queue snapshot jobs for every original asset of a content object.
+    Returns the number of planned jobs, or None when the object no longer exists."""
+    row = (
+        await session.execute(
+            select(ContentObject.owner_user_id, ContentObject.media_type, SnapshotUserSettings)
+            .outerjoin(
+                SnapshotUserSettings,
+                SnapshotUserSettings.owner_user_id == ContentObject.owner_user_id,
+            )
+            .where(ContentObject.id == content_object_id)
+        )
+    ).first()
+    if row is None:
+        logger.info("snapshots.schedule.object_missing", content_object_id=content_object_id)
+        return None
+    owner_user_id, object_media_type, stored = row
+    assets = list(
+        await session.scalars(
+            select(ContentAsset).where(
+                ContentAsset.content_object_id == content_object_id,
+                ContentAsset.role == "original",
+            )
+        )
+    )
+    settings = get_settings()
+    effective = effective_settings(settings, stored)
+    rows: list[dict[str, Any]] = []
+    for asset in assets:
+        # A link note's non-link assets are note metadata, not a site to snapshot.
+        if object_media_type == "link" and asset.media_type != "link":
+            continue
+        facts = AssetFacts(asset.media_type, asset.mime_type, asset.filename)
+        rows.extend(
+            _job_row(
+                asset,
+                owner_user_id,
+                job_type,
+                priority=PRIORITY_AUTOMATIC,
+                correlation_id=correlation_id,
+                source_event_id=source_event_id,
+            )
+            for job_type in plan_snapshot_job_types(
+                facts, effective, extract_text=text_extractable(facts, settings)
+            )
+        )
+    await queue_jobs(session, rows, force=False)
+    return len(rows)
+
+
+async def reassign_asset_snapshots(
+    session: AsyncSession, asset_ids: Iterable[str], content_object_id: str
+) -> None:
+    """Follow assets moved to another content object (merge/collapse). Storage keys stay."""
+    ids = list(asset_ids)
+    if not ids:
+        return
+    await session.execute(
+        update(SnapshotJob)
+        .where(SnapshotJob.source_asset_id.in_(ids))
+        .values(content_object_id=content_object_id)
+    )
+    await session.execute(
+        update(SnapshotArtifact)
+        .where(SnapshotArtifact.source_asset_id.in_(ids))
+        .values(content_object_id=content_object_id)
+    )
+
+
+__all__ = [
+    "AssetPreview",
+    "SnapshotArtifactReference",
+    "SnapshotFile",
+    "SnapshotNotFoundError",
+    "SnapshotService",
+    "artifact_dir",
+    "queue_jobs",
+    "reassign_asset_snapshots",
+    "schedule_content_object",
+]

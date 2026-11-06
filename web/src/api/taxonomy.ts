@@ -1,4 +1,5 @@
-import { apiFetch } from '../lib/apiClient'
+import { apiFetch } from '../lib/apiClient.ts'
+import { readJson } from '../lib/apiError.ts'
 import type { TaxonomyInterestOption, TaxonomyTreeItem } from '../types'
 
 interface BackendTaxonomyTreeItem {
@@ -34,15 +35,13 @@ function mapTreeItem(item: BackendTaxonomyTreeItem): TaxonomyTreeItem {
 
 export async function fetchTaxonomyTree(): Promise<TaxonomyTreeItem[]> {
   const res = await apiFetch('/api/v1/taxonomy/categories/tree')
-  if (!res.ok) throw new Error('Failed to fetch taxonomy tree')
-  const data: BackendTaxonomyTreeItem[] = await res.json()
+  const data = await readJson<BackendTaxonomyTreeItem[]>(res, 'Failed to fetch taxonomy tree')
   return data.map(mapTreeItem)
 }
 
 export async function fetchTaxonomyInterestOptions(): Promise<TaxonomyInterestOption[]> {
   const res = await apiFetch('/api/v1/taxonomy/interest-options')
-  if (!res.ok) throw new Error('Failed to fetch taxonomy interest options')
-  return res.json()
+  return readJson<TaxonomyInterestOption[]>(res, 'Failed to fetch taxonomy interest options')
 }
 
 export async function initializeTaxonomyFromInterests(payload: InitializeTaxonomyPayload) {
@@ -54,6 +53,5 @@ export async function initializeTaxonomyFromInterests(payload: InitializeTaxonom
       custom_description: payload.customDescription.trim() || null,
     }),
   })
-  if (!res.ok) throw new Error('Failed to initialize taxonomy')
-  return res.json()
+  return readJson<unknown>(res, 'Failed to initialize taxonomy')
 }

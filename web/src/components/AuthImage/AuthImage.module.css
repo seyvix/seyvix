@@ -32,3 +32,22 @@
   z-index: 0;
   background: var(--color-surface);
 }
+
+.errorState {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  padding: 0;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.errorState:focus-visible {
+  outline: 2px solid rgba(94, 181, 255, 0.9);
+  outline-offset: -2px;
+}

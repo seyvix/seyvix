@@ -5,7 +5,7 @@ import {
   dedupeNotes,
   normalizeNotesQueryData,
   notesQueryKey,
-  notesRefetchInterval,
+  applyNoteChangesToNotesQueryData,
   upsertNoteInNotesQueryData,
 } from './useNotes.ts'
 import type { Note, NotesPageResult } from '../types/index.ts'
@@ -34,13 +34,6 @@ test('notesQueryKey is derived from scalar search params', () => {
     notesQueryKey({ search: 'Valheim', contentTypes: ['video'] }),
     notesQueryKey({ search: 'Valheim', contentTypes: ['image'] }),
   )
-})
-
-test('notesRefetchInterval pauses active searches and polls compact idle notes frequently', () => {
-  assert.equal(notesRefetchInterval({ search: 'Valheim' }, 'visible'), false)
-  assert.equal(notesRefetchInterval({ tags: ['games'] }, 'visible'), false)
-  assert.equal(notesRefetchInterval({}, 'hidden'), false)
-  assert.equal(notesRefetchInterval({}, 'visible'), 2_000)
 })
 
 test('dedupeNotes keeps the first occurrence from refreshed pages', () => {
@@ -98,4 +91,29 @@ test('upsertNoteInNotesQueryData updates an existing note without duplicating it
   )
 
   assert.deepEqual(data.pages[0].items.map(note => note.title), ['New title'])
+})
+
+test('applyNoteChangesToNotesQueryData replaces, removes and (optionally) inserts cards', () => {
+  const a = { id: 'a', slug: 'a', title: 'A', stableKey: 'local-a', searchMatches: [{ text: 'hit', score: 1 }] } as Note
+  const b = { id: 'b', slug: 'b', title: 'B' } as Note
+  const data = { pages: [{ items: [a, b], nextOffset: 60 }], pageParams: [0] }
+  const changed = new Map([
+    ['a', { id: 'a', slug: 'a', title: 'A2', searchMatches: [] } as unknown as Note],
+    ['c', { id: 'c', slug: 'c', title: 'C' } as Note],
+  ])
+
+  const filtered = applyNoteChangesToNotesQueryData(data, changed, new Set(['b']), { insertNew: false })
+  const filteredItems = (filtered as typeof data).pages[0].items
+  assert.deepEqual(filteredItems.map(note => note.title), ['A2'])
+  assert.equal(filteredItems[0].stableKey, 'local-a')
+  assert.equal(filteredItems[0].searchMatches?.[0].text, 'hit')
+
+  const home = applyNoteChangesToNotesQueryData(data, changed, new Set(), { insertNew: true })
+  assert.deepEqual((home as typeof data).pages[0].items.map(note => note.id), ['c', 'a', 'b'])
+  assert.equal((home as typeof data).pages[0].nextOffset, 60)
+})
+
+test('applyNoteChangesToNotesQueryData keeps identity when nothing applies', () => {
+  const data = { pages: [{ items: [{ id: 'a', slug: 'a' } as Note], nextOffset: null }], pageParams: [0] }
+  assert.equal(applyNoteChangesToNotesQueryData(data, new Map(), new Set(['zzz']), { insertNew: false }), data)
 })

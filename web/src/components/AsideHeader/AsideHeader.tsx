@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { NavLink } from 'react-router'
-import { Tags, Trash2 } from 'lucide-react'
+import { ShieldCheck, Tags, Trash2 } from 'lucide-react'
 import { useLocalStorage } from '../../hooks/useLocalStorage'
 import { useSettings } from '../../contexts/SettingsContext'
 import { useAuth } from '../../contexts/AuthContext'
@@ -191,6 +191,20 @@ export default function AsideHeader() {
           <span className={styles.navLabel}>Корзина</span>
           <span className={styles.navDot} />
         </NavLink>
+
+        {user?.is_admin && (
+          <NavLink
+            to="/admin"
+            onClick={() => setSettingsOpen(false)}
+            className={({ isActive }) =>
+              [styles.navItem, isActive ? styles.active : ''].filter(Boolean).join(' ')
+            }
+          >
+            <span className={styles.navIcon}><ShieldCheck size={18} strokeWidth={1.8} /></span>
+            <span className={styles.navLabel}>Админка</span>
+            <span className={styles.navDot} />
+          </NavLink>
+        )}
       </nav>
 
       <div className={styles.bottom}>
@@ -220,6 +234,12 @@ export default function AsideHeader() {
             <span className={styles.moreCardIcon}><IconSettings /></span>
             <span className={styles.moreCardText}>Профиль и настройки</span>
           </NavLink>
+          {user?.is_admin && (
+            <NavLink to="/admin" className={styles.moreCard} onClick={() => setSettingsOpen(false)}>
+              <span className={styles.moreCardIcon}><ShieldCheck size={18} strokeWidth={1.8} /></span>
+              <span className={styles.moreCardText}>Админка</span>
+            </NavLink>
+          )}
           <div className={styles.columnsCard}>
             <div className={styles.settingsRow}>
               <span className={styles.settingsLabel}>Колонки</span>

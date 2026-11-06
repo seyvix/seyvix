@@ -1,26 +1,30 @@
 from __future__ import annotations
 
 import logging
-from base64 import b64encode
-from dataclasses import replace
 from html import escape
-from io import BytesIO
+from typing import Any
 
-import httpx
-from aiogram import Bot, Router
-from aiogram.types import Message, Sticker
+from aiogram import Router
+from aiogram.exceptions import TelegramAPIError
+from aiogram.types import Message
 
+from telegram_bot.bot.middlewares import UserStatusCache
+from telegram_bot.config import TELEGRAM_MAX_DOWNLOAD_BYTES
 from telegram_bot.domain.models import InboundMaterial, SavedMaterial, UserContext
+from telegram_bot.infrastructure.backend_client import BackendError, BackendUnavailableError
 from telegram_bot.keyboards.common import web_app_keyboard
 from telegram_bot.services.ingest import TelegramIngestService
 from telegram_bot.services.message_mapper import material_from_message
-from telegram_bot.services.modes import ModeService
+from telegram_bot.services.state import BotStateService
 from telegram_bot.texts.common import (
     AUTH_REQUIRED,
     BACKEND_UNAVAILABLE,
     DOWNLOAD_FAILED,
     FILE_TOO_LARGE,
+    SAVE_FAILED,
     UNSUPPORTED_MESSAGE,
+    access_denied,
+    telegram_file_too_large,
 )
 from telegram_bot.texts.success import loading_text, saved_text
 
@@ -28,196 +32,96 @@ router = Router(name="ingest")
 logger = logging.getLogger(__name__)
 
 
-class TelegramDownloadError(Exception):
-    def __init__(self, user_text: str) -> None:
-        super().__init__(user_text)
-        self.user_text = user_text
+class ChatReporter:
+    """Edits the "saving…" reply of the first message of a save with the outcome."""
+
+    def __init__(
+        self,
+        message: Message,
+        *,
+        web_app_url: str | None,
+        status_cache: UserStatusCache,
+    ) -> None:
+        self.message = message
+        self.web_app_url = web_app_url
+        self.status_cache = status_cache
+
+    async def loading(self, material: InboundMaterial) -> Message:
+        return await self.message.reply(loading_text(material))
+
+    async def saved(self, status: Any, saved: SavedMaterial, skipped: list[str]) -> None:
+        await self._show(status, escape(saved_text(saved)))
+        await self._report_skipped(skipped)
+
+    async def nothing_saved(self, status: Any, skipped: list[str]) -> None:
+        await self._show(status, FILE_TOO_LARGE if not skipped else self._skipped_text(skipped))
+
+    async def failed(self, status: Any, exc: Exception) -> None:
+        await self._show(status, self._error_text(exc))
+
+    async def _report_skipped(self, skipped: list[str]) -> None:
+        if skipped:
+            await self.message.answer(self._skipped_text(skipped))
+
+    @staticmethod
+    def _skipped_text(skipped: list[str]) -> str:
+        limit_mb = TELEGRAM_MAX_DOWNLOAD_BYTES // (1024 * 1024)
+        return "\n\n".join(telegram_file_too_large(name, limit_mb) for name in skipped[:5])
+
+    def _error_text(self, exc: Exception) -> str:
+        if isinstance(exc, BackendUnavailableError):
+            return BACKEND_UNAVAILABLE
+        if isinstance(exc, BackendError):
+            if exc.code == "access_denied":
+                self.status_cache.invalidate(self._user_id())
+                return access_denied(self._user_id())
+            if exc.code == "telegram_user_not_linked":
+                self.status_cache.invalidate(self._user_id())
+                return AUTH_REQUIRED
+            if exc.status_code == 413:
+                return FILE_TOO_LARGE
+            return SAVE_FAILED
+        if isinstance(exc, TelegramAPIError | OSError | TimeoutError):
+            return DOWNLOAD_FAILED
+        return SAVE_FAILED
+
+    def _user_id(self) -> int:
+        return self.message.from_user.id if self.message.from_user else self.message.chat.id
+
+    async def _show(self, status: Any, text: str) -> None:
+        markup = web_app_keyboard(self.web_app_url)
+        if isinstance(status, Message):
+            try:
+                await status.edit_text(text, reply_markup=markup)
+                return
+            except TelegramAPIError:
+                logger.info("Status message could not be edited; sending a new one")
+        await self.message.answer(text, reply_markup=markup)
 
 
 @router.message()
 async def ingest_handler(
     message: Message,
-    bot: Bot,
-    mode_service: ModeService,
+    user: UserContext,
+    state_service: BotStateService,
     ingest_service: TelegramIngestService,
-    user_context: UserContext | None = None,
+    status_cache: UserStatusCache,
     web_app_url: str | None = None,
-    telegram_user_id: str | None = None,
 ) -> None:
-    if user_context is None or not user_context.linked or telegram_user_id is None:
+    if not user.linked:
         await message.answer(AUTH_REQUIRED, reply_markup=web_app_keyboard(web_app_url))
         return
-
     material = material_from_message(message)
     if material is None:
         await message.answer(UNSUPPORTED_MESSAGE, reply_markup=web_app_keyboard(web_app_url))
         return
-
-    logger.info(
-        "Telegram material received user=%s chat=%s message=%s type=%s "
-        "has_attachment=%s has_source=%s source_external_id=%s source_title=%s group_id=%s",
-        material.telegram_user_id,
-        material.telegram_chat_id,
-        material.telegram_message_id,
-        material.material_type.value,
-        material.attachment is not None,
-        material.source is not None,
-        material.source.external_id if material.source else None,
-        material.source.title if material.source else None,
-        material.source.group_id if material.source else None,
-    )
-    state = await mode_service.get_state(telegram_user_id)
-
-    async def update_saved_status(status_message: Message, saved: SavedMaterial) -> None:
-        await status_message.edit_text(
-            escape(saved_text(saved)),
-            reply_markup=web_app_keyboard(web_app_url),
-        )
-
-    await ingest_service.ingest(
-        material=material,
-        state=state,
-        send_loading=lambda item: message.reply(
-            loading_text(item),
-            reply_markup=web_app_keyboard(web_app_url),
-        ),
-        prepare_material=lambda item, status_message: _prepare_material(bot, item),
-        update_saved=update_saved_status,
-        update_error=lambda status_message, exc: _edit_ingest_error(
-            status_message,
-            exc,
-            web_app_url,
-        ),
-    )
-
-
-async def _download_attachment(bot: Bot, file_id: str) -> bytes:
-    destination = BytesIO()
-    await bot.download(file_id, destination=destination)
-    return destination.getvalue()
-
-
-async def _prepare_material(bot: Bot, material: InboundMaterial) -> InboundMaterial:
-    material = await _with_custom_emoji_assets(bot, material)
-    attachment = material.attachment
-    if attachment is None:
-        return material
-
     try:
-        logger.info(
-            "Downloading Telegram attachment user=%s chat=%s message=%s file_id=%s filename=%s",
-            material.telegram_user_id,
-            material.telegram_chat_id,
-            material.telegram_message_id,
-            attachment.file_id,
-            attachment.filename,
-        )
-        data = await _download_attachment(bot, attachment.file_id)
-    except Exception as exc:
-        logger.exception(
-            "Failed to download Telegram attachment for user=%s chat=%s message=%s file_id=%s",
-            material.telegram_user_id,
-            material.telegram_chat_id,
-            material.telegram_message_id,
-            attachment.file_id,
-        )
-        raise TelegramDownloadError(_download_error_text(exc)) from exc
-
-    logger.info(
-        "Downloaded Telegram attachment user=%s chat=%s message=%s file_id=%s bytes=%s",
-        material.telegram_user_id,
-        material.telegram_chat_id,
-        material.telegram_message_id,
-        attachment.file_id,
-        len(data),
-    )
-    return material.with_attachment_data(data)
-
-
-def _download_error_text(exc: Exception) -> str:
-    message = str(exc).lower()
-    if "too big" in message or "too large" in message or "file size" in message:
-        return FILE_TOO_LARGE
-    return DOWNLOAD_FAILED
-
-
-async def _with_custom_emoji_assets(bot: Bot, material: InboundMaterial) -> InboundMaterial:
-    source = material.source
-    if source is None or not source.custom_emoji_ids:
-        return material
-    try:
-        stickers = await bot.get_custom_emoji_stickers(source.custom_emoji_ids)
-    except Exception:
-        return material
-
-    assets = {}
-    for sticker in stickers:
-        custom_emoji_id = sticker.custom_emoji_id
-        if not custom_emoji_id:
-            continue
-        file_id = _sticker_preview_file_id(sticker)
-        if not file_id:
-            continue
-        try:
-            data = await _download_attachment(bot, file_id)
-        except Exception:
-            continue
-        data_url = (
-            f"data:{_sticker_preview_mime_type(sticker)};base64," f"{b64encode(data).decode()}"
-        )
-        assets[custom_emoji_id] = {
-            "data_url": data_url,
-            "fallback": sticker.emoji,
-        }
-
-    if not assets:
-        return material
-    metadata = dict(source.metadata or {})
-    metadata["custom_emoji_assets"] = assets
-    return replace(material, source=replace(source, metadata=metadata))
-
-
-def _sticker_preview_file_id(sticker: Sticker) -> str | None:
-    if sticker.thumbnail is not None:
-        return sticker.thumbnail.file_id
-    return sticker.file_id
-
-
-def _sticker_preview_mime_type(sticker: Sticker) -> str:
-    if sticker.thumbnail is not None:
-        return "image/webp"
-    if sticker.is_video:
-        return "video/webm"
-    if sticker.is_animated:
-        return "application/x-tgsticker"
-    return "image/webp"
-
-
-async def _edit_ingest_error(
-    status_message: Message,
-    exc: Exception,
-    web_app_url: str | None,
-) -> None:
-    if isinstance(exc, TelegramDownloadError):
-        await status_message.edit_text(
-            exc.user_text,
-            reply_markup=web_app_keyboard(web_app_url),
-        )
+        mode = await state_service.get_mode(user.telegram_user_id)
+    except (BackendUnavailableError, BackendError):
+        await message.answer(BACKEND_UNAVAILABLE)
         return
-    if isinstance(exc, httpx.HTTPStatusError):
-        if exc.response.status_code == 404:
-            await status_message.edit_text(
-                AUTH_REQUIRED,
-                reply_markup=web_app_keyboard(web_app_url),
-            )
-            return
-        if exc.response.status_code == 413:
-            await status_message.edit_text(
-                FILE_TOO_LARGE,
-                reply_markup=web_app_keyboard(web_app_url),
-            )
-            return
-    await status_message.edit_text(
-        BACKEND_UNAVAILABLE,
-        reply_markup=web_app_keyboard(web_app_url),
+    await ingest_service.submit(
+        material,
+        mode=mode,
+        reporter=ChatReporter(message, web_app_url=web_app_url, status_cache=status_cache),
     )

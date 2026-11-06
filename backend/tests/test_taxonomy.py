@@ -1,2005 +1,266 @@
+"""Taxonomy: onboarding presets, rule-based classification without AI, LLM judge, user choice."""
+
+from __future__ import annotations
+
 import asyncio
-import hashlib
-import hmac
-import json
 import os
-import re
-from datetime import UTC, datetime
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from fastapi.testclient import TestClient
-from sqlalchemy import func, select
+import pytest
+from pydantic import BaseModel
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.core.config import Settings, get_settings
-from app.core.database import build_session_factory
-from app.main import app
-from app.modules.content.models import ContentObject
-from app.modules.content.service import ContentService
-from app.modules.llm.contracts import LLMGenerationError
-from app.modules.search.schemas import SemanticSearchResult
-from app.modules.snapshots.models import SnapshotArtifact
+from app.contracts.events import EventEnvelope
+from app.core.config import Settings
+from app.core.database import Base, build_session_factory
+from app.models import import_all_models
+from app.modules.auth.models import User
+from app.modules.content.models import ContentAsset, ContentObject
+from app.modules.llm.client import AIUnavailableError
+from app.modules.taxonomy import worker as taxonomy_worker
 from app.modules.taxonomy.models import (
-    ClassificationFeedback,
     TaxonomyCategory,
     TaxonomyClassificationJob,
+    TaxonomyContentAssignment,
 )
-from app.modules.taxonomy.service import TaxonomyLLMClassificationError, TaxonomyService
-from app.modules.vectorization.contracts import build_taxonomy_category_profile_vector_subject
-from app.modules.vectorization.models import VectorizationJob
-from app.modules.vectorization.worker import VectorizationWorker
+from app.modules.taxonomy.onboarding import interest_specs, list_interest_options
+from app.modules.taxonomy.service import TaxonomyService
+from app.modules.taxonomy.worker import TaxonomyEventHandler, TaxonomyJobRunner
+from app.platform.jobs import JOB_PENDING, JOB_SUCCEEDED
+from app.platform.storage.local import LocalVolumeStorage
+from app.worker.context import WorkerContext
 
-TELEGRAM_BOT_TOKEN = "123456:test-bot-token"
+import_all_models()
 
-
-def _telegram_payload(telegram_id: int = 100500) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "id": telegram_id,
-        "first_name": "User",
-        "auth_date": int(datetime.now(UTC).timestamp()),
-    }
-    check_string = "\n".join(f"{key}={value}" for key, value in sorted(payload.items()))
-    secret_key = hashlib.sha256(TELEGRAM_BOT_TOKEN.encode("utf-8")).digest()
-    payload["hash"] = hmac.new(
-        secret_key,
-        check_string.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-    return payload
+LLM_NOTE = "ChatGPT prompts for LLM chatbots: structured output and tool calling with Claude."
 
 
-def _auth_headers(client: TestClient, telegram_id: int = 100500) -> dict[str, str]:
-    response = client.post(
-        "/api/v1/auth/telegram-login",
-        json=_telegram_payload(telegram_id),
-    )
-    assert response.status_code == 200
-    return {"Authorization": f"Bearer {response.json()['access_token']}"}
+class FakeAI:
+    def __init__(self, judge: dict[str, Any] | None = None, embed_error: Exception | None = None):
+        self.judge = judge
+        self.embed_error = embed_error
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        if self.embed_error is not None:
+            raise self.embed_error
+        dimensions = Settings(_env_file=None).ai_embedding_dimensions  # type: ignore[call-arg]
+        return [[0.01] * dimensions for _ in texts]
+
+    async def chat_json(self, messages: list[dict[str, Any]], schema: type[BaseModel], **_: Any):
+        return schema.model_validate(self.judge)
 
 
-def _create_category(
-    client: TestClient,
-    headers: dict[str, str],
-    *,
-    slug: str,
-    name: str,
-    parent_id: str | None = None,
-    sort_order: int = 100,
-) -> dict[str, object]:
-    response = client.post(
-        "/api/v1/taxonomy/categories",
-        headers=headers,
-        json={
-            "parent_id": parent_id,
-            "slug": slug,
-            "name": name,
-            "description": f"{name} description",
-            "sort_order": sort_order,
-        },
-    )
-    assert response.status_code == 201, response.text
-    return response.json()
-
-
-def _create_note(client: TestClient, headers: dict[str, str], title: str) -> dict[str, object]:
-    response = client.post(
-        "/api/v1/notes",
-        headers=headers,
-        json={"media_type": "text", "title": title, "text": f"{title} body"},
-    )
-    assert response.status_code == 201, response.text
-    return response.json()
-
-
-def _enable_profile_editing(client: TestClient, headers: dict[str, str]) -> None:
-    response = client.patch(
-        "/api/v1/taxonomy/settings",
-        headers=headers,
-        json={"category_profile_editing_enabled": True},
-    )
-    assert response.status_code == 200, response.text
-
-
-def _worker_session_factory():
+@pytest.fixture
+def session_factory() -> Iterator[async_sessionmaker[AsyncSession]]:
     database_url = os.getenv("TEST_DATABASE_URL")
     if not database_url:
-        raise RuntimeError("Set TEST_DATABASE_URL to run DB-backed taxonomy tests.")
-    return build_session_factory(database_url)
+        pytest.skip("Set TEST_DATABASE_URL to a disposable database for DB-resetting tests.")
+
+    async def prepare() -> None:
+        engine = create_async_engine(database_url)
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.drop_all)
+            await connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            await connection.run_sync(Base.metadata.create_all)
+        await engine.dispose()
+
+    asyncio.run(prepare())
+    yield build_session_factory(database_url)
 
 
-def _template_paths(items: list[dict[str, object]]) -> set[str]:
-    paths: set[str] = set()
-    for item in items:
-        paths.add(str(item["path"]))
-        paths.update(_template_paths(item["children"]))  # type: ignore[arg-type]
-    return paths
+def _ctx(
+    factory: async_sessionmaker[AsyncSession], tmp_path: Path, **settings: Any
+) -> WorkerContext:
+    return WorkerContext(
+        settings=Settings(_env_file=None, **settings),  # type: ignore[call-arg]
+        session_factory=factory,
+        storage=LocalVolumeStorage(tmp_path),
+        worker_id="test-worker",
+    )
 
 
-def test_interest_presets_are_practical_and_english() -> None:
-    specs = TaxonomyService._interest_specs()
-
-    assert {
-        "ai",
-        "software",
-        "tools",
-        "creative",
-        "media",
-        "learning",
-        "gear",
-        "work",
-        "life",
-    }.issubset(specs)
-    assert specs["software"]["aliases"] == ["programming", "development", "tech"]
-
-    serialized = json.dumps(specs, ensure_ascii=False)
-    assert "programming/python" not in serialized
-    assert not re.search(r"[А-Яа-яЁё]", serialized)
-
-
-def test_taxonomy_classification_jobs_endpoint_lists_jobs_for_current_user(
-    content_client: TestClient,
-) -> None:
-    headers = _auth_headers(content_client)
-    note = _create_note(content_client, headers, "Classifiable note")
-
-    async def seed_job() -> None:
-        async with app.state.session_factory() as session:
-            content_object = await session.get(ContentObject, note["id"])
-            assert content_object is not None
-            session.add(
-                TaxonomyClassificationJob(
-                    owner_user_id=content_object.owner_user_id,
-                    content_object_id=content_object.id,
-                    job_type="classify_content",
-                    status="processing",
-                    attempts=2,
-                    result_status="proposed",
-                    last_error=None,
-                ),
+async def _seed(factory: async_sessionmaker[AsyncSession], body: str) -> tuple[str, str]:
+    """User with the `ai` interest preset and one text note."""
+    async with factory() as session:
+        user = User(telegram_id="100501", display_name="User")
+        session.add(user)
+        await session.flush()
+        note = ContentObject(
+            owner_user_id=user.id,
+            slug="note",
+            title="Prompt notes",
+            kind="simple",
+            media_type="text",
+        )
+        session.add(note)
+        await session.flush()
+        session.add(
+            ContentAsset(
+                content_object_id=note.id,
+                role="primary",
+                media_type="text",
+                filename="note.md",
+                size_bytes=len(body),
+                storage_key=f"objects/{note.id}/note.md",
+                text_content=body,
             )
-            await session.commit()
+        )
+        await session.commit()
+        await TaxonomyService(session).initialize_from_interests(
+            owner_user_id=user.id, interest_slugs=["ai"], custom_description=None, ai=None
+        )
+        return user.id, note.id
 
-    content_client.portal.call(seed_job)
 
-    response = content_client.get(
-        f"/api/v1/taxonomy/content/{note['id']}/classification-jobs",
-        headers=headers,
+async def _enqueue(ctx: WorkerContext, owner_id: str, note_id: str) -> None:
+    envelope = EventEnvelope.new(
+        event_name="content.tags.completed",
+        entity_id=note_id,
+        correlation_id="c0ffee00-0000-0000-0000-000000000001",
+        user_id=owner_id,
+        payload={"content_object_id": note_id, "status": "skipped"},
     )
-
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload["items"][0]["content_object_id"] == note["id"]
-    assert payload["items"][0]["job_type"] == "classify_content"
-    assert payload["items"][0]["status"] == "processing"
-    assert payload["items"][0]["attempts"] == 2
-    assert payload["items"][0]["result_status"] == "proposed"
+    async with ctx.session_factory() as session:
+        await TaxonomyEventHandler(session, ctx).handle_event(envelope)
+        await session.commit()
 
 
-def test_unclassified_content_goes_to_inbox_and_can_be_requeued(
-    content_client: TestClient,
-) -> None:
-    headers = _auth_headers(content_client)
-    inbox = _create_category(content_client, headers, slug="inbox", name="Inbox")
-    note = _create_note(content_client, headers, "zzzzzz qqqqqq")
-
-    classify_response = content_client.post(
-        f"/api/v1/taxonomy/content/{note['id']}/classify",
-        headers=headers,
-        json={"mode": "semantic_only", "dry_run": False},
-    )
-
-    assert classify_response.status_code == 200, classify_response.text
-    assert classify_response.json()["selected_category"]["id"] == inbox["id"]
-    assert classify_response.json()["status"] == "accepted"
-
-    current_response = content_client.get(
-        f"/api/v1/taxonomy/content/{note['id']}/category",
-        headers=headers,
-    )
-    assert current_response.status_code == 200
-    assert current_response.json()["category_path_snapshot"] == "inbox"
-
-    requeue_response = content_client.post(
-        "/api/v1/taxonomy/content/inbox/reclassify",
-        headers=headers,
-    )
-
-    assert requeue_response.status_code == 202, requeue_response.text
-    assert requeue_response.json()["enqueued_count"] == 1
-
-    async def count_jobs() -> int:
-        async with app.state.session_factory() as session:
-            return await session.scalar(
-                select(func.count())
-                .select_from(TaxonomyClassificationJob)
-                .where(
-                    TaxonomyClassificationJob.content_object_id == note["id"],
+async def _current(factory: async_sessionmaker[AsyncSession]) -> TaxonomyContentAssignment:
+    async with factory() as session:
+        return (
+            await session.scalars(
+                select(TaxonomyContentAssignment).where(
+                    TaxonomyContentAssignment.is_current.is_(True)
                 )
             )
-
-    assert content_client.portal.call(count_jobs) >= 1
-
-
-def test_taxonomy_jobs_coalesce_trace_and_skip_stale_content(
-    content_client: TestClient,
-) -> None:
-    headers = _auth_headers(content_client)
-    note = _create_note(content_client, headers, "Taxonomy job trace")
-
-    async def scenario() -> dict[str, object]:
-        async with content_client.app.state.session_factory() as session:
-            content_object = await session.get(ContentObject, note["id"])
-            assert content_object is not None
-            service = TaxonomyService(session)
-            first = await service.enqueue_classification_job(
-                owner_user_id=content_object.owner_user_id,
-                content_object_id=content_object.id,
-                priority=10,
-                source_event_id="event-1",
-                correlation_id="correlation-1",
-            )
-            first_snapshot = first.content_updated_at_snapshot
-            second = await service.enqueue_classification_job(
-                owner_user_id=content_object.owner_user_id,
-                content_object_id=content_object.id,
-                priority=90,
-                source_event_id="event-2",
-                correlation_id="correlation-2",
-            )
-            content_object.title = "Updated after enqueue"
-            await session.flush()
-            first.content_updated_at_snapshot = first_snapshot
-            first.status = "processing"
-            first.attempts = 1
-            await service.process_classification_job(first)
-            await session.commit()
-            return {
-                "same_job": first.id == second.id,
-                "priority": first.priority,
-                "source_event_id": first.source_event_id,
-                "correlation_id": first.correlation_id,
-                "status": first.status,
-                "result_status": first.result_status,
-            }
-
-    result = content_client.portal.call(scenario)
-
-    assert result == {
-        "same_job": True,
-        "priority": 90,
-        "source_event_id": "event-2",
-        "correlation_id": "correlation-2",
-        "status": "stale",
-        "result_status": "stale",
-    }
+        ).one()
 
 
-def test_category_tree_validation_and_archive_behavior(content_client: TestClient) -> None:
-    headers = _auth_headers(content_client)
+def test_interest_presets_are_valid_and_listed() -> None:
+    options = list_interest_options()
+    assert {option.slug for option in options} == set(interest_specs())
+    assert all(option.name and option.description for option in options)
 
-    ai = _create_category(content_client, headers, slug="ai", name="AI", sort_order=20)
-    _create_category(
-        content_client,
-        headers,
-        slug="programming",
-        name="Programming",
-        sort_order=10,
+
+def test_classifies_without_ai_by_profile_keywords(session_factory, tmp_path):
+    ctx = _ctx(session_factory, tmp_path, ai_api_key=None)
+
+    async def scenario() -> None:
+        owner_id, note_id = await _seed(session_factory, LLM_NOTE)
+        await _enqueue(ctx, owner_id, note_id)
+        await _enqueue(ctx, owner_id, note_id)  # duplicate events -> one job
+        assert await TaxonomyJobRunner(ctx).run_once() == 1
+        async with session_factory() as session:
+            job = (await session.scalars(select(TaxonomyClassificationJob))).one()
+            assert job.status == JOB_SUCCEEDED and job.assignment_id is not None
+        assignment = await _current(session_factory)
+        assert assignment.assigned_by == "system"
+        assert assignment.category_path_snapshot.startswith("ai/")
+
+    asyncio.run(scenario())
+
+
+def test_llm_judge_picks_a_candidate(session_factory, tmp_path, monkeypatch):
+    ctx = _ctx(session_factory, tmp_path, ai_api_key="test-key")
+    fake = FakeAI(
+        judge={
+            "selected_candidate_id": "c1",
+            "confidence": 0.93,
+            "should_assign": True,
+            "status": "accepted",
+            "reasoning": "About LLM chatbots.",
+            "alternatives": [{"candidate_id": "c9", "confidence": 0.1, "reasoning": "unknown"}],
+        }
     )
-    llm = _create_category(
-        content_client,
-        headers,
-        parent_id=ai["id"],
-        slug="llm",
-        name="LLM",
-    )
-    inference = _create_category(
-        content_client,
-        headers,
-        parent_id=llm["id"],
-        slug="inference",
-        name="Inference",
-    )
+    monkeypatch.setattr(taxonomy_worker, "get_ai_client", lambda _settings: fake)
 
-    assert inference["path"] == "ai/llm/inference"
-    assert inference["depth"] == 2
+    async def scenario() -> None:
+        owner_id, note_id = await _seed(session_factory, LLM_NOTE)
+        await _enqueue(ctx, owner_id, note_id)
+        await TaxonomyJobRunner(ctx).run_once()
+        assignment = await _current(session_factory)
+        assert assignment.assigned_by == "llm"
+        assert assignment.status == "accepted"
+        assert float(assignment.confidence or 0) == pytest.approx(0.93)
 
-    tree_response = content_client.get("/api/v1/taxonomy/categories/tree", headers=headers)
-    assert tree_response.status_code == 200
-    tree = tree_response.json()
-    assert [item["path"] for item in tree] == ["programming", "ai"]
-    ai_node = tree[1]
-    assert ai_node["children"][0]["path"] == "ai/llm"
-    assert ai_node["children"][0]["children"][0]["path"] == "ai/llm/inference"
-
-    limited_response = content_client.get(
-        f"/api/v1/taxonomy/categories/tree?root_id={ai['id']}&max_depth=1",
-        headers=headers,
-    )
-    assert limited_response.status_code == 200
-    assert limited_response.json()[0]["children"][0]["children"] == []
-
-    duplicate_response = content_client.post(
-        "/api/v1/taxonomy/categories",
-        headers=headers,
-        json={"slug": "llm", "name": "Other LLM", "parent_id": ai["id"]},
-    )
-    assert duplicate_response.status_code == 409
-
-    invalid_response = content_client.post(
-        "/api/v1/taxonomy/categories",
-        headers=headers,
-        json={"slug": "bad/slug", "name": "Bad"},
-    )
-    assert invalid_response.status_code == 422
-
-    slug_update_response = content_client.patch(
-        f"/api/v1/taxonomy/categories/{llm['id']}",
-        headers=headers,
-        json={"slug": "large-language-models"},
-    )
-    assert slug_update_response.status_code == 409
-
-    archive_child = content_client.delete(
-        f"/api/v1/taxonomy/categories/{inference['id']}",
-        headers=headers,
-    )
-    assert archive_child.status_code == 204
-    hidden_tree = content_client.get("/api/v1/taxonomy/categories/tree", headers=headers).json()
-    assert hidden_tree[1]["children"][0]["children"] == []
+    asyncio.run(scenario())
 
 
-def test_profile_manual_assignment_history_and_ownership(content_client: TestClient) -> None:
-    headers = _auth_headers(content_client)
-    other_headers = _auth_headers(content_client, telegram_id=200600)
-    ai = _create_category(content_client, headers, slug="ai", name="AI")
-    ml = _create_category(content_client, headers, slug="ml", name="ML")
-    other_category = _create_category(content_client, other_headers, slug="private", name="Private")
-    note = _create_note(content_client, headers, "Assignment target")
+def test_ai_outage_retries_instead_of_degrading_early(session_factory, tmp_path, monkeypatch):
+    ctx = _ctx(session_factory, tmp_path, ai_api_key="test-key")
+    fake = FakeAI(embed_error=AIUnavailableError("down"))
+    monkeypatch.setattr(taxonomy_worker, "get_ai_client", lambda _settings: fake)
 
-    _enable_profile_editing(content_client, headers)
+    async def scenario() -> None:
+        owner_id, note_id = await _seed(session_factory, LLM_NOTE)
+        await _enqueue(ctx, owner_id, note_id)
+        await TaxonomyJobRunner(ctx).run_once()
+        async with session_factory() as session:
+            job = (await session.scalars(select(TaxonomyClassificationJob))).one()
+            assert job.status == JOB_PENDING and job.attempts == 1
+            assert list(await session.scalars(select(TaxonomyContentAssignment))) == []
 
-    profile_response = content_client.put(
-        f"/api/v1/taxonomy/categories/{ai['id']}/profile",
-        headers=headers,
-        json={
-            "summary": "Materials about AI systems.",
-            "keywords": ["ai", "llm"],
-            "positive_examples": ["LLM inference note"],
-            "negative_examples": ["personal todo"],
-        },
-    )
-    assert profile_response.status_code == 200
-    assert profile_response.json()["keywords"] == ["ai", "llm"]
-    assert (
-        content_client.put(
-            f"/api/v1/taxonomy/categories/{other_category['id']}/profile",
-            headers=headers,
-            json={"summary": "Nope"},
-        ).status_code
-        == 404
-    )
-
-    first_assignment = content_client.post(
-        f"/api/v1/taxonomy/content/{note['id']}/assignments",
-        headers=headers,
-        json={"category_id": ai["id"], "reasoning": "Manual assignment."},
-    )
-    assert first_assignment.status_code == 201, first_assignment.text
-    assert first_assignment.json()["status"] == "accepted"
-    assert first_assignment.json()["is_current"] is True
-    assert first_assignment.json()["category_path_snapshot"] == "ai"
-
-    second_assignment = content_client.post(
-        f"/api/v1/taxonomy/content/{note['id']}/assignments",
-        headers=headers,
-        json={"category_id": ml["id"], "reasoning": "Better fit."},
-    )
-    assert second_assignment.status_code == 201
-
-    current_response = content_client.get(
-        f"/api/v1/taxonomy/content/{note['id']}/category",
-        headers=headers,
-    )
-    assert current_response.status_code == 200
-    assert current_response.json()["category_id"] == ml["id"]
-
-    history_response = content_client.get(
-        f"/api/v1/taxonomy/content/{note['id']}/assignments",
-        headers=headers,
-    )
-    history = history_response.json()
-    assert [item["status"] for item in history] == ["accepted", "overridden"]
-    assert sum(1 for item in history if item["is_current"]) == 1
-
-    reject_response = content_client.post(
-        f"/api/v1/taxonomy/content/{note['id']}/assignments/{second_assignment.json()['id']}/reject",
-        headers=headers,
-    )
-    assert reject_response.status_code == 200
-    assert reject_response.json()["status"] == "rejected"
-    assert reject_response.json()["is_current"] is False
-    no_current_response = content_client.get(
-        f"/api/v1/taxonomy/content/{note['id']}/category",
-        headers=headers,
-    )
-    assert no_current_response.json() is None
-
-    accept_response = content_client.post(
-        f"/api/v1/taxonomy/content/{note['id']}/assignments/{first_assignment.json()['id']}/accept",
-        headers=headers,
-    )
-    assert accept_response.status_code == 200
-    assert accept_response.json()["category_id"] == ai["id"]
-    assert accept_response.json()["is_current"] is True
-
-    cross_owner_response = content_client.post(
-        f"/api/v1/taxonomy/content/{note['id']}/assignments",
-        headers=headers,
-        json={"category_id": other_category["id"]},
-    )
-    assert cross_owner_response.status_code == 404
-
-    async def feedback_actions() -> list[str]:
-        async with content_client.app.state.session_factory() as session:
-            rows = list(
-                await session.scalars(
-                    select(ClassificationFeedback).where(
-                        ClassificationFeedback.content_object_id == note["id"],
-                    )
-                )
-            )
-            return [row.action for row in rows]
-
-    feedback_actions_result = content_client.portal.call(feedback_actions)
-    assert feedback_actions_result
-    assert {"manually_assigned", "rejected", "accepted"}.issubset(set(feedback_actions_result))
+    asyncio.run(scenario())
 
 
-def test_taxonomy_review_queue_lists_pending_proposals(content_client: TestClient) -> None:
-    headers = _auth_headers(content_client)
-    category = _create_category(content_client, headers, slug="research", name="Research")
-    note = _create_note(content_client, headers, "Review taxonomy proposal")
+def test_automatic_classification_keeps_user_choice(session_factory, tmp_path):
+    ctx = _ctx(session_factory, tmp_path, ai_api_key=None)
 
-    async def seed_proposal() -> None:
-        async with content_client.app.state.session_factory() as session:
-            service = TaxonomyService(session)
-            loaded_category = await session.get(TaxonomyCategory, category["id"])
-            assert loaded_category is not None
-            await service._create_current_assignment(
-                owner_user_id=str(category["owner_user_id"]),
-                content_object_id=str(note["id"]),
-                category=loaded_category,
-                status="proposed",
-                assigned_by="llm",
-                confidence=0.71,
-                reasoning="Review before applying.",
+    async def scenario() -> None:
+        owner_id, note_id = await _seed(session_factory, LLM_NOTE)
+        async with session_factory() as session:
+            await TaxonomyService(session).assign_content_to_path(
+                owner_user_id=owner_id,
+                content_object_id=note_id,
+                raw_path="Personal/Reading",
+                reasoning=None,
                 commit=True,
             )
-
-    content_client.portal.call(seed_proposal)
-
-    response = content_client.get("/api/v1/taxonomy/review-queue", headers=headers)
-
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload["items"][0]["content_object_id"] == note["id"]
-    assert payload["items"][0]["status"] == "proposed"
-    assert payload["items"][0]["category_id"] == category["id"]
-
-
-def test_category_profile_editing_setting_and_llm_draft(content_client: TestClient) -> None:
-    headers = _auth_headers(content_client)
-    ai = _create_category(content_client, headers, slug="ai", name="AI")
-
-    default_settings = content_client.get("/api/v1/taxonomy/settings", headers=headers)
-    assert default_settings.status_code == 200, default_settings.text
-    assert default_settings.json()["category_profile_editing_enabled"] is False
-
-    blocked_profile = content_client.put(
-        f"/api/v1/taxonomy/categories/{ai['id']}/profile",
-        headers=headers,
-        json={"summary": "Blocked edit."},
-    )
-    assert blocked_profile.status_code == 403
-
-    enabled = content_client.patch(
-        "/api/v1/taxonomy/settings",
-        headers=headers,
-        json={"category_profile_editing_enabled": True},
-    )
-    assert enabled.status_code == 200, enabled.text
-
-    saved_profile = content_client.put(
-        f"/api/v1/taxonomy/categories/{ai['id']}/profile",
-        headers=headers,
-        json={
-            "summary": "AI systems and tooling.",
-            "keywords": ["ai"],
-            "positive_examples": ["LLM architecture"],
-            "negative_examples": ["house chores"],
-        },
-    )
-    assert saved_profile.status_code == 200, saved_profile.text
-    assert saved_profile.json()["profile_source"] == "user_edited"
-
-    llm = _FakeLLMStructuredGenerator(
-        {
-            "summary": "Research notes about model design, inference and AI tooling.",
-            "keywords": ["ai", "llm", "inference"],
-            "positive_examples": ["Prompt engineering", "Vector search architecture"],
-            "negative_examples": ["Personal tasks"],
-            "reasoning": "The user wants AI infrastructure materials in this category.",
-        }
-    )
-
-    async def suggest() -> dict[str, object]:
-        async with app.state.session_factory() as session:
-            service = TaxonomyService(session, llm_generator=llm)
-            draft = await service.suggest_profile_improvement(
-                owner_user_id=str(enabled.json()["owner_user_id"]),
-                category_id=str(ai["id"]),
-                user_guidance="Оставлять здесь материалы про LLM, инференс и инструменты AI.",
-            )
-            return draft.model_dump()
-
-    draft = content_client.portal.call(suggest)
-    assert draft["summary"] == "Research notes about model design, inference and AI tooling."
-    assert draft["keywords"] == ["ai", "llm", "inference"]
-    assert draft["positive_examples"] == ["Prompt engineering", "Vector search architecture"]
-    assert draft["negative_examples"] == ["Personal tasks"]
-    prompt = str(llm.calls[0]["prompt"])
-    assert "Category path: ai" in prompt
-    assert "Current profile:" in prompt
-    assert "AI systems and tooling." in prompt
-    assert "Оставлять здесь материалы про LLM" in prompt
-    assert "AI infrastructure" not in prompt
-
-
-def test_delete_category_moves_descendant_content_to_inbox(content_client: TestClient) -> None:
-    headers = _auth_headers(content_client)
-    inbox = _create_category(content_client, headers, slug="inbox", name="Inbox")
-    parent = _create_category(content_client, headers, slug="ai", name="AI")
-    child = _create_category(
-        content_client,
-        headers,
-        slug="llm",
-        name="LLM",
-        parent_id=str(parent["id"]),
-    )
-    parent_note = _create_note(content_client, headers, "Parent material")
-    child_note = _create_note(content_client, headers, "Child material")
-
-    assert (
-        content_client.post(
-            f"/api/v1/taxonomy/content/{parent_note['id']}/assignments",
-            headers=headers,
-            json={"category_id": parent["id"]},
-        ).status_code
-        == 201
-    )
-    assert (
-        content_client.post(
-            f"/api/v1/taxonomy/content/{child_note['id']}/assignments",
-            headers=headers,
-            json={"category_id": child["id"]},
-        ).status_code
-        == 201
-    )
-
-    response = content_client.post(
-        f"/api/v1/taxonomy/categories/{parent['id']}/delete",
-        headers=headers,
-        json={"delete_notes": False},
-    )
-
-    assert response.status_code == 200, response.text
-    assert response.json()["archived_categories_count"] == 2
-    assert response.json()["moved_notes_count"] == 2
-    assert response.json()["deleted_notes_count"] == 0
-
-    parent_assignment = content_client.get(
-        f"/api/v1/taxonomy/content/{parent_note['id']}/category",
-        headers=headers,
-    )
-    child_assignment = content_client.get(
-        f"/api/v1/taxonomy/content/{child_note['id']}/category",
-        headers=headers,
-    )
-    assert parent_assignment.json()["category_id"] == inbox["id"]
-    assert child_assignment.json()["category_id"] == inbox["id"]
-
-    tree_response = content_client.get("/api/v1/taxonomy/categories/tree", headers=headers)
-    paths = _template_paths(tree_response.json())
-    assert "ai" not in paths
-    assert "ai/llm" not in paths
-
-
-def test_delete_category_with_notes_requires_danger_confirmation(
-    content_client: TestClient,
-) -> None:
-    headers = _auth_headers(content_client)
-    _create_category(content_client, headers, slug="inbox", name="Inbox")
-    category = _create_category(content_client, headers, slug="temporary", name="Temporary")
-    note = _create_note(content_client, headers, "Temporary material")
-    assert (
-        content_client.post(
-            f"/api/v1/taxonomy/content/{note['id']}/assignments",
-            headers=headers,
-            json={"category_id": category["id"]},
-        ).status_code
-        == 201
-    )
-
-    blocked = content_client.post(
-        f"/api/v1/taxonomy/categories/{category['id']}/delete",
-        headers=headers,
-        json={"delete_notes": True},
-    )
-    assert blocked.status_code == 422
-
-    confirmed = content_client.post(
-        f"/api/v1/taxonomy/categories/{category['id']}/delete",
-        headers=headers,
-        json={
-            "delete_notes": True,
-            "confirm_category_name": "Temporary",
-            "confirm_delete_notes_text": "temporary",
-        },
-    )
-    assert confirmed.status_code == 200, confirmed.text
-    assert confirmed.json()["deleted_notes_count"] == 1
-
-    note_response = content_client.get(f"/api/v1/notes/{note['slug']}", headers=headers)
-    assert note_response.status_code == 404
-
-
-def test_interest_onboarding_initializes_taxonomy_and_profile_index_jobs(
-    content_client: TestClient,
-) -> None:
-    headers = _auth_headers(content_client, telegram_id=300700)
-
-    response = content_client.post(
-        "/api/v1/taxonomy/initialize/interests",
-        headers=headers,
-        json={
-            "interest_slugs": ["programming", "ai"],
-            "custom_description": "Интересуют FastAPI, векторный поиск и pet-проекты.",
-        },
-    )
-
-    assert response.status_code == 201, response.text
-    payload = response.json()
-    assert payload["created_categories_count"] >= 8
-
-    tree_response = content_client.get("/api/v1/taxonomy/categories/tree", headers=headers)
-    assert tree_response.status_code == 200
-    paths = _template_paths(tree_response.json())
-    assert {"software/programming", "ai/llm-chatbots", "custom-interests"}.issubset(paths)
-
-    profile_response = content_client.get(
-        f"/api/v1/taxonomy/categories/{next(iter(tree_response.json()))['id']}/profile",
-        headers=headers,
-    )
-    assert profile_response.status_code == 200
-    assert profile_response.json()["profile_source"] in {"template", "llm_generated"}
-
-    async def count_profile_index_jobs() -> int:
-        async with content_client.app.state.session_factory() as session:
-            return int(
-                await session.scalar(
-                    select(func.count())
-                    .select_from(VectorizationJob)
-                    .where(
-                        VectorizationJob.source == "taxonomy",
-                        VectorizationJob.source_type == "category_profile",
-                    )
-                )
-                or 0
-            )
-
-    assert content_client.portal.call(count_profile_index_jobs) >= payload["created_profiles_count"]
-
-
-def test_content_creation_uses_taxonomy_assignment_not_legacy_category_id(
-    content_client: TestClient,
-) -> None:
-    headers = _auth_headers(content_client)
-
-    note_response = content_client.post(
-        "/api/v1/notes",
-        headers=headers,
-        json={
-            "media_type": "text",
-            "title": "Taxonomy note",
-            "text": "Taxonomy note body",
-            "folder_path": "work/research",
-        },
-    )
-    assert note_response.status_code == 201, note_response.text
-    note = note_response.json()
-    assert "folder" not in note
-    assert note["taxonomyCategory"]["path"] == "work/research"
-
-    assignment_response = content_client.get(
-        f"/api/v1/taxonomy/content/{note['id']}/category",
-        headers=headers,
-    )
-    assert assignment_response.status_code == 200
-    assert assignment_response.json()["category_path_snapshot"] == "work/research"
-
-    async def load_content_object() -> ContentObject | None:
-        async with content_client.app.state.session_factory() as session:
-            return await session.scalar(select(ContentObject).where(ContentObject.id == note["id"]))
-
-    content_object = content_client.portal.call(load_content_object)
-    assert content_object is not None
-    assert content_object.category_id is None
-
-
-def test_end_to_end_taxonomy_cutover_flow(content_client: TestClient) -> None:
-    headers = _auth_headers(content_client)
-    _enable_profile_editing(content_client, headers)
-
-    initialize_response = content_client.post(
-        "/api/v1/taxonomy/initialize/interests",
-        headers=headers,
-        json={"interest_slugs": ["programming", "ai"]},
-    )
-    assert initialize_response.status_code == 201, initialize_response.text
-
-    tree_response = content_client.get("/api/v1/taxonomy/categories/tree", headers=headers)
-    assert tree_response.status_code == 200
-    tree = tree_response.json()
-    software = next(item for item in tree if item["path"] == "software")
-    programming_category = next(
-        item for item in software["children"] if item["path"] == "software/programming"
-    )
-
-    custom_response = content_client.post(
-        "/api/v1/taxonomy/categories",
-        headers=headers,
-        json={
-            "parent_id": software["id"],
-            "slug": "inference",
-            "name": "Inference",
-            "description": "Runtime serving and inference notes.",
-            "sort_order": 15,
-        },
-    )
-    assert custom_response.status_code == 201, custom_response.text
-    custom_category = custom_response.json()
-    assert custom_category["path"] == "software/inference"
-
-    create_profile_response = content_client.put(
-        f"/api/v1/taxonomy/categories/{custom_category['id']}/profile",
-        headers=headers,
-        json={
-            "summary": "Initial inference profile.",
-            "keywords": ["inference"],
-            "positive_examples": ["serving note"],
-            "negative_examples": ["frontend note"],
-        },
-    )
-    assert create_profile_response.status_code == 200
-    update_profile_response = content_client.put(
-        f"/api/v1/taxonomy/categories/{custom_category['id']}/profile",
-        headers=headers,
-        json={
-            "summary": "Updated inference profile.",
-            "keywords": ["inference", "serving"],
-            "positive_examples": ["latency note"],
-            "negative_examples": ["css note"],
-        },
-    )
-    assert update_profile_response.status_code == 200
-    assert update_profile_response.json()["summary"] == "Updated inference profile."
-
-    note_response = content_client.post(
-        "/api/v1/notes",
-        headers=headers,
-        json={"media_type": "text", "title": "Flow note", "text": "Flow note body"},
-    )
-    assert note_response.status_code == 201, note_response.text
-    note = note_response.json()
-    assert "folder" not in note
-    assert note["taxonomyCategory"] is None
-
-    first_assignment_response = content_client.post(
-        f"/api/v1/taxonomy/content/{note['id']}/assignments",
-        headers=headers,
-        json={"category_id": custom_category["id"], "reasoning": "Manual flow assignment."},
-    )
-    assert first_assignment_response.status_code == 201, first_assignment_response.text
-    first_assignment = first_assignment_response.json()
-    assert first_assignment["is_current"] is True
-    assert first_assignment["category_path_snapshot"] == "software/inference"
-
-    current_response = content_client.get(
-        f"/api/v1/taxonomy/content/{note['id']}/category",
-        headers=headers,
-    )
-    assert current_response.status_code == 200
-    assert current_response.json()["id"] == first_assignment["id"]
-
-    second_assignment_response = content_client.post(
-        f"/api/v1/taxonomy/content/{note['id']}/assignments",
-        headers=headers,
-        json={"category_id": programming_category["id"], "reasoning": "Manual reassignment."},
-    )
-    assert second_assignment_response.status_code == 201, second_assignment_response.text
-    second_assignment = second_assignment_response.json()
-    assert second_assignment["category_path_snapshot"] == "software/programming"
-
-    history_response = content_client.get(
-        f"/api/v1/taxonomy/content/{note['id']}/assignments",
-        headers=headers,
-    )
-    assert history_response.status_code == 200
-    history = history_response.json()
-    by_id = {item["id"]: item for item in history}
-    assert by_id[first_assignment["id"]]["status"] == "overridden"
-    assert by_id[first_assignment["id"]]["is_current"] is False
-    assert by_id[second_assignment["id"]]["status"] == "accepted"
-    assert by_id[second_assignment["id"]]["is_current"] is True
-
-    get_note_response = content_client.get(f"/api/v1/notes/{note['slug']}", headers=headers)
-    assert get_note_response.status_code == 200
-    get_note_payload = get_note_response.json()
-    assert "folder" not in get_note_payload
-    assert get_note_payload["taxonomyCategory"]["path"] == "software/programming"
-
-    async def load_content_object() -> ContentObject | None:
-        async with content_client.app.state.session_factory() as session:
-            return await session.scalar(select(ContentObject).where(ContentObject.id == note["id"]))
-
-    content_object = content_client.portal.call(load_content_object)
-    assert content_object is not None
-    assert content_object.category_id is None
-
-
-def test_taxonomy_search_breadcrumbs_restore_and_profile_document(
-    content_client: TestClient,
-) -> None:
-    headers = _auth_headers(content_client)
-    _enable_profile_editing(content_client, headers)
-    ai = _create_category(content_client, headers, slug="ai", name="AI")
-    llm = _create_category(content_client, headers, parent_id=ai["id"], slug="llm", name="LLM")
-    inference = _create_category(
-        content_client,
-        headers,
-        parent_id=llm["id"],
-        slug="inference",
-        name="Inference",
-    )
-    _create_category(content_client, headers, slug="personal", name="Personal")
-
-    search_response = content_client.get(
-        "/api/v1/taxonomy/categories/search?q=infer",
-        headers=headers,
-    )
-    assert search_response.status_code == 200
-    assert [item["path"] for item in search_response.json()] == ["ai/llm/inference"]
-
-    breadcrumbs_response = content_client.get(
-        f"/api/v1/taxonomy/categories/{inference['id']}/breadcrumbs",
-        headers=headers,
-    )
-    assert breadcrumbs_response.status_code == 200
-    assert breadcrumbs_response.json() == [
-        {"id": ai["id"], "name": "AI", "path": "ai"},
-        {"id": llm["id"], "name": "LLM", "path": "ai/llm"},
-        {"id": inference["id"], "name": "Inference", "path": "ai/llm/inference"},
-    ]
-
-    archive_response = content_client.delete(
-        f"/api/v1/taxonomy/categories/{inference['id']}",
-        headers=headers,
-    )
-    assert archive_response.status_code == 204
-    assert (
-        content_client.get("/api/v1/taxonomy/categories/search?q=infer", headers=headers).json()
-        == []
-    )
-
-    restore_response = content_client.post(
-        f"/api/v1/taxonomy/categories/{inference['id']}/restore",
-        headers=headers,
-    )
-    assert restore_response.status_code == 200
-    assert restore_response.json()["is_archived"] is False
-
-    profile_response = content_client.put(
-        f"/api/v1/taxonomy/categories/{inference['id']}/profile",
-        headers=headers,
-        json={
-            "summary": "Serving, latency, throughput, batching, and KV-cache.",
-            "keywords": ["vllm", "inference", "serving", "kv-cache"],
-            "positive_examples": [
-                "article about speculative decoding",
-                "note about continuous batching",
-            ],
-            "negative_examples": ["LLM model architecture", "model training"],
-        },
-    )
-    assert profile_response.status_code == 200
-
-    async def build_document() -> str:
-        async with content_client.app.state.session_factory() as session:
-            service = TaxonomyService(session)
-            return await service.build_category_profile_document(
-                owner_user_id=str(ai["owner_user_id"]),
-                category_id=str(inference["id"]),
-            )
-
-    document = content_client.portal.call(build_document)
-    assert document == (
-        "Path: AI / LLM / Inference\n"
-        "Name: Inference\n"
-        "Description: Inference description\n"
-        "Summary: Serving, latency, throughput, batching, and KV-cache.\n"
-        "Keywords: vllm, inference, serving, kv-cache\n"
-        "Positive examples:\n"
-        "- article about speculative decoding\n"
-        "- note about continuous batching"
-    )
-    assert "model training" not in document
-
-    async def build_subject_external_id() -> str:
-        async with content_client.app.state.session_factory() as session:
-            service = TaxonomyService(session)
-            subject = await service.build_category_profile_vector_subject(
-                owner_user_id=str(ai["owner_user_id"]),
-                category_id=str(inference["id"]),
-            )
-            expected = build_taxonomy_category_profile_vector_subject(
-                owner_user_id=str(ai["owner_user_id"]),
-                category_id=str(inference["id"]),
-                category_path="ai/llm/inference",
-                category_depth=2,
-                source_text=document,
-                source_updated_at=subject.source_updated_at,
-            )
-            assert subject == expected
-            return subject.external_id
-
-    assert (
-        content_client.portal.call(build_subject_external_id)
-        == f"taxonomy_category_profile:{inference['id']}"
-    )
-
-
-def test_content_classification_input_contract(content_client: TestClient) -> None:
-    headers = _auth_headers(content_client)
-    note_response = content_client.post(
-        "/api/v1/notes",
-        headers=headers,
-        json={
-            "media_type": "text",
-            "title": "Classification target",
-            "text": "First line for classification.\nSecond line has useful details.",
-            "tag_names": ["AI", "draft"],
-        },
-    )
-    assert note_response.status_code == 201, note_response.text
-    note = note_response.json()
-
-    async def build_input_for_owner() -> dict[str, object]:
-        async with content_client.app.state.session_factory() as session:
-            content_object = await session.scalar(
-                select(ContentObject).where(ContentObject.id == note["id"])
-            )
-            assert content_object is not None
-            service = ContentService(session, content_client.app.state.content_storage_root)
-            classification_input = await service.build_classification_input(
-                owner_user_id=content_object.owner_user_id,
-                content_object_id=content_object.id,
-            )
-            return classification_input.model_dump(mode="json")
-
-    payload = content_client.portal.call(build_input_for_owner)
-    assert payload["content_object_id"] == note["id"]
-    assert payload["title"] == "Classification target"
-    assert (
-        payload["text_excerpt"] == "First line for classification.\nSecond line has useful details."
-    )
-    assert payload["url"] is None
-    assert payload["tags"] == ["ai", "draft"]
-    assert payload["metadata"]["kind"] == "simple"
-    assert payload["metadata"]["media_type"] == "text"
-    assert payload["created_at"] == note["createdAt"]
-
-
-def test_content_classification_input_uses_ready_markdown_snapshot_for_document(
-    content_client: TestClient,
-) -> None:
-    headers = _auth_headers(content_client)
-    upload_response = content_client.post(
-        "/api/v1/notes/file/upload",
-        headers=headers,
-        data={"create_object": "true"},
-        files={"file": ("report.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")},
-    )
-    assert upload_response.status_code == 201, upload_response.text
-    note = upload_response.json()
-    asset_id = note["objects"][0]["id"]
-
-    artifact_path = Path("snapshots") / note["id"] / "markdown" / "snapshot.md"
-    absolute_artifact_path = content_client.app.state.content_storage_root / artifact_path
-    absolute_artifact_path.parent.mkdir(parents=True, exist_ok=True)
-    absolute_artifact_path.write_text(
-        "# Extracted report\n\nThis text came from the generated markdown snapshot.",
-        encoding="utf-8",
-    )
-
-    async def add_artifact_and_build_input() -> dict[str, object]:
-        async with content_client.app.state.session_factory() as session:
-            content_object = await session.scalar(
-                select(ContentObject).where(ContentObject.id == note["id"])
-            )
-            assert content_object is not None
-            session.add(
-                SnapshotArtifact(
-                    owner_user_id=content_object.owner_user_id,
-                    content_object_id=content_object.id,
-                    source_asset_id=asset_id,
-                    artifact_type="markdown",
-                    filename="snapshot.md",
-                    mime_type="text/markdown",
-                    size_bytes=absolute_artifact_path.stat().st_size,
-                    storage_path=str(artifact_path),
-                    storage_backend="local",
-                    bucket="app-storage",
-                    storage_key=str(artifact_path),
-                    status="ready",
-                )
-            )
-            await session.commit()
-            service = ContentService(session, content_client.app.state.content_storage_root)
-            classification_input = await service.build_classification_input(
-                owner_user_id=content_object.owner_user_id,
-                content_object_id=content_object.id,
-            )
-            return classification_input.model_dump(mode="json")
-
-    payload = content_client.portal.call(add_artifact_and_build_input)
-
-    assert payload["content_object_id"] == note["id"]
-    assert payload["text_excerpt"] == (
-        "# Extracted report\n\nThis text came from the generated markdown snapshot."
-    )
-
-
-class _FakeSemanticSearchService:
-    def __init__(self, results: list[SemanticSearchResult]) -> None:
-        self.results = results
-        self.calls: list[dict[str, object]] = []
-
-    async def semantic_search(
-        self,
-        *,
-        owner_user_id: str,
-        query: str,
-        limit: int,
-        source: str | None = None,
-        source_type: str | None = None,
-        source_id: str | None = None,
-    ) -> list[SemanticSearchResult]:
-        self.calls.append(
-            {
-                "owner_user_id": owner_user_id,
-                "query": query,
-                "limit": limit,
-                "source": source,
-                "source_type": source_type,
-                "source_id": source_id,
-            }
-        )
-        return self.results[:limit]
-
-
-class _FakeLLMStructuredGenerator:
-    def __init__(
-        self,
-        result: dict[str, Any] | None = None,
-        error: Exception | None = None,
-    ) -> None:
-        self.result = result or {
-            "selected_category_id": None,
-            "confidence": 0,
-            "should_assign": False,
-            "status": "no_assignment",
-            "reasoning": "No suitable candidate.",
-            "alternatives": [],
-        }
-        self.error = error
-        self.calls: list[dict[str, Any]] = []
-
-    async def generate_structured(
-        self,
-        *,
-        prompt: str,
-        schema: dict[str, Any],
-        model_config: dict[str, Any],
-    ) -> dict[str, Any]:
-        self.calls.append(
-            {
-                "prompt": prompt,
-                "schema": schema,
-                "model_config": model_config,
-            }
-        )
-        if self.error is not None:
-            raise self.error
-        return self.result
-
-
-def _semantic_result(
-    category: dict[str, object],
-    *,
-    chunk_id: str,
-    score: float,
-) -> SemanticSearchResult:
-    return SemanticSearchResult(
-        source="taxonomy",
-        source_type="category_profile",
-        source_id=str(category["id"]),
-        external_id=f"taxonomy_category_profile:{category['id']}",
-        chunk_id=chunk_id,
-        chunk_external_id=f"{chunk_id}:external",
-        text=f"{category['name']} profile text",
-        metadata={"category_path": str(category["path"])},
-        distance=1 - score,
-        score=score,
-    )
-
-
-def test_taxonomy_semantic_classification_assigns_proposes_and_preserves_history(
-    content_client: TestClient,
-) -> None:
-    headers = _auth_headers(content_client, telegram_id=300900)
-    inference = _create_category(content_client, headers, slug="inference", name="Inference")
-    training = _create_category(content_client, headers, slug="training", name="Training")
-    manual = _create_category(content_client, headers, slug="manual", name="Manual")
-    high_note = _create_note(content_client, headers, "vLLM latency")
-    medium_note = _create_note(content_client, headers, "Model training")
-    low_note = _create_note(content_client, headers, "Shopping list")
-
-    manual_assignment = content_client.post(
-        f"/api/v1/taxonomy/content/{high_note['id']}/assignments",
-        headers=headers,
-        json={"category_id": manual["id"], "reasoning": "Manual override."},
-    )
-    assert manual_assignment.status_code == 201, manual_assignment.text
-
-    async def scenario() -> tuple[dict[str, object], dict[str, object], object, list[str], str]:
-        async with content_client.app.state.session_factory() as session:
-            service = TaxonomyService(session)
-            high_search = _FakeSemanticSearchService(
-                [
-                    SemanticSearchResult(
-                        source="taxonomy",
-                        source_type="category_profile",
-                        source_id=str(inference["id"]),
-                        external_id=f"taxonomy_category_profile:{inference['id']}",
-                        chunk_id="chunk-high",
-                        chunk_external_id="taxonomy:chunk:0",
-                        text="Inference profile",
-                        metadata={"category_path": "inference"},
-                        distance=0.15,
-                        score=0.85,
-                    ),
-                    SemanticSearchResult(
-                        source="taxonomy",
-                        source_type="category_profile",
-                        source_id=str(training["id"]),
-                        external_id=f"taxonomy_category_profile:{training['id']}",
-                        chunk_id="chunk-alt",
-                        chunk_external_id="taxonomy:chunk:1",
-                        text="Training profile",
-                        metadata={"category_path": "training"},
-                        distance=0.25,
-                        score=0.75,
-                    ),
-                ]
-            )
-            high = await service.classify_content_object(
-                owner_user_id=str(inference["owner_user_id"]),
-                content_object_id=str(high_note["id"]),
-                semantic_search_service=high_search,
-            )
-
-            medium_search = _FakeSemanticSearchService(
-                [
-                    SemanticSearchResult(
-                        source="taxonomy",
-                        source_type="category_profile",
-                        source_id=str(training["id"]),
-                        external_id=f"taxonomy_category_profile:{training['id']}",
-                        chunk_id="chunk-medium",
-                        chunk_external_id="taxonomy:chunk:2",
-                        text="Training profile",
-                        metadata={},
-                        distance=0.35,
-                        score=0.65,
-                    )
-                ]
-            )
-            medium = await service.classify_content_object(
-                owner_user_id=str(training["owner_user_id"]),
-                content_object_id=str(medium_note["id"]),
-                semantic_search_service=medium_search,
-            )
-
-            low_search = _FakeSemanticSearchService(
-                [
-                    SemanticSearchResult(
-                        source="taxonomy",
-                        source_type="category_profile",
-                        source_id=str(training["id"]),
-                        external_id=f"taxonomy_category_profile:{training['id']}",
-                        chunk_id="chunk-low",
-                        chunk_external_id="taxonomy:chunk:3",
-                        text="Training profile",
-                        metadata={},
-                        distance=0.55,
-                        score=0.45,
-                    )
-                ]
-            )
-            low = await service.classify_content_object(
-                owner_user_id=str(training["owner_user_id"]),
-                content_object_id=str(low_note["id"]),
-                semantic_search_service=low_search,
-            )
-
-            calls = [
-                str(high_search.calls[0]["source"]),
-                str(high_search.calls[0]["source_type"]),
-            ]
-            assignments = await service.list_assignments(
-                owner_user_id=str(inference["owner_user_id"]),
-                content_object_id=str(high_note["id"]),
-            )
-            return (
-                TaxonomyService.assignment_response(high).model_dump(mode="json"),
-                TaxonomyService.assignment_response(medium).model_dump(mode="json"),
-                low,
-                calls,
-                ",".join(assignment.status for assignment in assignments),
-            )
-
-    high, medium, low, filters, history_statuses = content_client.portal.call(scenario)
-
-    assert high["status"] == "accepted"
-    assert high["assigned_by"] == "system"
-    assert high["category_id"] == inference["id"]
-    assert high["confidence"] == 0.85
-    assert high["alternatives"][0]["category_id"] == inference["id"]
-    assert high["alternatives"][1]["category_id"] == training["id"]
-    assert medium["status"] == "proposed"
-    assert medium["category_id"] == training["id"]
-    assert low is None
-    assert filters == ["taxonomy", "category_profile"]
-    assert "overridden" in history_statuses
-
-
-def test_taxonomy_classify_endpoint_uses_semantic_assignment_flow(
-    content_client: TestClient,
-) -> None:
-    headers = _auth_headers(content_client, telegram_id=301000)
-    _enable_profile_editing(content_client, headers)
-    category = _create_category(content_client, headers, slug="inference", name="Inference")
-    profile_response = content_client.put(
-        f"/api/v1/taxonomy/categories/{category['id']}/profile",
-        headers=headers,
-        json={
-            "summary": "Runtime serving latency and vLLM inference.",
-            "keywords": ["vllm", "latency"],
-            "positive_examples": ["vLLM latency note"],
-            "negative_examples": [],
-        },
-    )
-    assert profile_response.status_code == 200, profile_response.text
-    note = _create_note(content_client, headers, "Endpoint classification")
-
-    enqueue = content_client.post(
-        "/api/v1/vectorization/index",
-        headers=headers,
-        json={
-            "source": "taxonomy",
-            "source_type": "category_profile",
-            "source_id": category["id"],
-        },
-    )
-    assert enqueue.status_code == 202, enqueue.text
-
-    async def run_worker() -> int:
-        session_factory = _worker_session_factory()
+        await _enqueue(ctx, owner_id, note_id)
+        await TaxonomyJobRunner(ctx).run_once()
         async with session_factory() as session:
-            return await VectorizationWorker(session).run_once(limit=10)
+            job = (await session.scalars(select(TaxonomyClassificationJob))).one()
+            assert job.result_status == "kept_user_choice"
+        assignment = await _current(session_factory)
+        assert assignment.assigned_by == "user"
+        assert assignment.category_path_snapshot == "personal/reading"
 
-    assert asyncio.run(run_worker()) == 1
-
-    previous_high = os.environ.get("TAXONOMY_CLASSIFICATION_HIGH_THRESHOLD")
-    previous_medium = os.environ.get("TAXONOMY_CLASSIFICATION_MEDIUM_THRESHOLD")
-    os.environ["TAXONOMY_CLASSIFICATION_HIGH_THRESHOLD"] = "-1"
-    os.environ["TAXONOMY_CLASSIFICATION_MEDIUM_THRESHOLD"] = "-1"
-    get_settings.cache_clear()
-    try:
-        endpoint_response = content_client.post(
-            f"/api/v1/taxonomy/content/{note['id']}/classify",
-            headers=headers,
-        )
-    finally:
-        if previous_high is None:
-            os.environ.pop("TAXONOMY_CLASSIFICATION_HIGH_THRESHOLD", None)
-        else:
-            os.environ["TAXONOMY_CLASSIFICATION_HIGH_THRESHOLD"] = previous_high
-        if previous_medium is None:
-            os.environ.pop("TAXONOMY_CLASSIFICATION_MEDIUM_THRESHOLD", None)
-        else:
-            os.environ["TAXONOMY_CLASSIFICATION_MEDIUM_THRESHOLD"] = previous_medium
-        get_settings.cache_clear()
-
-    assert endpoint_response.status_code == 200, endpoint_response.text
-    assert endpoint_response.json()["mode"] == "semantic_only"
-    assert endpoint_response.json()["assigned"] is True
-    assert endpoint_response.json()["status"] == "accepted"
-    assert endpoint_response.json()["assignment_id"] is not None
-    assert endpoint_response.json()["selected_category"]["id"] == category["id"]
+    asyncio.run(scenario())
 
 
-def test_taxonomy_llm_judge_dry_run_uses_only_semantic_candidates(
-    content_client: TestClient,
-) -> None:
-    headers = _auth_headers(content_client, telegram_id=301100)
-    inference = _create_category(content_client, headers, slug="inference", name="Inference")
-    training = _create_category(content_client, headers, slug="training", name="Training")
-    note = _create_note(content_client, headers, "LLM dry run")
-    llm = _FakeLLMStructuredGenerator(
-        {
-            "selected_category_id": inference["id"],
-            "confidence": 0.91,
-            "should_assign": True,
-            "status": "accepted",
-            "reasoning": "The content is about serving latency.",
-            "alternatives": [
-                {
-                    "category_id": training["id"],
-                    "confidence": 0.42,
-                    "reasoning": "Related to models but less specific.",
-                }
-            ],
-        }
-    )
-    semantic = _FakeSemanticSearchService(
-        [
-            _semantic_result(inference, chunk_id="chunk-inference", score=0.83),
-            _semantic_result(training, chunk_id="chunk-training", score=0.72),
-        ]
-    )
-
-    async def scenario() -> tuple[dict[str, object], int, str, str, str]:
-        async with content_client.app.state.session_factory() as session:
-            service = TaxonomyService(session, llm_generator=llm)
-            response = await service.classify_content_object_with_response(
-                owner_user_id=str(inference["owner_user_id"]),
-                content_object_id=str(note["id"]),
-                mode="llm_judge",
-                candidate_limit=10,
-                dry_run=True,
-                semantic_search_service=semantic,
-            )
-            assignments = await service.list_assignments(
-                owner_user_id=str(inference["owner_user_id"]),
-                content_object_id=str(note["id"]),
-            )
-            return (
-                response.model_dump(mode="json"),
-                len(assignments),
-                str(semantic.calls[0]["source"]),
-                str(semantic.calls[0]["source_type"]),
-                llm.calls[0]["prompt"],
-            )
-
-    response, assignment_count, source_filter, source_type_filter, prompt = (
-        content_client.portal.call(scenario)
-    )
-
-    assert response["mode"] == "llm_judge"
-    assert response["dry_run"] is True
-    assert response["assigned"] is False
-    assert response["would_assign"] is True
-    assert response["would_status"] == "accepted"
-    assert response["assignment_id"] is None
-    assert response["selected_category"]["id"] == inference["id"]
-    assert response["llm_decision"]["selected_category_id"] == inference["id"]
-    assert response["semantic_candidates"][0]["category_id"] == inference["id"]
-    assert assignment_count == 0
-    assert source_filter == "taxonomy"
-    assert source_type_filter == "category_profile"
-    assert "choose only from provided candidates" in prompt.lower()
-    assert str(inference["id"]) in prompt
-    assert str(training["id"]) in prompt
-
-
-def test_taxonomy_llm_judge_normalizes_string_alternatives(
-    content_client: TestClient,
-) -> None:
-    headers = _auth_headers(content_client, telegram_id=301125)
-    inference = _create_category(content_client, headers, slug="inference", name="Inference")
-    note = _create_note(content_client, headers, "LLM alternatives")
-    llm = _FakeLLMStructuredGenerator(
-        {
-            "selected_category_id": inference["id"],
-            "confidence": 0.91,
-            "should_assign": True,
-            "status": "accepted",
-            "reasoning": "The content is about inference.",
-            "alternatives": ["No other category is close."],
-        }
-    )
-
-    async def scenario() -> dict[str, object]:
-        async with content_client.app.state.session_factory() as session:
-            response = await TaxonomyService(
-                session, llm_generator=llm
-            ).classify_content_object_with_response(
-                owner_user_id=str(inference["owner_user_id"]),
-                content_object_id=str(note["id"]),
-                mode="llm_judge",
-                candidate_limit=5,
-                dry_run=False,
-                semantic_search_service=_FakeSemanticSearchService(
-                    [_semantic_result(inference, chunk_id="chunk-inference", score=0.83)]
-                ),
-            )
-            return response.model_dump(mode="json")
-
-    response = content_client.portal.call(scenario)
-
-    assert response["assigned"] is True
-    assert response["selected_category"]["id"] == inference["id"]
-    assert response["reasoning"] == "The content is about inference."
-
-
-def test_taxonomy_llm_judge_uses_textual_candidates_when_vector_index_is_empty(
-    content_client: TestClient,
-) -> None:
-    headers = _auth_headers(content_client, telegram_id=301150)
-    _enable_profile_editing(content_client, headers)
-    programming = _create_category(
-        content_client,
-        headers,
-        slug="programming",
-        name="Programming",
-    )
-    python = _create_category(
-        content_client,
-        headers,
-        parent_id=programming["id"],
-        slug="python",
-        name="Python",
-    )
-    note = _create_note(content_client, headers, "FastAPI async SQLAlchemy")
-
-    profile_response = content_client.put(
-        f"/api/v1/taxonomy/categories/{python['id']}/profile",
-        headers=headers,
-        json={
-            "summary": "Python backend notes, FastAPI, asyncio, SQLAlchemy.",
-            "keywords": ["python", "fastapi", "asyncio", "sqlalchemy"],
-            "positive_examples": ["FastAPI async repository note"],
-            "negative_examples": ["CSS layout idea"],
-        },
-    )
-    assert profile_response.status_code == 200
-
-    llm = _FakeLLMStructuredGenerator(
-        {
-            "selected_category_id": python["id"],
-            "confidence": 0.88,
-            "should_assign": True,
-            "status": "accepted",
-            "reasoning": "The note is about Python backend tooling.",
-            "alternatives": [],
-        }
-    )
-    empty_semantic = _FakeSemanticSearchService([])
-
-    async def scenario() -> tuple[dict[str, object], int, str]:
-        async with content_client.app.state.session_factory() as session:
-            service = TaxonomyService(session, llm_generator=llm)
-            response = await service.classify_content_object_with_response(
-                owner_user_id=str(python["owner_user_id"]),
-                content_object_id=str(note["id"]),
-                mode="llm_judge",
-                candidate_limit=5,
-                dry_run=False,
-                semantic_search_service=empty_semantic,
-            )
-            assignments = await service.list_assignments(
-                owner_user_id=str(python["owner_user_id"]),
-                content_object_id=str(note["id"]),
-            )
-            return (
-                response.model_dump(mode="json"),
-                len(assignments),
-                llm.calls[0]["prompt"],
-            )
-
-    response, assignment_count, prompt = content_client.portal.call(scenario)
-
-    assert response["assigned"] is True
-    assert response["selected_category"]["id"] == python["id"]
-    assert response["status"] == "accepted"
-    assert assignment_count == 1
-    assert "programming/python" in prompt
-
-
-def test_taxonomy_textual_candidates_do_not_match_negative_examples(
-    content_client: TestClient,
-) -> None:
-    headers = _auth_headers(content_client, telegram_id=301175)
-    _enable_profile_editing(content_client, headers)
-    programming = _create_category(
-        content_client,
-        headers,
-        slug="programming",
-        name="Programming",
-    )
-    python = _create_category(
-        content_client,
-        headers,
-        parent_id=programming["id"],
-        slug="python",
-        name="Python",
-    )
-    design = _create_category(content_client, headers, slug="design", name="Design")
-    ui = _create_category(
-        content_client,
-        headers,
-        parent_id=design["id"],
-        slug="ui",
-        name="UI",
-    )
-
-    assert (
-        content_client.put(
-            f"/api/v1/taxonomy/categories/{python['id']}/profile",
-            headers=headers,
-            json={
-                "summary": "Python backend code, FastAPI services, and pytest.",
-                "keywords": ["python", "fastapi", "pytest"],
-                "positive_examples": ["Async SQLAlchemy repository"],
-                "negative_examples": ["CSS layout idea", "React component styling"],
-            },
-        ).status_code
-        == 200
-    )
-    assert (
-        content_client.put(
-            f"/api/v1/taxonomy/categories/{ui['id']}/profile",
-            headers=headers,
-            json={
-                "summary": "Interface implementation, CSS layout, React components, and styling.",
-                "keywords": ["ui", "css", "layout", "react", "components"],
-                "positive_examples": ["CSS layout idea", "React component styling"],
-                "negative_examples": ["FastAPI repository"],
-            },
-        ).status_code
-        == 200
-    )
-
-    async def scenario() -> list[str]:
-        async with content_client.app.state.session_factory() as session:
+def test_delete_category_moves_notes_to_inbox_and_reclassify_enqueues(session_factory, tmp_path):
+    async def scenario() -> None:
+        owner_id, note_id = await _seed(session_factory, LLM_NOTE)
+        async with session_factory() as session:
             service = TaxonomyService(session)
-            candidates = await service._load_textual_classification_candidates(
-                owner_user_id=str(python["owner_user_id"]),
-                classification_text="Title: CSS layout idea\nContent:\nReact component styling",
-                limit=5,
+            await service.assign_content_to_path(
+                owner_user_id=owner_id,
+                content_object_id=note_id,
+                raw_path="projects/alpha",
+                reasoning=None,
+                commit=True,
             )
-            return [candidate.category.path for candidate in candidates]
-
-    paths = content_client.portal.call(scenario)
-
-    assert paths[0] == "design/ui"
-    assert "programming/python" not in paths
-
-
-def test_taxonomy_classification_prefers_leaf_categories(
-    content_client: TestClient,
-) -> None:
-    headers = _auth_headers(content_client, telegram_id=301178)
-    _enable_profile_editing(content_client, headers)
-    media = _create_category(content_client, headers, slug="media", name="Media")
-    games = _create_category(
-        content_client,
-        headers,
-        parent_id=media["id"],
-        slug="games",
-        name="Games",
-    )
-    note = _create_note(content_client, headers, "Stronghold 4 medieval strategy game")
-
-    async def scenario() -> dict[str, object]:
-        async with content_client.app.state.session_factory() as session:
-            response = await TaxonomyService(session).classify_content_object_with_response(
-                owner_user_id=str(media["owner_user_id"]),
-                content_object_id=str(note["id"]),
-                mode="semantic_only",
-                candidate_limit=5,
-                dry_run=False,
-                semantic_search_service=_FakeSemanticSearchService(
-                    [
-                        _semantic_result(media, chunk_id="chunk-media", score=0.95),
-                        _semantic_result(games, chunk_id="chunk-games", score=0.82),
-                    ]
-                ),
-            )
-            return response.model_dump(mode="json")
-
-    response = content_client.portal.call(scenario)
-
-    assert response["assigned"] is True
-    assert response["selected_category"]["id"] == games["id"]
-    assert response["selected_category"]["path"] == "media/games"
-
-
-def test_taxonomy_llm_judge_adds_textual_candidates_to_semantic_results(
-    content_client: TestClient,
-) -> None:
-    headers = _auth_headers(content_client, telegram_id=301180)
-    _enable_profile_editing(content_client, headers)
-    programming = _create_category(
-        content_client,
-        headers,
-        slug="programming",
-        name="Programming",
-    )
-    backend = _create_category(
-        content_client,
-        headers,
-        parent_id=programming["id"],
-        slug="backend",
-        name="Backend",
-    )
-    design = _create_category(content_client, headers, slug="design", name="Design")
-    ui = _create_category(
-        content_client,
-        headers,
-        parent_id=design["id"],
-        slug="ui",
-        name="UI",
-    )
-    note = _create_note(content_client, headers, "React component layout")
-
-    assert (
-        content_client.put(
-            f"/api/v1/taxonomy/categories/{ui['id']}/profile",
-            headers=headers,
-            json={
-                "summary": "Interface implementation, React components, CSS layout, and UI polish.",
-                "keywords": ["ui", "react", "component", "css", "layout"],
-                "positive_examples": ["React component layout", "CSS visual polish"],
-                "negative_examples": ["Backend worker queue"],
-            },
-        ).status_code
-        == 200
-    )
-
-    llm = _FakeLLMStructuredGenerator(
-        {
-            "selected_category_id": ui["id"],
-            "confidence": 0.9,
-            "should_assign": True,
-            "status": "accepted",
-            "reasoning": "The content is about UI component layout.",
-            "alternatives": [],
-        }
-    )
-    semantic = _FakeSemanticSearchService(
-        [_semantic_result(backend, chunk_id="chunk-backend", score=0.84)]
-    )
-
-    async def scenario() -> tuple[dict[str, object], str]:
-        async with content_client.app.state.session_factory() as session:
-            service = TaxonomyService(session, llm_generator=llm)
-            response = await service.classify_content_object_with_response(
-                owner_user_id=str(ui["owner_user_id"]),
-                content_object_id=str(note["id"]),
-                mode="llm_judge",
-                candidate_limit=5,
-                dry_run=True,
-                semantic_search_service=semantic,
-            )
-            return response.model_dump(mode="json"), llm.calls[0]["prompt"]
-
-    response, prompt = content_client.portal.call(scenario)
-
-    assert response["selected_category"]["id"] == ui["id"]
-    assert response["would_assign"] is True
-    assert "design/ui" in prompt
-    assert "programming/backend" in prompt
-
-
-def test_taxonomy_llm_judge_creates_assignment_and_audit_metadata(
-    content_client: TestClient,
-) -> None:
-    headers = _auth_headers(content_client, telegram_id=301200)
-    inference = _create_category(content_client, headers, slug="inference", name="Inference")
-    manual = _create_category(content_client, headers, slug="manual", name="Manual")
-    note = _create_note(content_client, headers, "LLM assignment")
-    manual_assignment = content_client.post(
-        f"/api/v1/taxonomy/content/{note['id']}/assignments",
-        headers=headers,
-        json={"category_id": manual["id"], "reasoning": "Manual first."},
-    )
-    assert manual_assignment.status_code == 201, manual_assignment.text
-    llm = _FakeLLMStructuredGenerator(
-        {
-            "selected_category_id": inference["id"],
-            "confidence": 0.86,
-            "should_assign": True,
-            "status": "accepted",
-            "reasoning": "Material is mainly about LLM serving.",
-            "alternatives": [],
-        }
-    )
-    semantic = _FakeSemanticSearchService(
-        [_semantic_result(inference, chunk_id="chunk-inference", score=0.81)]
-    )
-
-    async def scenario() -> tuple[dict[str, object], list[dict[str, object]]]:
-        async with content_client.app.state.session_factory() as session:
-            service = TaxonomyService(session, llm_generator=llm)
-            response = await service.classify_content_object_with_response(
-                owner_user_id=str(inference["owner_user_id"]),
-                content_object_id=str(note["id"]),
-                mode="llm_judge",
-                candidate_limit=5,
-                dry_run=False,
-                semantic_search_service=semantic,
-            )
-            assignments = await service.list_assignments(
-                owner_user_id=str(inference["owner_user_id"]),
-                content_object_id=str(note["id"]),
-            )
-            return (
-                response.model_dump(mode="json"),
-                [
-                    TaxonomyService.assignment_response(assignment).model_dump(mode="json")
-                    for assignment in assignments
-                ],
-            )
-
-    response, assignments = content_client.portal.call(scenario)
-
-    assert response["assigned"] is True
-    assert response["assignment_id"] is not None
-    assert response["status"] == "accepted"
-    assert response["confidence"] == 0.86
-    assert assignments[0]["assigned_by"] == "llm"
-    assert assignments[0]["reasoning"] == "Material is mainly about LLM serving."
-    assert assignments[0]["alternatives"][0]["classification_mode"] == "llm_judge"
-    assert assignments[0]["alternatives"][0]["prompt_version"] == (
-        "taxonomy_classification_llm_judge_v1"
-    )
-    assert assignments[0]["alternatives"][0]["semantic_candidates"][0]["category_id"] == (
-        inference["id"]
-    )
-    assert assignments[1]["status"] == "overridden"
-
-
-def test_taxonomy_llm_judge_thresholds_and_no_assignment_do_not_create_rows(
-    content_client: TestClient,
-) -> None:
-    headers = _auth_headers(content_client, telegram_id=301300)
-    inference = _create_category(content_client, headers, slug="inference", name="Inference")
-    proposed_note = _create_note(content_client, headers, "Proposed LLM")
-    low_note = _create_note(content_client, headers, "Low LLM")
-    no_assignment_note = _create_note(content_client, headers, "No assignment LLM")
-
-    async def scenario() -> tuple[dict[str, object], dict[str, object], dict[str, object], int]:
-        async with content_client.app.state.session_factory() as session:
-            service = TaxonomyService(session)
-            proposed = await TaxonomyService(
-                session,
-                llm_generator=_FakeLLMStructuredGenerator(
-                    {
-                        "selected_category_id": inference["id"],
-                        "confidence": 0.65,
-                        "should_assign": True,
-                        "status": "proposed",
-                        "reasoning": "Possible fit.",
-                        "alternatives": [],
-                    }
-                ),
-            ).classify_content_object_with_response(
-                owner_user_id=str(inference["owner_user_id"]),
-                content_object_id=str(proposed_note["id"]),
-                mode="llm_judge",
-                candidate_limit=5,
-                dry_run=False,
-                semantic_search_service=_FakeSemanticSearchService(
-                    [_semantic_result(inference, chunk_id="chunk-proposed", score=0.8)]
-                ),
-            )
-            low = await TaxonomyService(
-                session,
-                llm_generator=_FakeLLMStructuredGenerator(
-                    {
-                        "selected_category_id": inference["id"],
-                        "confidence": 0.45,
-                        "should_assign": True,
-                        "status": "proposed",
-                        "reasoning": "Weak fit.",
-                        "alternatives": [],
-                    }
-                ),
-            ).classify_content_object_with_response(
-                owner_user_id=str(inference["owner_user_id"]),
-                content_object_id=str(low_note["id"]),
-                mode="llm_judge",
-                candidate_limit=5,
-                dry_run=False,
-                semantic_search_service=_FakeSemanticSearchService(
-                    [_semantic_result(inference, chunk_id="chunk-low", score=0.8)]
-                ),
-            )
-            none = await TaxonomyService(
-                session,
-                llm_generator=_FakeLLMStructuredGenerator(
-                    {
-                        "selected_category_id": None,
-                        "confidence": 0.99,
-                        "should_assign": False,
-                        "status": "no_assignment",
-                        "reasoning": "No candidate fits.",
-                        "alternatives": [],
-                    }
-                ),
-            ).classify_content_object_with_response(
-                owner_user_id=str(inference["owner_user_id"]),
-                content_object_id=str(no_assignment_note["id"]),
-                mode="llm_judge",
-                candidate_limit=5,
-                dry_run=False,
-                semantic_search_service=_FakeSemanticSearchService(
-                    [_semantic_result(inference, chunk_id="chunk-none", score=0.8)]
-                ),
-            )
-            all_assignments = (
-                await service.list_assignments(
-                    owner_user_id=str(inference["owner_user_id"]),
-                    content_object_id=str(proposed_note["id"]),
+            projects = (
+                await session.scalars(
+                    select(TaxonomyCategory).where(TaxonomyCategory.path == "projects")
                 )
-                + await service.list_assignments(
-                    owner_user_id=str(inference["owner_user_id"]),
-                    content_object_id=str(low_note["id"]),
-                )
-                + await service.list_assignments(
-                    owner_user_id=str(inference["owner_user_id"]),
-                    content_object_id=str(no_assignment_note["id"]),
-                )
+            ).one()
+            result = await service.delete_category(
+                owner_user_id=owner_id,
+                category_id=projects.id,
+                delete_notes=False,
+                confirm_category_name=None,
+                confirm_delete_notes_text=None,
+                storage=LocalVolumeStorage(tmp_path),
             )
-            return (
-                proposed.model_dump(mode="json"),
-                low.model_dump(mode="json"),
-                none.model_dump(mode="json"),
-                len(all_assignments),
-            )
+            assert result.archived_categories_count == 2
+            assert result.moved_notes_count == 1
+            response = await service.enqueue_inbox_reclassification_jobs(owner_user_id=owner_id)
+            assert response.enqueued_count == 1
+        assignment = await _current(session_factory)
+        assert assignment.category_path_snapshot == "inbox"
 
-    proposed, low, none, assignment_count = content_client.portal.call(scenario)
-
-    assert proposed["status"] == "proposed"
-    assert proposed["assigned"] is True
-    assert low["assigned"] is False
-    assert low["status"] == "no_assignment"
-    assert none["assigned"] is False
-    assert none["status"] == "no_assignment"
-    assert assignment_count == 1
-
-
-def test_taxonomy_llm_judge_invalid_candidate_falls_back_or_errors(
-    content_client: TestClient,
-) -> None:
-    headers = _auth_headers(content_client, telegram_id=301400)
-    inference = _create_category(content_client, headers, slug="inference", name="Inference")
-    note = _create_note(content_client, headers, "Invalid candidate")
-
-    async def fallback_scenario() -> dict[str, object]:
-        async with content_client.app.state.session_factory() as session:
-            response = await TaxonomyService(
-                session,
-                settings=Settings(taxonomy_llm_classification_fallback_to_semantic=True),
-                llm_generator=_FakeLLMStructuredGenerator(
-                    {
-                        "selected_category_id": "not-a-candidate",
-                        "confidence": 0.99,
-                        "should_assign": True,
-                        "status": "accepted",
-                        "reasoning": "Invalid.",
-                        "alternatives": [],
-                    }
-                ),
-            ).classify_content_object_with_response(
-                owner_user_id=str(inference["owner_user_id"]),
-                content_object_id=str(note["id"]),
-                mode="llm_judge",
-                candidate_limit=5,
-                dry_run=True,
-                semantic_search_service=_FakeSemanticSearchService(
-                    [_semantic_result(inference, chunk_id="chunk-fallback", score=0.85)]
-                ),
-            )
-            return response.model_dump(mode="json")
-
-    async def error_scenario() -> None:
-        async with content_client.app.state.session_factory() as session:
-            await TaxonomyService(
-                session,
-                settings=Settings(taxonomy_llm_classification_fallback_to_semantic=False),
-                llm_generator=_FakeLLMStructuredGenerator(
-                    {
-                        "selected_category_id": "not-a-candidate",
-                        "confidence": 0.99,
-                        "should_assign": True,
-                        "status": "accepted",
-                        "reasoning": "Invalid.",
-                        "alternatives": [],
-                    }
-                ),
-            ).classify_content_object_with_response(
-                owner_user_id=str(inference["owner_user_id"]),
-                content_object_id=str(note["id"]),
-                mode="llm_judge",
-                candidate_limit=5,
-                dry_run=True,
-                semantic_search_service=_FakeSemanticSearchService(
-                    [_semantic_result(inference, chunk_id="chunk-error", score=0.85)]
-                ),
-            )
-
-    fallback = content_client.portal.call(fallback_scenario)
-    assert fallback["mode"] == "llm_judge"
-    assert fallback["selected_category"]["id"] == inference["id"]
-    assert fallback["reasoning"].startswith("LLM judge failed; fell back")
-
-    try:
-        content_client.portal.call(error_scenario)
-    except TaxonomyLLMClassificationError as exc:
-        assert "candidate" in str(exc).lower()
-    else:
-        raise AssertionError("Expected invalid LLM candidate to raise when fallback is disabled.")
-
-
-def test_taxonomy_llm_judge_generation_error_falls_back_when_enabled(
-    content_client: TestClient,
-) -> None:
-    headers = _auth_headers(content_client, telegram_id=301500)
-    inference = _create_category(content_client, headers, slug="inference", name="Inference")
-    note = _create_note(content_client, headers, "LLM failure")
-
-    async def scenario() -> dict[str, object]:
-        async with content_client.app.state.session_factory() as session:
-            response = await TaxonomyService(
-                session,
-                settings=Settings(taxonomy_llm_classification_fallback_to_semantic=True),
-                llm_generator=_FakeLLMStructuredGenerator(error=LLMGenerationError("timeout")),
-            ).classify_content_object_with_response(
-                owner_user_id=str(inference["owner_user_id"]),
-                content_object_id=str(note["id"]),
-                mode="llm_judge",
-                candidate_limit=5,
-                dry_run=True,
-                semantic_search_service=_FakeSemanticSearchService(
-                    [_semantic_result(inference, chunk_id="chunk-timeout", score=0.85)]
-                ),
-            )
-            return response.model_dump(mode="json")
-
-    response = content_client.portal.call(scenario)
-    assert response["would_assign"] is True
-    assert response["selected_category"]["id"] == inference["id"]
-    assert response["reasoning"].startswith("LLM judge failed; fell back")
+    asyncio.run(scenario())

@@ -1,7 +1,10 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { startUploadJob, fetchNote } from '../api/notes'
+import { uploadNoteFiles } from '../api/notes'
 import { useLocalNotes } from '../contexts/LocalNotesContext'
-import { makeMarkdownTitle } from '../utils/markdownPaste'
+import { useUploadContext } from '../contexts/UploadContext'
+import { makeMarkdownTitle } from '../utils/markdownTitle'
+import { SEARCH_CAPABILITIES_QUERY_KEY } from './useSearchCapabilities'
+import { requestChangeFeedSync } from './useNotesChangeFeed'
 import { type NotesQueryData, upsertNoteInNotesQueryData } from './useNotes'
 import type { Note, NoteObject, NoteObjectType } from '../types'
 
@@ -14,14 +17,22 @@ function fileToObject(file: File, index: number): NoteObject {
   return { id: `tmp-obj-${index}`, type, content: URL.createObjectURL(file), createdAt: new Date().toISOString() }
 }
 
+/** Frees the object URLs of an optimistic card once the server's version replaces it. */
+export function revokeLocalPreviewUrls(objects: NoteObject[]): void {
+  for (const object of objects) {
+    if (object.content.startsWith('blob:')) URL.revokeObjectURL(object.content)
+  }
+}
+
 export function useUploadFiles() {
   const queryClient = useQueryClient()
   const { addLocalNote, updateLocalNote } = useLocalNotes()
+  const { pushNotice } = useUploadContext()
 
   return useMutation({
-    mutationFn: ({ files, text }: { files: File[]; text?: string }) => startUploadJob(files, text),
+    mutationFn: ({ files, text }: { files: File[]; text?: string }) => uploadNoteFiles(files, text),
 
-    onMutate: async ({ files, text }) => {
+    onMutate: ({ files, text }) => {
       const stableKey = makeTempId()
       const now = new Date().toISOString()
       const fileObjects = files.map((f, i) => fileToObject(f, i))
@@ -51,31 +62,25 @@ export function useUploadFiles() {
         isLoading: true,
       }
       addLocalNote(optimistic, { files, fileText: text })
-      return { stableKey, files, text, optimistic }
+      return { stableKey, fileObjects }
     },
 
-    onSuccess: async ({ noteId, noteSlug }, _vars, ctx) => {
-      // Fetch full note to get real asset URLs and correct type/objects
-      try {
-        const serverNote = await fetchNote(noteId)
-        updateLocalNote(ctx.stableKey, {
-          ...serverNote,
-          stableKey: ctx.stableKey,
-          isLoading: false,
-          isLocal: false,
-        })
-        queryClient.setQueriesData<NotesQueryData>({ queryKey: ['notes'] }, old =>
-          upsertNoteInNotesQueryData(old, { ...serverNote, stableKey: ctx.stableKey }),
-        )
-      } catch {
-        updateLocalNote(ctx.stableKey, { id: noteId, slug: noteSlug, isLoading: false, isLocal: false })
-        queryClient.invalidateQueries({ queryKey: ['notes'] })
-      }
+    onSuccess: (serverNote, _vars, ctx) => {
+      // The upload response is the stored note (assets, type, processing flag): no refetch.
+      updateLocalNote(ctx.stableKey, { ...serverNote, stableKey: ctx.stableKey, isLoading: false, isLocal: false })
+      queryClient.setQueriesData<NotesQueryData>({ queryKey: ['notes'] }, old =>
+        upsertNoteInNotesQueryData(old, { ...serverNote, stableKey: ctx.stableKey }),
+      )
+      void queryClient.invalidateQueries({ queryKey: SEARCH_CAPABILITIES_QUERY_KEY })
+      revokeLocalPreviewUrls(ctx.fileObjects)
+      requestChangeFeedSync()
     },
 
-    onError: (_err, _vars, ctx) => {
+    onError: (error, _vars, ctx) => {
       if (!ctx) return
+      // The card stays as an unsynced local note (with its previews) so the user can retry.
       updateLocalNote(ctx.stableKey, { isLoading: false, isLocal: true })
+      pushNotice(error instanceof Error ? error.message : 'Не удалось загрузить файлы')
     },
   })
 }

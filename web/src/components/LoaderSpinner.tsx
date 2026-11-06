@@ -22,3 +22,12 @@ export function LoaderSpinner({ size = 'lg', className }: LoaderSpinnerProps) {
     />
   )
 }
+
+/** Centered viewport-height loader for app bootstrap and route guards. */
+export function FullPageLoader() {
+  return (
+    <div className="appLoaderHost appLoaderHost--fullscreen" role="status" aria-label="Загрузка">
+      <LoaderSpinner />
+    </div>
+  )
+}

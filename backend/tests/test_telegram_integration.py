@@ -1,272 +1,248 @@
-from __future__ import annotations
+"""Internal Telegram bot API tests (need TEST_DATABASE_URL)."""
 
+import asyncio
 import json
-from datetime import UTC, datetime
+from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import update
 
-from app.modules.content.schemas import NoteAssetResponse, NoteCardResponse, SourceMetadataResponse
-from app.modules.content.service import ContentService, UploadedContent
-from app.modules.telegram_integration.schemas import TelegramIngestPayload
-from app.modules.telegram_integration.service import TelegramIngestService
-from tests.test_content import TELEGRAM_BOT_TOKEN, _auth_headers
+from app.core.config import get_settings
+from app.main import app
+from app.modules.content.cards import merge_source_metadata
+from app.modules.content.schemas import SourceMetadataResponse
+from app.modules.telegram_integration.models import TelegramBotState
+from app.platform.storage.local import LocalVolumeStorage
+from tests.conftest import prepare_database, require_database_url
+from tests.test_auth import AUTH_ENV, widget_payload
+
+ADMIN_ID = 100500
+INTERNAL = {"Authorization": f"Bearer {AUTH_ENV['TELEGRAM_INTERNAL_TOKEN']}"}
+BASE = "/api/v1/integrations/telegram"
 
 
-def _internal_headers() -> dict[str, str]:
-    return {"Authorization": f"Bearer {TELEGRAM_BOT_TOKEN}"}
+@pytest.fixture
+def tg_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[TestClient]:
+    for key, value in AUTH_ENV.items():
+        monkeypatch.setenv(key, value)
+    get_settings.cache_clear()
+    database_url = require_database_url()
+    try:
+        app.state.session_factory = asyncio.run(prepare_database(database_url))
+    except OSError as exc:
+        pytest.skip(f"PostgreSQL is not available: {exc}")
+    app.state.storage = LocalVolumeStorage(tmp_path / "storage")
+    with TestClient(app) as client:
+        yield client
+    get_settings.cache_clear()
 
 
-def _ingest_text(
-    client: TestClient,
-    *,
-    text: str,
-    message_id: int,
-    telegram_user_id: int = 100500,
-) -> dict[str, object]:
+def link(client: TestClient, telegram_id: int = ADMIN_ID) -> None:
     response = client.post(
-        "/api/v1/integrations/telegram/ingest",
-        headers=_internal_headers(),
-        data={
-            "telegram_user_id": str(telegram_user_id),
-            "telegram_chat_id": "9001",
-            "telegram_message_id": str(message_id),
-            "message_date": datetime.now(UTC).isoformat(),
-            "material_type": "text",
-            "text": text,
-        },
+        "/api/v1/auth/telegram-login",
+        json=widget_payload(telegram_id=telegram_id, username=None),
+    )
+    assert response.status_code == 200, response.text
+    client.cookies.clear()
+
+
+def part(
+    message_id: int, *, text: str | None = None, file_index: int | None = None, **extra: object
+) -> dict[str, object]:
+    value: dict[str, object] = {
+        "telegram_message_id": str(message_id),
+        "material_type": "photo" if file_index is not None else "text",
+        "message_date": datetime.now(UTC).isoformat(),
+    }
+    if text is not None:
+        value["text"] = text
+    if file_index is not None:
+        value.update(
+            file_index=file_index, filename=f"photo-{message_id}.jpg", mime_type="image/jpeg"
+        )
+    value.update(extra)
+    return value
+
+
+def ingest(
+    client: TestClient,
+    groups: list[list[dict[str, object]]],
+    *,
+    telegram_id: int = ADMIN_ID,
+    files: list[tuple[str, bytes]] | None = None,
+    headers: dict[str, str] | None = None,
+) -> object:
+    payload = {
+        "telegram_user_id": telegram_id,
+        "telegram_chat_id": str(telegram_id),
+        "groups": [{"parts": group} for group in groups],
+    }
+    return client.post(
+        f"{BASE}/ingest",
+        headers=INTERNAL if headers is None else headers,
+        data={"payload": json.dumps(payload)},
+        files=[("files", (name, data, "image/jpeg")) for name, data in files or []] or None,
+    )
+
+
+PNG = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
+    b"\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00"
+    b"\x00\x00IEND\xaeB`\x82"
+)
+
+
+def test_internal_token_is_required(tg_client: TestClient) -> None:
+    bot_token = {"Authorization": "Bearer 123456:test-bot-token"}
+    for headers in ({}, {"Authorization": "Bearer wrong"}, bot_token):
+        response = tg_client.get(f"{BASE}/users/{ADMIN_ID}", headers=headers)
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "invalid_telegram_integration_token"
+
+
+def test_user_status_reports_access_and_link(tg_client: TestClient) -> None:
+    unknown = tg_client.get(f"{BASE}/users/555", headers=INTERNAL).json()
+    assert unknown["allowed"] is False and unknown["linked"] is False
+
+    admin = tg_client.get(f"{BASE}/users/{ADMIN_ID}", headers=INTERNAL).json()
+    assert admin["allowed"] is True and admin["is_admin"] is True and admin["linked"] is False
+
+    link(tg_client)
+    linked = tg_client.get(f"{BASE}/users/{ADMIN_ID}", headers=INTERNAL).json()
+    assert linked["linked"] is True and linked["user_id"]
+
+
+def test_bot_admin_commands_manage_access(tg_client: TestClient) -> None:
+    forbidden = tg_client.post(
+        f"{BASE}/access", headers=INTERNAL, json={"actor_telegram_id": 555, "telegram_user_id": 7}
+    )
+    assert forbidden.status_code == 403
+
+    granted = tg_client.post(
+        f"{BASE}/access",
+        headers=INTERNAL,
+        json={"actor_telegram_id": ADMIN_ID, "username": "@Pal", "note": "friend"},
+    )
+    assert granted.status_code == 201, granted.text
+    # Username grants bind to the id the bot sees with that username.
+    status = tg_client.get(f"{BASE}/users/77?username=pal", headers=INTERNAL).json()
+    assert status["allowed"] is True
+    listing = tg_client.get(f"{BASE}/access?actor_telegram_id={ADMIN_ID}", headers=INTERNAL).json()
+    assert listing["items"][0]["telegram_user_id"] == 77
+
+    revoked = tg_client.post(
+        f"{BASE}/access/revoke",
+        headers=INTERNAL,
+        json={"actor_telegram_id": ADMIN_ID, "telegram_user_id": 77},
+    )
+    assert revoked.status_code == 200
+    assert tg_client.get(f"{BASE}/users/77", headers=INTERNAL).json()["allowed"] is False
+    missing = tg_client.post(
+        f"{BASE}/access/revoke",
+        headers=INTERNAL,
+        json={"actor_telegram_id": ADMIN_ID, "telegram_user_id": 77},
+    )
+    assert missing.status_code == 404
+
+
+def test_state_mode_finish_and_reminders(tg_client: TestClient) -> None:
+    state = tg_client.get(f"{BASE}/state/{ADMIN_ID}", headers=INTERNAL).json()
+    assert state["mode"] == "auto"
+    bad = tg_client.put(f"{BASE}/state/{ADMIN_ID}/mode", headers=INTERNAL, json={"mode": "x"})
+    assert bad.status_code == 422
+    manual = tg_client.put(
+        f"{BASE}/state/{ADMIN_ID}/mode", headers=INTERNAL, json={"mode": "manual_collection"}
+    ).json()
+    assert manual["mode"] == "manual_collection"
+
+    finished = tg_client.post(f"{BASE}/state/{ADMIN_ID}/finish", headers=INTERNAL).json()
+    assert finished["finished"] is False and finished["state"]["mode"] == "auto"
+    claimed = tg_client.post(f"{BASE}/reminders/claim", headers=INTERNAL, json={"idle_seconds": 60})
+    assert claimed.json() == {"telegram_user_ids": []}
+
+
+def test_ingest_requires_access_and_link(tg_client: TestClient) -> None:
+    denied = ingest(tg_client, [[part(1, text="hi")]], telegram_id=555)
+    assert denied.status_code == 403
+    assert denied.json()["error"]["details"][0]["telegram_user_id"] == 555
+
+    not_linked = ingest(tg_client, [[part(1, text="hi")]])
+    assert not_linked.status_code == 404
+    assert not_linked.json()["error"]["code"] == "telegram_user_not_linked"
+
+
+def test_ingest_validates_payload_and_file_indexes(tg_client: TestClient) -> None:
+    link(tg_client)
+    assert ingest(tg_client, []).status_code == 422
+    bad_index = ingest(tg_client, [[part(1, file_index=1)]], files=[("a.png", PNG)])
+    assert bad_index.status_code == 422
+    assert bad_index.json()["error"]["code"] == "invalid_file_index"
+
+
+def test_ingest_text_and_album_in_one_request(tg_client: TestClient) -> None:
+    link(tg_client)
+    response = ingest(
+        tg_client,
+        [
+            [part(1, text="Read later https://example.com/a")],
+            [
+                part(2, file_index=0, caption="album", source=_source(2, "g1")),
+                part(3, file_index=1, source=_source(3, "g1")),
+            ],
+        ],
+        files=[("a.png", PNG), ("b.png", PNG)],
     )
     assert response.status_code == 201, response.text
-    return response.json()
+    body = response.json()
+    assert body["status"] == "saved"
+    assert body["note"]["id"]
 
 
-def test_telegram_media_only_title_ignores_transport_filename() -> None:
-    title = TelegramIngestService._title(
-        payload=TelegramIngestPayload(
-            telegram_user_id="100500",
-            telegram_chat_id="801627037",
-            telegram_message_id="41",
-            material_type="photo",
-            filename="telegram-photo-41.jpg",
-            mime_type="image/jpeg",
-        ),
-        uploaded=UploadedContent(
-            filename="telegram-photo-41.jpg",
-            content_type="image/jpeg",
-            data=b"\xff\xd8\xff\xe0telegram-image\xff\xd9",
-        ),
-        text=None,
+def test_manual_collection_appends_to_active_collection(tg_client: TestClient) -> None:
+    link(tg_client)
+    tg_client.put(
+        f"{BASE}/state/{ADMIN_ID}/mode", headers=INTERNAL, json={"mode": "manual_collection"}
     )
 
-    assert title == ""
+    first = ingest(tg_client, [[part(1, text="first item")]]).json()
+    second = ingest(tg_client, [[part(2, text="second item")]]).json()
 
+    assert first["status"] == "collection_started"
+    assert second["status"] == "collection_updated"
+    state = tg_client.get(f"{BASE}/state/{ADMIN_ID}", headers=INTERNAL).json()
+    assert state["active_collection_id"] == second["note"]["id"]
 
-def test_telegram_batch_media_only_title_ignores_transport_filename() -> None:
-    payloads = [
-        TelegramIngestPayload(
-            telegram_user_id="100500",
-            telegram_chat_id="801627037",
-            telegram_message_id="42",
-            material_type="video",
-            filename="telegram-video-42.mp4",
-            mime_type="video/mp4",
-        ),
-    ]
-    title = TelegramIngestService._batch_title(
-        payloads=payloads,
-        uploaded=[
-            UploadedContent(
-                filename="telegram-video-42.mp4",
-                content_type="video/mp4",
-                data=b"fake-video",
+    async def make_idle() -> None:
+        async with app.state.session_factory() as session:
+            await session.execute(
+                update(TelegramBotState).values(
+                    manual_collection_last_item_at=datetime.now(UTC) - timedelta(hours=1)
+                )
             )
-        ],
-        text=TelegramIngestService._batch_text(payloads),
-    )
+            await session.commit()
 
-    assert title == ""
+    asyncio.run(make_idle())
+    claim = tg_client.post(f"{BASE}/reminders/claim", headers=INTERNAL, json={"idle_seconds": 60})
+    assert claim.json() == {"telegram_user_ids": [ADMIN_ID]}
+    again = tg_client.post(f"{BASE}/reminders/claim", headers=INTERNAL, json={"idle_seconds": 60})
+    assert again.json() == {"telegram_user_ids": []}
 
-
-def test_telegram_batch_text_deduplicates_caption_parts() -> None:
-    payloads = [
-        TelegramIngestPayload(
-            telegram_user_id="100500",
-            telegram_chat_id="801627037",
-            telegram_message_id="42",
-            material_type="video",
-            caption="Shared caption",
-        ),
-        TelegramIngestPayload(
-            telegram_user_id="100500",
-            telegram_chat_id="801627037",
-            telegram_message_id="43",
-            material_type="photo",
-            caption="Shared caption",
-        ),
-        TelegramIngestPayload(
-            telegram_user_id="100500",
-            telegram_chat_id="801627037",
-            telegram_message_id="44",
-            material_type="text",
-            text="Second text",
-        ),
-    ]
-
-    assert TelegramIngestService._batch_text(payloads) == "Shared caption\n\nSecond text"
+    finished = tg_client.post(f"{BASE}/state/{ADMIN_ID}/finish", headers=INTERNAL).json()
+    assert finished["finished"] is True
+    after = ingest(tg_client, [[part(3, text="standalone")]]).json()
+    assert after["status"] == "saved"
 
 
-def test_telegram_batch_source_targets_keep_first_source_as_object_fallback() -> None:
-    created_at = datetime.now(UTC)
-    first = TelegramIngestPayload(
-        telegram_user_id="100500",
-        telegram_chat_id="801627037",
-        telegram_message_id="51",
-        material_type="photo",
-        caption="Shared caption",
-        source={
-            "provider": "telegram",
-            "provider_label": "Telegram",
-            "external_id": "801627037:51",
-        },
-    )
-    second = TelegramIngestPayload(
-        telegram_user_id="100500",
-        telegram_chat_id="801627037",
-        telegram_message_id="52",
-        material_type="video",
-        source={
-            "provider": "telegram",
-            "provider_label": "Telegram",
-            "external_id": "801627037:52",
-        },
-    )
-    card = NoteCardResponse(
-        id="note-1",
-        slug="telegram-batch",
-        kind="complex",
-        media_type="image",
-        title="Telegram batch",
-        source_filename="first.jpg",
-        taxonomy_category=None,
-        tags=[],
-        is_favorite=False,
-        sort_order=0,
-        created_at=created_at,
-        updated_at=created_at,
-        download_url="/api/v1/notes/telegram-batch/download",
-        assets=[
-            NoteAssetResponse(
-                id="asset-text",
-                role="text",
-                media_type="text",
-                filename="content.md",
-                mime_type="text/markdown",
-                size_bytes=14,
-            ),
-            NoteAssetResponse(
-                id="asset-image",
-                role="original",
-                media_type="image",
-                filename="first.jpg",
-                mime_type="image/jpeg",
-                size_bytes=10,
-            ),
-            NoteAssetResponse(
-                id="asset-video",
-                role="original",
-                media_type="video",
-                filename="second.mp4",
-                mime_type="video/mp4",
-                size_bytes=10,
-            ),
-        ],
-    )
-
-    targets = TelegramIngestService._batch_source_targets(
-        card=card,
-        payloads=[first, second],
-        uploaded=[
-            UploadedContent(filename="first.jpg", content_type="image/jpeg", data=b"image"),
-            UploadedContent(filename="second.mp4", content_type="video/mp4", data=b"video"),
-        ],
-    )
-
-    assert [(payload.source.external_id, asset_id) for payload, asset_id in targets] == [
-        ("801627037:51", None),
-        ("801627037:52", "asset-video"),
-    ]
-
-
-def test_telegram_batch_source_targets_use_upload_order_for_duplicate_names() -> None:
-    created_at = datetime.now(UTC)
-    first = TelegramIngestPayload(
-        telegram_user_id="100500",
-        telegram_chat_id="801627037",
-        telegram_message_id="51",
-        material_type="photo",
-        source={
-            "provider": "telegram",
-            "provider_label": "Telegram",
-            "external_id": "801627037:51",
-        },
-    )
-    second = TelegramIngestPayload(
-        telegram_user_id="100500",
-        telegram_chat_id="801627037",
-        telegram_message_id="52",
-        material_type="photo",
-        source={
-            "provider": "telegram",
-            "provider_label": "Telegram",
-            "external_id": "801627037:52",
-        },
-    )
-    card = NoteCardResponse(
-        id="note-1",
-        slug="telegram-batch",
-        kind="complex",
-        media_type="image",
-        title="Telegram batch",
-        source_filename="telegram-photo.jpg",
-        taxonomy_category=None,
-        tags=[],
-        is_favorite=False,
-        sort_order=0,
-        created_at=created_at,
-        updated_at=created_at,
-        download_url="/api/v1/notes/telegram-batch/download",
-        assets=[
-            NoteAssetResponse(
-                id="asset-first",
-                role="original",
-                media_type="image",
-                filename="telegram-photo.jpg",
-                mime_type="image/jpeg",
-                size_bytes=10,
-            ),
-            NoteAssetResponse(
-                id="asset-second",
-                role="original",
-                media_type="image",
-                filename="telegram-photo.jpg",
-                mime_type="image/jpeg",
-                size_bytes=10,
-            ),
-        ],
-    )
-
-    targets = TelegramIngestService._batch_source_targets(
-        card=card,
-        payloads=[first, second],
-        uploaded=[
-            UploadedContent(filename="telegram-photo.jpg", content_type="image/jpeg", data=b"1"),
-            UploadedContent(filename="telegram-photo.jpg", content_type="image/jpeg", data=b"2"),
-        ],
-    )
-
-    assert [(payload.source.external_id, asset_id) for payload, asset_id in targets] == [
-        ("801627037:51", None),
-        ("801627037:52", "asset-second"),
-    ]
+def _source(message_id: int, group_id: str) -> dict[str, object]:
+    return {
+        "provider": "telegram",
+        "provider_label": "Telegram",
+        "external_id": f"{ADMIN_ID}:{message_id}",
+        "group_id": group_id,
+    }
 
 
 def test_telegram_source_metadata_merges_custom_emoji_assets_from_later_sources() -> None:
@@ -292,446 +268,9 @@ def test_telegram_source_metadata_merges_custom_emoji_assets_from_later_sources(
         },
     )
 
-    merged = ContentService._merge_source_metadata(first, [first, second])
+    merged = merge_source_metadata(first, [first, second])
 
     assert merged.external_id == "801627037:51"
     assert merged.custom_emoji_ids == ["5280586677532774817"]
-    assert merged.metadata["telegram_message_id"] == "51"
-    assert merged.metadata["custom_emoji_assets"] == {
-        "5280586677532774817": {
-            "data_url": "data:image/webp;base64,emoji",
-            "fallback": "⚡️",
-        }
-    }
+    assert merged.metadata["custom_emoji_assets"]["5280586677532774817"]["fallback"] == "⚡️"
     assert "custom_emoji_assets" not in first.metadata
-
-
-def test_telegram_ingest_requires_internal_token(content_client: TestClient) -> None:
-    _auth_headers(content_client)
-
-    response = content_client.post(
-        "/api/v1/integrations/telegram/ingest",
-        headers={"Authorization": "Bearer wrong-token"},
-        data={
-            "telegram_user_id": "100500",
-            "telegram_chat_id": "9001",
-            "telegram_message_id": "1",
-            "material_type": "text",
-            "text": "Draft",
-        },
-    )
-
-    assert response.status_code == 401
-    assert response.json()["error"]["code"] == "invalid_telegram_integration_token"
-
-
-def test_telegram_ingest_rejects_unlinked_user(content_client: TestClient) -> None:
-    response = content_client.post(
-        "/api/v1/integrations/telegram/ingest",
-        headers=_internal_headers(),
-        data={
-            "telegram_user_id": "404404",
-            "telegram_chat_id": "9001",
-            "telegram_message_id": "1",
-            "material_type": "text",
-            "text": "Draft",
-        },
-    )
-
-    assert response.status_code == 404
-    assert response.json()["error"]["code"] == "telegram_user_not_linked"
-
-
-def test_telegram_status_returns_linked_user_context(content_client: TestClient) -> None:
-    _auth_headers(content_client)
-
-    response = content_client.get(
-        "/api/v1/integrations/telegram/status",
-        headers=_internal_headers(),
-        params={"telegram_user_id": "100500"},
-    )
-
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload["user_id"]
-    assert payload == {
-        "linked": True,
-        "user_id": payload["user_id"],
-        "display_name": "User",
-    }
-
-
-def test_telegram_status_returns_unlinked_without_error(content_client: TestClient) -> None:
-    response = content_client.get(
-        "/api/v1/integrations/telegram/status",
-        headers=_internal_headers(),
-        params={"telegram_user_id": "404404"},
-    )
-
-    assert response.status_code == 200, response.text
-    assert response.json() == {
-        "linked": False,
-        "user_id": None,
-        "display_name": None,
-    }
-
-
-def test_telegram_ingest_text_creates_markdown_note(content_client: TestClient) -> None:
-    _auth_headers(content_client)
-
-    payload = _ingest_text(
-        content_client,
-        text="## Research\n\nTelegram **markdown** body",
-        message_id=1,
-    )
-
-    assert payload["status"] == "saved"
-    assert payload["mode"] == "default"
-    assert payload["note"]["type"] == "simple"
-    assert payload["note"]["objects"][0]["type"] == "text"
-    assert payload["note"]["objects"][0]["mimeType"] == "text/markdown"
-    assert payload["note"]["objects"][0]["content"] == "## Research\n\nTelegram **markdown** body"
-
-
-def test_telegram_ingest_markdown_link_creates_clean_link_note(
-    content_client: TestClient,
-) -> None:
-    _auth_headers(content_client)
-
-    payload = _ingest_text(
-        content_client,
-        text="[Habr article](https://habr.com/ru/articles/551948/)",
-        message_id=2,
-    )
-
-    assert payload["status"] == "saved"
-    assert payload["note"]["type"] == "composite"
-    link_object = next(item for item in payload["note"]["objects"] if item["type"] == "link")
-    assert link_object["content"] == "https://habr.com/ru/articles/551948/"
-    text_object = next(item for item in payload["note"]["objects"] if item["type"] == "text")
-    assert text_object["content"] == (
-        "![favicon](https://favicon.yandex.net/favicon/habr.com) "
-        "[Habr article](https://habr.com/ru/articles/551948/)"
-    )
-
-
-def test_telegram_ingest_returns_universal_source_metadata(
-    content_client: TestClient,
-) -> None:
-    _auth_headers(content_client)
-
-    source = {
-        "provider": "telegram",
-        "provider_label": "Telegram",
-        "external_id": "801627037:28",
-        "original_created_at": datetime(2026, 5, 12, 10, 30, tzinfo=UTC).isoformat(),
-        "origin": {
-            "type": "user",
-            "name": "Тёма",
-            "username": "luvrikin",
-        },
-        "raw_payload": {"message_id": 28, "text": "да, давай так и сделаем"},
-        "metadata": {"telegram_message_id": "28"},
-    }
-
-    response = content_client.post(
-        "/api/v1/integrations/telegram/ingest",
-        headers=_internal_headers(),
-        data={
-            "telegram_user_id": "100500",
-            "telegram_chat_id": "801627037",
-            "telegram_message_id": "28",
-            "message_date": datetime.now(UTC).isoformat(),
-            "material_type": "text",
-            "text": "да, давай так и сделаем",
-            "source": json.dumps(source),
-        },
-    )
-
-    assert response.status_code == 201, response.text
-    obj = response.json()["note"]["objects"][0]
-    assert obj["source"]["provider"] == "telegram"
-    assert obj["source"]["providerLabel"] == "Telegram"
-    assert obj["source"]["origin"]["name"] == "Тёма"
-    assert obj["source"]["origin"]["username"] == "luvrikin"
-    assert obj["source"]["rawPayload"]["message_id"] == 28
-
-    fresh_response = content_client.get(
-        f"/api/v1/notes/{response.json()['note']['slug']}",
-        headers=_auth_headers(content_client),
-    )
-    assert fresh_response.status_code == 200, fresh_response.text
-    fresh_obj = fresh_response.json()["objects"][0]
-    assert fresh_obj["source"]["externalId"] == "801627037:28"
-
-
-# todo вернуть тест
-# def test_telegram_media_group_appends_to_explicit_collection_with_item_sources(
-#     content_client: TestClient,
-# ) -> None:
-#     _auth_headers(content_client)
-#
-#     def ingest_photo(
-#         message_id: int,
-#         original_message_id: int,
-#         caption: str | None,
-#         *,
-#         target_collection_id: str | None = None,
-#     ) -> dict:
-#         source = {
-#             "provider": "telegram",
-#             "provider_label": "Telegram",
-#             "external_id": f"801627037:{message_id}",
-#             "group_id": "14227400699706618",
-#             "origin": {
-#                 "type": "channel",
-#                 "title": "Бэкдор",
-#                 "username": "whackdoor",
-#                 "url": f"https://t.me/whackdoor/{original_message_id}",
-#             },
-#             "metadata": {"telegram_message_id": str(message_id)},
-#             "raw_payload": {"message_id": message_id, "media_group_id": "14227400699706618"},
-#         }
-#         files = {
-#             "file": (
-#                 f"telegram-photo-{message_id}.jpg",
-#                 b"\xff\xd8\xff\xe0telegram-image\xff\xd9",
-#                 "image/jpeg",
-#             )
-#         }
-#         response = content_client.post(
-#             "/api/v1/integrations/telegram/ingest",
-#             headers=_internal_headers(),
-#             data={
-#                 "telegram_user_id": "100500",
-#                 "telegram_chat_id": "801627037",
-#                 "telegram_message_id": str(message_id),
-#                 "message_date": datetime.now(UTC).isoformat(),
-#                 "material_type": "photo",
-#                 "caption": caption,
-#                 "filename": f"telegram-photo-{message_id}.jpg",
-#                 "mime_type": "image/jpeg",
-#                 "source": json.dumps(source),
-#                 "target_collection_id": target_collection_id,
-#             },
-#             files=files,
-#         )
-#         assert response.status_code == 201, response.text
-#         return response.json()
-#
-#     first = ingest_photo(29, 28305, "Caption from first album item")
-#     second = ingest_photo(30, 28306, None, target_collection_id=first["note"]["id"])
-#
-#     assert first["note"]["type"] == "composite"
-#     assert second["status"] == "collection_updated"
-#     assert second["note"]["type"] == "collection"
-#     assert second["note"]["objects"][0]["caption"] == "Caption from first album item"
-#     source_urls = [
-#         source["origin"]["url"]
-#         for obj in second["note"]["objects"]
-#         if (source := obj.get("source")) is not None
-#     ]
-#     assert source_urls == ["https://t.me/whackdoor/28306"]
-
-
-def test_telegram_batch_ingest_creates_single_composite_note_with_shared_text(
-    content_client: TestClient,
-) -> None:
-    _auth_headers(content_client)
-
-    shared_caption = "Caption belongs to the whole Telegram message"
-    parts = [
-        {
-            "telegram_message_id": "51",
-            "material_type": "photo",
-            "message_date": datetime.now(UTC).isoformat(),
-            "caption": shared_caption,
-            "filename": "first.jpg",
-            "mime_type": "image/jpeg",
-            "file_index": 0,
-            "source": {
-                "provider": "telegram",
-                "provider_label": "Telegram",
-                "external_id": "801627037:51:0",
-                "group_id": "album-51",
-                "raw_payload": {"message_id": 51, "media_group_id": "album-51"},
-            },
-        },
-        {
-            "telegram_message_id": "52",
-            "material_type": "video",
-            "message_date": datetime.now(UTC).isoformat(),
-            "filename": "second.mp4",
-            "mime_type": "video/mp4",
-            "file_index": 1,
-            "source": {
-                "provider": "telegram",
-                "provider_label": "Telegram",
-                "external_id": "801627037:52:1",
-                "group_id": "album-51",
-                "raw_payload": {"message_id": 52, "media_group_id": "album-51"},
-            },
-        },
-    ]
-
-    response = content_client.post(
-        "/api/v1/integrations/telegram/ingest/batch",
-        headers=_internal_headers(),
-        data={
-            "telegram_user_id": "100500",
-            "telegram_chat_id": "801627037",
-            "parts": json.dumps(parts),
-        },
-        files=[
-            ("files", ("first.jpg", b"\xff\xd8\xff\xe0telegram-image\xff\xd9", "image/jpeg")),
-            ("files", ("second.mp4", b"fake-video", "video/mp4")),
-        ],
-    )
-
-    assert response.status_code == 201, response.text
-    payload = response.json()
-    assert payload["status"] == "saved"
-    assert payload["note"]["type"] == "composite"
-    objects = payload["note"]["objects"]
-    assert [obj["type"] for obj in objects] == ["text", "image", "video"]
-    assert objects[0]["content"] == shared_caption
-    assert objects[1]["caption"] is None
-    assert objects[2]["caption"] is None
-    assert objects[0]["source"]["externalId"] == "801627037:51:0"
-    assert objects[1]["source"]["externalId"] == "801627037:51:0"
-    assert objects[2]["source"]["externalId"] == "801627037:52:1"
-
-
-def test_telegram_photo_without_caption_does_not_use_filename_as_title(
-    content_client: TestClient,
-) -> None:
-    _auth_headers(content_client)
-
-    response = content_client.post(
-        "/api/v1/integrations/telegram/ingest",
-        headers=_internal_headers(),
-        data={
-            "telegram_user_id": "100500",
-            "telegram_chat_id": "801627037",
-            "telegram_message_id": "41",
-            "message_date": datetime.now(UTC).isoformat(),
-            "material_type": "photo",
-            "filename": "telegram-photo-41.jpg",
-            "mime_type": "image/jpeg",
-        },
-        files={
-            "file": (
-                "telegram-photo-41.jpg",
-                b"\xff\xd8\xff\xe0telegram-image\xff\xd9",
-                "image/jpeg",
-            )
-        },
-    )
-
-    assert response.status_code == 201, response.text
-    payload = response.json()
-    assert payload["note"]["title"] != "telegram-photo-41.jpg"
-    assert payload["note"]["title"] != "telegram-photo-41"
-    assert payload["note"]["objects"][0]["type"] == "image"
-    assert payload["note"]["objects"][0]["filename"] == "telegram-photo-41.jpg"
-
-
-def test_telegram_ingest_video_file_creates_video_note_object(
-    content_client: TestClient,
-) -> None:
-    _auth_headers(content_client)
-
-    response = content_client.post(
-        "/api/v1/integrations/telegram/ingest",
-        headers=_internal_headers(),
-        data={
-            "telegram_user_id": "100500",
-            "telegram_chat_id": "801627037",
-            "telegram_message_id": "42",
-            "message_date": datetime.now(UTC).isoformat(),
-            "material_type": "video",
-            "caption": "Video from Telegram",
-            "filename": "clip.mp4",
-            "mime_type": "video/mp4",
-        },
-        files={"file": ("clip.mp4", b"fake-video", "video/mp4")},
-    )
-
-    assert response.status_code == 201, response.text
-    objects = response.json()["note"]["objects"]
-    video = next(obj for obj in objects if obj["type"] == "video")
-    caption = next(obj for obj in objects if obj["type"] == "text")
-    assert video["filename"] == "clip.mp4"
-    assert video["mimeType"] == "video/mp4"
-    assert caption["content"] == "Video from Telegram"
-
-
-def test_telegram_ingest_voice_file_creates_audio_note_object(
-    content_client: TestClient,
-) -> None:
-    _auth_headers(content_client)
-
-    response = content_client.post(
-        "/api/v1/integrations/telegram/ingest",
-        headers=_internal_headers(),
-        data={
-            "telegram_user_id": "100500",
-            "telegram_chat_id": "801627037",
-            "telegram_message_id": "43",
-            "message_date": datetime.now(UTC).isoformat(),
-            "material_type": "voice",
-            "filename": "telegram-voice.ogg",
-            "mime_type": "audio/ogg",
-        },
-        files={"file": ("telegram-voice.ogg", b"fake-audio", "audio/ogg")},
-    )
-
-    assert response.status_code == 201, response.text
-    obj = response.json()["note"]["objects"][0]
-    assert obj["type"] == "audio"
-    assert obj["filename"] == "telegram-voice.ogg"
-    assert obj["mimeType"] == "audio/ogg"
-
-
-def test_telegram_default_mode_groups_fast_message_series(
-    content_client: TestClient,
-) -> None:
-    _auth_headers(content_client)
-
-    first = _ingest_text(content_client, text="First forwarded note", message_id=1)
-    second = _ingest_text(content_client, text="Second forwarded note", message_id=2)
-
-    assert first["note"]["type"] == "simple"
-    assert second["status"] == "saved"
-    assert second["note"]["type"] == "simple"
-    assert second["note"]["objects"][0]["content"] == "Second forwarded note"
-
-
-def test_telegram_ingest_appends_to_explicit_target_collection(
-    content_client: TestClient,
-) -> None:
-    _auth_headers(content_client)
-
-    first = _ingest_text(content_client, text="First collection item", message_id=1)
-    response = content_client.post(
-        "/api/v1/integrations/telegram/ingest",
-        headers=_internal_headers(),
-        data={
-            "telegram_user_id": "100500",
-            "telegram_chat_id": "9001",
-            "telegram_message_id": "2",
-            "message_date": datetime.now(UTC).isoformat(),
-            "material_type": "text",
-            "text": "Second collection item",
-            "target_collection_id": first["note"]["id"],
-        },
-    )
-
-    assert response.status_code == 201, response.text
-    payload = response.json()
-    assert payload["status"] == "collection_updated"
-    assert payload["note"]["type"] == "collection"
-    assert [obj["content"] for obj in payload["note"]["objects"]] == [
-        "First collection item",
-        "Second collection item",
-    ]

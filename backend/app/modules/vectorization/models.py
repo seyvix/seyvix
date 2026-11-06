@@ -1,91 +1,87 @@
+"""Search index storage: one row per indexed item, its text chunks, and the index job queue.
+
+Storage decisions:
+- Chunk text is stored exactly once (`vectorization_chunks.text`); there is no document copy
+  and no per-chunk metadata copy. Filters join the live source tables instead.
+- The FTS vector is a STORED generated column, so the GIN index and the query use the very
+  same expression by construction.
+- Embeddings live on the chunk as `halfvec(AI_EMBEDDING_DIMENSIONS)`: half the storage of
+  `vector`, HNSW-indexable up to 4000 dimensions (vector: 2000), and float16 precision does
+  not measurably change cosine ranking of normalized text embeddings.
+- A NULL embedding means "not embedded yet" (AI disabled, outage, or new chunk); the job
+  runner's embedding loop fills them in. Non-NULL embeddings were always produced by
+  `VectorizationSource.embedding_model`.
+"""
+
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
+from typing import Any
 from uuid import uuid4
 
+from pgvector.sqlalchemy import HALFVEC  # type: ignore[import-untyped]
+from sqlalchemy import (
+    Boolean,
+    Computed,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
+from sqlalchemy.dialects.postgresql import TSVECTOR
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.core.config import get_settings
 from app.core.database import Base
-from pgvector.sqlalchemy import Vector  # type: ignore[import-untyped]
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from app.platform.jobs import JobColumnsMixin, job_queue_indexes, utcnow
+
+_settings = get_settings()
+EMBEDDING_DIMENSIONS = _settings.ai_embedding_dimensions
+FTS_CONFIG = _settings.search_fts_config  # validated by Settings (lowercase identifier)
 
 
-def utcnow() -> datetime:
-    return datetime.now(UTC)
+def _uuid() -> str:
+    return str(uuid4())
 
 
 class VectorizationSource(Base):
+    """One indexed item (a note, a taxonomy category profile, ...)."""
+
     __tablename__ = "vectorization_sources"
     __table_args__ = (
         UniqueConstraint(
             "owner_user_id",
-            "external_id",
-            name="uq_vectorization_sources_owner_external_id",
+            "source",
+            "source_type",
+            "source_id",
+            name="uq_vectorization_sources_scope",
         ),
-        Index("ix_vectorization_sources_owner_source", "owner_user_id", "source", "source_type"),
-        Index("ix_vectorization_sources_status", "status"),
+        Index(
+            "ix_vectorization_sources_needs_embedding",
+            "updated_at",
+            postgresql_where=text("needs_embedding"),
+        ),
     )
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    owner_user_id: Mapped[str] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
-        index=True,
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    owner_user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     source: Mapped[str] = mapped_column(String(64))
     source_type: Mapped[str] = mapped_column(String(64))
     source_id: Mapped[str] = mapped_column(String(255))
-    external_id: Mapped[str] = mapped_column(String(512))
-    source_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    status: Mapped[str] = mapped_column(String(32), default="pending")
-    provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    model: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    dimensions: Mapped[int | None] = mapped_column(Integer(), nullable=True)
-    last_indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # sha256 of chunking config + indexed text: unchanged hash => nothing to do.
+    content_hash: Mapped[str] = mapped_column(String(64))
+    chunk_count: Mapped[int] = mapped_column(Integer(), default=0)
+    needs_embedding: Mapped[bool] = mapped_column(Boolean(), default=False)
+    embedding_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    indexed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=utcnow,
-        onupdate=utcnow,
-    )
-
-    document: Mapped[VectorizationDocument | None] = relationship(
-        back_populates="source_record",
-        cascade="all, delete-orphan",
-    )
-
-
-class VectorizationDocument(Base):
-    __tablename__ = "vectorization_documents"
-    __table_args__ = (
-        UniqueConstraint("source_record_id", name="uq_vectorization_documents_source_record_id"),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    owner_user_id: Mapped[str] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
-        index=True,
-    )
-    source_record_id: Mapped[str] = mapped_column(
-        ForeignKey("vectorization_sources.id", ondelete="CASCADE"),
-        index=True,
-    )
-    external_id: Mapped[str] = mapped_column(String(512))
-    text: Mapped[str] = mapped_column(Text())
-    text_hash: Mapped[str] = mapped_column(String(64))
-    metadata_: Mapped[dict[str, object]] = mapped_column("metadata", JSON(), default=dict)
-    chunking_strategy: Mapped[str] = mapped_column(String(64))
-    representation_type: Mapped[str] = mapped_column(String(64))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=utcnow,
-        onupdate=utcnow,
-    )
-
-    source_record: Mapped[VectorizationSource] = relationship(back_populates="document")
-    chunks: Mapped[list[VectorizationChunk]] = relationship(
-        back_populates="document",
-        cascade="all, delete-orphan",
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
 
 
@@ -93,125 +89,57 @@ class VectorizationChunk(Base):
     __tablename__ = "vectorization_chunks"
     __table_args__ = (
         UniqueConstraint(
-            "document_id",
-            "chunk_index",
-            name="uq_vectorization_chunks_document_index",
+            "source_record_id", "chunk_index", name="uq_vectorization_chunks_source_index"
         ),
-        UniqueConstraint(
-            "owner_user_id",
-            "chunk_external_id",
-            name="uq_vectorization_chunks_owner_external_id",
+        Index("ix_vectorization_chunks_owner", "owner_user_id"),
+        Index("ix_vectorization_chunks_search_vector", "search_vector", postgresql_using="gin"),
+        Index(
+            "ix_vectorization_chunks_embedding_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_with={"m": 16, "ef_construction": 64},
+            postgresql_ops={"embedding": "halfvec_cosine_ops"},
         ),
     )
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    owner_user_id: Mapped[str] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
-        index=True,
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     source_record_id: Mapped[str] = mapped_column(
-        ForeignKey("vectorization_sources.id", ondelete="CASCADE"),
-        index=True,
+        ForeignKey("vectorization_sources.id", ondelete="CASCADE")
     )
-    document_id: Mapped[str] = mapped_column(
-        ForeignKey("vectorization_documents.id", ondelete="CASCADE"),
-        index=True,
-    )
+    # Denormalized from the source so owner-scoped scans need no join.
+    owner_user_id: Mapped[str] = mapped_column(String(36))
     chunk_index: Mapped[int] = mapped_column(Integer())
-    chunk_external_id: Mapped[str] = mapped_column(String(640))
     text: Mapped[str] = mapped_column(Text())
-    text_hash: Mapped[str] = mapped_column(String(64))
+    text_hash: Mapped[str] = mapped_column(String(32))
     token_count: Mapped[int] = mapped_column(Integer())
-    metadata_: Mapped[dict[str, object]] = mapped_column("metadata", JSON(), default=dict)
+    search_vector: Mapped[Any] = mapped_column(
+        TSVECTOR(),
+        Computed(f"to_tsvector('{FTS_CONFIG}'::regconfig, text)", persisted=True),
+        deferred=True,
+    )
+    embedding: Mapped[Any | None] = mapped_column(
+        HALFVEC(EMBEDDING_DIMENSIONS), nullable=True, deferred=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=utcnow,
-        onupdate=utcnow,
-    )
-
-    document: Mapped[VectorizationDocument] = relationship(back_populates="chunks")
-    embedding: Mapped[VectorizationEmbedding | None] = relationship(
-        back_populates="chunk",
-        cascade="all, delete-orphan",
-    )
 
 
-class VectorizationEmbedding(Base):
-    __tablename__ = "vectorization_embeddings"
-    __table_args__ = (
-        UniqueConstraint(
-            "chunk_id",
-            "provider",
-            "model",
-            "dimensions",
-            name="uq_vectorization_embeddings_chunk_provider_model_dimensions",
-        ),
-    )
+class VectorizationJob(JobColumnsMixin, Base):
+    """At most one row per indexed item; re-enqueue resets it (duplicate-safe upsert)."""
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    owner_user_id: Mapped[str] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
-        index=True,
-    )
-    chunk_id: Mapped[str] = mapped_column(
-        ForeignKey("vectorization_chunks.id", ondelete="CASCADE"),
-        index=True,
-    )
-    provider: Mapped[str] = mapped_column(String(64))
-    model: Mapped[str] = mapped_column(String(255))
-    dimensions: Mapped[int] = mapped_column(Integer())
-    embedding: Mapped[list[float]] = mapped_column(Vector())
-    embedding_hash: Mapped[str] = mapped_column(String(64))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=utcnow,
-        onupdate=utcnow,
-    )
-
-    chunk: Mapped[VectorizationChunk] = relationship(back_populates="embedding")
-
-
-class VectorizationJob(Base):
     __tablename__ = "vectorization_jobs"
     __table_args__ = (
-        Index(
-            "ix_vectorization_jobs_status_run_after_priority",
-            "status",
-            "run_after",
-            "priority",
-        ),
-        Index(
-            "ix_vectorization_jobs_owner_source",
+        *job_queue_indexes("vectorization_jobs"),
+        UniqueConstraint(
             "owner_user_id",
             "source",
             "source_type",
             "source_id",
+            name="uq_vectorization_jobs_scope",
         ),
     )
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    owner_user_id: Mapped[str] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
-        index=True,
-    )
-    job_type: Mapped[str] = mapped_column(String(64))
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    owner_user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     source: Mapped[str] = mapped_column(String(64))
     source_type: Mapped[str] = mapped_column(String(64))
     source_id: Mapped[str] = mapped_column(String(255))
-    external_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
-    priority: Mapped[int] = mapped_column(Integer(), default=100)
-    attempts: Mapped[int] = mapped_column(Integer(), default=0)
-    max_attempts: Mapped[int] = mapped_column(Integer(), default=3)
-    run_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    locked_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    last_error: Mapped[str | None] = mapped_column(Text(), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=utcnow,
-        onupdate=utcnow,
-    )

@@ -1,1027 +1,452 @@
+"""Produce snapshot outputs for one source asset in a single pass.
+
+Every expensive intermediate is created at most once per job and shared by all requested
+outputs: the source file (local path or one download), the office→PDF conversion, the link
+page render (one Chromium page load for thumbnail, screenshot, page PDF, HTML archive and
+readable text) and the text extraction. Files are written to the job's temporary work dir;
+the worker uploads them and the work dir is removed afterwards.
+"""
+
 from __future__ import annotations
 
+import asyncio
 import html
-import importlib
-import ipaddress
-import json
-import re
 import shutil
-import socket
-import subprocess
-import zipfile
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
-from tempfile import NamedTemporaryFile, TemporaryDirectory
-from typing import Any
-from urllib.parse import urlparse
-from xml.etree import ElementTree
+from typing import Any, Final
 
-import httpx
-
-from app.core.config import get_settings
+from app.core.config import Settings
 from app.core.logging import get_logger
-from app.modules.content.models import ContentAsset, ContentObject
-from app.modules.snapshots.extraction import ExtractorContext, extract_asset_text
+from app.modules.llm.client import AIUnavailableError
+from app.modules.snapshots.browser import BrowserManager, PageCapture, RenderRequest
+from app.modules.snapshots.egress import (
+    BlockedDestinationError,
+    EgressProxy,
+    FetchError,
+    fetch_html,
+    parse_public_url,
+)
+from app.modules.snapshots.errors import SnapshotError
+from app.modules.snapshots.extraction import ExtractionResult, extract_markdown
+from app.modules.snapshots.extraction.ai import AIEnrichment
+from app.modules.snapshots.extraction.files import decode_text
+from app.modules.snapshots.extraction.media import MediaError, video_frame
 from app.modules.snapshots.extraction.office import (
     OfficeConversionResult,
+    convert_office_to_pdf,
     office_failure_message,
 )
-
-THUMBNAIL_MAX_WIDTH = 512
-THUMBNAIL_MAX_HEIGHT = 512
-VIDEO_THUMBNAIL_TIMEOUT_SECONDS = 30
+from app.modules.snapshots.imaging import (
+    ImageError,
+    image_thumbnail,
+    pdf_first_page_thumbnail,
+    text_pdf,
+    text_thumbnail,
+    viewport_thumbnail,
+)
+from app.modules.snapshots.planning import AssetFacts
+from app.modules.snapshots.rewriter import rewrite_css, rewrite_html
+from app.platform.storage.keys import file_suffix
+from app.platform.storage.service import StorageBackend
 
 logger = get_logger(__name__)
 
+MAX_MARKDOWN_CHARS: Final = 1_000_000
+THUMBNAIL_TEXT_CHARS: Final = 5000
+TEXT_PREVIEW_MIME_TYPES: Final = frozenset(
+    {"application/json", "text/csv", "text/html", "text/markdown", "text/plain", "text/uri-list"}
+)
+TEXT_PREVIEW_SUFFIXES: Final = frozenset(
+    {".csv", ".html", ".htm", ".json", ".md", ".markdown", ".txt", ".url"}
+)
+PLAIN_TEXT_PDF_SUFFIXES: Final = frozenset({".csv", ".json", ".md", ".markdown", ".txt"})
+AUDIO_PREVIEW_TEXT: Final = "Audio file\n\nSaved voice or audio attachment."
+# Order matters only for sharing: text first so thumbnails/PDFs can reuse it.
+PRODUCTION_ORDER: Final = (
+    "markdown",
+    "thumbnail_text",
+    "thumbnail",
+    "screenshot",
+    "pdf",
+    "webpage_html",
+)
 
-class UnsupportedSnapshotError(Exception):
-    pass
+
+@dataclass(frozen=True, slots=True)
+class SourceAsset:
+    """Plain copy of the asset row: processing never holds ORM objects or a DB session."""
+
+    id: str
+    content_object_id: str
+    media_type: str
+    mime_type: str | None
+    filename: str
+    storage_key: str
+    text_content: str | None
+
+    @property
+    def facts(self) -> AssetFacts:
+        return AssetFacts(self.media_type, self.mime_type, self.filename)
 
 
 @dataclass(slots=True)
 class GeneratedArtifact:
+    artifact_type: str
     filename: str
     mime_type: str
-    path: Path
-    width: int | None = None
-    height: int | None = None
-    resources_dir: Path | None = None
-    metadata_path: Path | None = None
-
-    @property
-    def size_bytes(self) -> int:
-        return self.path.stat().st_size
+    path: Path | None = None  # file to upload
+    text: str | None = None  # inline text artifact (no storage object)
+    resources_dir: Path | None = None  # HTML archive static resources
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass(frozen=True, slots=True)
-class FetchedWebpage:
-    url: str
-    html: str
+Outcome = GeneratedArtifact | SnapshotError
 
 
-class SnapshotArtifactGenerator:
-    def __init__(self, storage_root: Path) -> None:
-        self.storage_root = storage_root
-
-    def generate(
+class SnapshotGenerator:
+    def __init__(
         self,
-        *,
-        content_object: ContentObject,
-        asset: ContentAsset | None,
-        job_type: str,
-        artifact_id: str | None = None,
-    ) -> GeneratedArtifact:
-        if job_type == "archive_org":
-            raise UnsupportedSnapshotError("Archive.org snapshots require an external URL.")
-        if asset is None:
-            raise UnsupportedSnapshotError("This snapshot type requires a source asset.")
+        settings: Settings,
+        storage: StorageBackend,
+        browser: BrowserManager,
+        egress: EgressProxy,
+        ai: AIEnrichment,
+    ) -> None:
+        self.settings = settings
+        self.storage = storage
+        self.browser = browser
+        self.egress = egress
+        self.ai = ai
 
-        source_path = self.storage_root / asset.storage_path
-        output_dir = self.storage_root / content_object.storage_path / "snapshots" / asset.id
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        if job_type == "thumbnail":
-            return self._generate_thumbnail(
-                asset=asset, source_path=source_path, output_dir=output_dir
-            )
-        if job_type == "thumbnail_text":
-            return self._generate_thumbnail_text(
-                asset=asset, source_path=source_path, output_dir=output_dir
-            )
-        if job_type == "markdown":
-            return self._generate_markdown(
-                asset=asset, source_path=source_path, output_dir=output_dir
-            )
-        if job_type == "screenshot":
-            return self._generate_screenshot(
-                asset=asset, source_path=source_path, output_dir=output_dir
-            )
-        if job_type == "webpage_html":
-            return self._generate_webpage_html(
-                asset=asset,
-                source_path=source_path,
-                output_dir=output_dir,
-                artifact_id=artifact_id,
-            )
-        if job_type == "pdf":
-            return self._generate_pdf(asset=asset, source_path=source_path, output_dir=output_dir)
-        raise UnsupportedSnapshotError(f"Unsupported snapshot job type: {job_type}")
-
-    def _generate_thumbnail(
+    async def generate(
         self,
+        asset: SourceAsset,
+        job_types: Iterable[str],
+        work_dir: Path,
         *,
-        asset: ContentAsset,
-        source_path: Path,
-        output_dir: Path,
-    ) -> GeneratedArtifact:
-        if asset.media_type == "link":
-            return self._generate_browser_thumbnail(
-                asset=asset, source_path=source_path, output_dir=output_dir
-            )
-        if asset.media_type == "image":
-            return self._render_image_thumbnail(
-                source_path=source_path,
-                output_dir=output_dir,
-                filename="thumbnail.jpg",
-            )
-        if asset.media_type == "audio":
-            return self._render_audio_thumbnail(
-                asset=asset,
-                output_dir=output_dir,
-                filename="thumbnail.jpg",
-            )
-        if asset.media_type == "video":
-            return self._render_video_thumbnail(
-                source_path=source_path,
-                output_dir=output_dir,
-                filename="thumbnail.jpg",
-            )
-        if self._is_pdf(asset=asset, source_path=source_path):
-            return self._render_pdf_first_page(
-                source_path=source_path,
-                output_dir=output_dir,
-                filename="thumbnail.jpg",
-            )
-        preview_text = self._text_for_thumbnail_preview(asset=asset, source_path=source_path)
-        if preview_text is not None:
-            return self._render_text_thumbnail(
-                output_dir=output_dir,
-                filename="thumbnail.jpg",
-                title=asset.filename,
-                body=preview_text,
-            )
+        artifact_ids: Mapping[str, str],
+    ) -> dict[str, Outcome]:
+        """One outcome per requested job type; never raises for a bad input."""
+        requested = set(job_types)
+        run = _Run(self, asset, requested, work_dir, artifact_ids)
+        outcomes: dict[str, Outcome] = {}
+        for job_type in sorted(requested, key=_production_rank):
+            try:
+                outcomes[job_type] = await run.produce(job_type)
+            except SnapshotError as exc:
+                outcomes[job_type] = exc
+            except AIUnavailableError as exc:
+                outcomes[job_type] = SnapshotError(
+                    f"AI provider unavailable: {exc}", retryable=True
+                )
+            except Exception as exc:  # noqa: BLE001 - one bad input must not kill the worker
+                logger.error(
+                    "snapshot.generate.unexpected_error",
+                    asset_id=asset.id,
+                    job_type=job_type,
+                    error=str(exc),
+                    exc_info=True,
+                )
+                outcomes[job_type] = SnapshotError(
+                    f"Unexpected error: {type(exc).__name__}: {exc}", retryable=True
+                )
+        return outcomes
 
-        office_result = self._convert_office_to_pdf(source_path)
-        if office_result.ok and office_result.pdf_path is not None:
-            return self._render_pdf_first_page(
-                source_path=office_result.pdf_path,
-                output_dir=output_dir,
-                filename="thumbnail.jpg",
-            )
 
-        raise UnsupportedSnapshotError(
-            office_failure_message(
-                asset_filename=asset.filename,
-                result=office_result,
-                timeout_seconds=get_settings().snapshot_office_converter_timeout_seconds,
+def _production_rank(job_type: str) -> int:
+    return PRODUCTION_ORDER.index(job_type) if job_type in PRODUCTION_ORDER else 99
+
+
+class _Run:
+    """Per-job lazily computed inputs (implements `ExtractionSource`)."""
+
+    def __init__(
+        self,
+        generator: SnapshotGenerator,
+        asset: SourceAsset,
+        requested: set[str],
+        work_dir: Path,
+        artifact_ids: Mapping[str, str],
+    ) -> None:
+        self.generator = generator
+        self.settings = generator.settings
+        self.asset = asset
+        self.facts = asset.facts
+        self.text_content = asset.text_content
+        self.requested = requested
+        self.work_dir = work_dir
+        self.artifact_ids = artifact_ids
+        self._source: Path | None = None
+        self._office: OfficeConversionResult | None = None
+        self._capture: PageCapture | SnapshotError | None = None
+        self._text: ExtractionResult | SnapshotError | None = None
+
+    # --- shared inputs -------------------------------------------------------------------
+    async def path(self) -> Path:
+        if self._source is None:
+            local = self.generator.storage.local_path(self.asset.storage_key)
+            if local is not None and await asyncio.to_thread(local.is_file):
+                self._source = local
+            else:
+                target = self.work_dir / f"source{file_suffix(self.asset.filename)}"
+                await self.generator.storage.download_to(self.asset.storage_key, target)
+                self._source = target
+        return self._source
+
+    async def office_pdf(self) -> Path:
+        if self._office is None:
+            self._office = await convert_office_to_pdf(
+                await self.path(), self.work_dir, self.settings
             )
+        if self._office.pdf_path is None:
+            raise SnapshotError(
+                office_failure_message(
+                    asset_filename=self.asset.filename,
+                    result=self._office,
+                    timeout_seconds=self.settings.snapshot_office_converter_timeout_seconds,
+                )
+            )
+        return self._office.pdf_path
+
+    async def link_url(self) -> str:
+        value = self.text_content
+        if value is None:
+            source = await self.path()
+            value = decode_text(await asyncio.to_thread(_read_head, source, 64 * 1024))
+        for line in (value or "").splitlines():
+            candidate = line.strip()
+            if candidate and not candidate.startswith("#"):
+                try:
+                    parse_public_url(candidate)
+                except BlockedDestinationError as exc:
+                    raise SnapshotError(str(exc)) from exc
+                return candidate
+        raise SnapshotError("Link does not contain a URL.")
+
+    async def capture(self) -> PageCapture:
+        if self._capture is None:
+            wants = self.requested
+            request = RenderRequest(
+                url=await self.link_url(),
+                out_dir=self.work_dir,
+                html="markdown" in wants or "thumbnail_text" in wants,
+                screenshot="thumbnail" in wants,
+                full_page="screenshot" in wants,
+                pdf="pdf" in wants,
+                archive="webpage_html" in wants,
+            )
+            try:
+                self._capture = await self.generator.browser.render(request)
+            except SnapshotError as exc:
+                logger.info("snapshot.link.render_failed", url=request.url, error=str(exc))
+                self._capture = exc
+        if isinstance(self._capture, SnapshotError):
+            raise self._capture
+        return self._capture
+
+    async def page_html(self) -> tuple[str, str]:
+        try:
+            capture = await self.capture()
+            if capture.html is not None:
+                return capture.url, capture.html
+        except SnapshotError as exc:
+            if not exc.retryable:  # blocked/invalid URL: a plain fetch is refused as well
+                raise
+        try:
+            return await fetch_html(await self.link_url(), self.generator.egress)
+        except BlockedDestinationError as exc:
+            raise SnapshotError(str(exc)) from exc
+        except FetchError as exc:
+            raise SnapshotError(str(exc), retryable=exc.retryable) from exc
+
+    async def text(self) -> ExtractionResult:
+        if self._text is None:
+            try:
+                self._text = await extract_markdown(self, self.settings, self.generator.ai)
+            except SnapshotError as exc:
+                self._text = exc
+        if isinstance(self._text, SnapshotError):
+            raise self._text
+        return self._text
+
+    def _is_text_like(self) -> bool:
+        facts = self.facts
+        return (
+            facts.media_type in {"text", "link"}
+            or (facts.mime_type or "") in TEXT_PREVIEW_MIME_TYPES
+            or facts.suffix in TEXT_PREVIEW_SUFFIXES
         )
 
-    def _generate_thumbnail_text(
-        self,
-        *,
-        asset: ContentAsset,
-        source_path: Path,
-        output_dir: Path,
-    ) -> GeneratedArtifact:
-        preview_text = self._text_for_thumbnail_text(asset=asset, source_path=source_path)
-        if preview_text is None:
-            raise UnsupportedSnapshotError(
-                "No text thumbnail extractor is available for this file."
-            )
-        path = output_dir / "thumbnail.txt"
-        path.write_text(preview_text[:5000], encoding="utf-8")
-        return GeneratedArtifact(filename="thumbnail.txt", mime_type="text/plain", path=path)
+    def _out(self, name: str) -> Path:
+        return self.work_dir / name
 
-    def _generate_markdown(
-        self,
-        *,
-        asset: ContentAsset,
-        source_path: Path,
-        output_dir: Path,
-    ) -> GeneratedArtifact:
-        result = extract_asset_text(
-            asset=asset,
-            source_path=source_path,
-            context=ExtractorContext(
-                fetch_webpage_html=self._fetch_webpage_html_for_markdown,
-                link_url=lambda candidate_asset, candidate_path: self._link_url(
-                    asset=candidate_asset, source_path=candidate_path
-                ),
-                convert_office_to_pdf=self._convert_office_to_pdf,
-            ),
-            render_page_image=self._render_page_image_for_ocr,
-        )
-        if result is None:
-            raise UnsupportedSnapshotError("No markdown extractor is available for this file.")
-        if not result.markdown.strip():
-            message = (
-                "; ".join(result.warnings) or "No markdown extractor is available for this file."
-            )
-            raise UnsupportedSnapshotError(message)
-        path = output_dir / "snapshot.md"
-        metadata_path = output_dir / "snapshot.extraction.json"
-        path.write_text(f"# {asset.filename}\n\n{result.markdown.strip()}\n", encoding="utf-8")
-        metadata_path.write_text(
-            json.dumps(result.metadata_dict(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
+    # --- outputs -------------------------------------------------------------------------
+    async def produce(self, job_type: str) -> GeneratedArtifact:
+        match job_type:
+            case "markdown":
+                return await self._markdown()
+            case "thumbnail_text":
+                return await self._thumbnail_text()
+            case "thumbnail":
+                return await self._thumbnail()
+            case "screenshot":
+                return await self._screenshot()
+            case "pdf":
+                return await self._pdf()
+            case "webpage_html":
+                return await self._webpage_html()
+        raise SnapshotError(f"Unsupported snapshot job type: {job_type}")
+
+    async def _markdown(self) -> GeneratedArtifact:
+        result = await self.text()
+        body = result.markdown.strip()[:MAX_MARKDOWN_CHARS]
+        path = self._out("snapshot.md")
+        await asyncio.to_thread(
+            path.write_text, f"# {self.asset.filename}\n\n{body}\n", encoding="utf-8"
         )
         return GeneratedArtifact(
-            filename="snapshot.md",
-            mime_type="text/markdown",
-            path=path,
-            metadata_path=metadata_path,
-        )
+            "markdown", "snapshot.md", "text/markdown", path=path,
+            metadata={"extraction": result.metadata_dict()},
+        )  # fmt: skip
 
-    def _fetch_webpage_html_for_markdown(self, url: str) -> str:
+    async def _thumbnail_text(self) -> GeneratedArtifact:
+        result = await self.text()
+        return GeneratedArtifact(
+            "thumbnail_text", "thumbnail.txt", "text/plain",
+            text=result.markdown[:THUMBNAIL_TEXT_CHARS],
+        )  # fmt: skip
+
+    async def _thumbnail(self, artifact_type: str = "thumbnail") -> GeneratedArtifact:
+        out = self._out(f"{artifact_type}.webp")
+        facts = self.facts
         try:
-            from app.modules.snapshots.browser import render_url  # noqa: PLC0415
-
-            return render_url(url).html
-        except Exception as exc:  # noqa: BLE001
-            logger.info(
-                "snapshot.artifact.markdown.rendered_html_fallback",
-                url=url,
-                error=str(exc),
-            )
-            return self._fetch_webpage(url).html
-
-    def _generate_screenshot(
-        self,
-        *,
-        asset: ContentAsset,
-        source_path: Path,
-        output_dir: Path,
-    ) -> GeneratedArtifact:
-        if asset.media_type == "image":
-            return self._copy_image_snapshot(
-                source_path=source_path,
-                output_dir=output_dir,
-                filename="screenshot" + source_path.suffix.lower(),
-                mime_type=asset.mime_type or "application/octet-stream",
-            )
-        if asset.media_type == "link":
-            return self._generate_browser_screenshot(
-                asset=asset, source_path=source_path, output_dir=output_dir
-            )
-        return self._generate_thumbnail(asset=asset, source_path=source_path, output_dir=output_dir)
-
-    def _generate_webpage_html(
-        self,
-        *,
-        asset: ContentAsset,
-        source_path: Path,
-        output_dir: Path,
-        artifact_id: str | None = None,
-    ) -> GeneratedArtifact:
-        suffix = source_path.suffix.lower()
-        path = output_dir / "snapshot.html"
-        if asset.media_type == "link":
-            if artifact_id is not None:
-                return self._generate_browser_html_archive(
-                    asset=asset,
-                    source_path=source_path,
-                    output_dir=output_dir,
-                    artifact_id=artifact_id,
+            if facts.is_link:
+                capture = await self.capture()
+                if capture.screenshot is None:
+                    raise SnapshotError("Page screenshot was not captured.", retryable=True)
+                await asyncio.to_thread(
+                    viewport_thumbnail, capture.screenshot, out, viewport=(1280, 800)
                 )
-            return self._generate_browser_html(
-                asset=asset, source_path=source_path, output_dir=output_dir
+            elif facts.media_type == "image":
+                await asyncio.to_thread(image_thumbnail, await self.path(), out)
+            elif facts.media_type == "audio":
+                await asyncio.to_thread(
+                    text_thumbnail, self.asset.filename, AUDIO_PREVIEW_TEXT, out
+                )
+            elif facts.media_type == "video":
+                frame = await video_frame(
+                    await self.path(), self._out("video-frame.jpg"),
+                    timeout=float(self.settings.snapshot_timeout_seconds),
+                )  # fmt: skip
+                await asyncio.to_thread(image_thumbnail, frame, out)
+            elif facts.is_pdf:
+                await asyncio.to_thread(pdf_first_page_thumbnail, await self.path(), out)
+            elif self._is_text_like():
+                preview = (await self.text()).plain_text
+                await asyncio.to_thread(text_thumbnail, self.asset.filename, preview, out)
+            else:
+                await asyncio.to_thread(pdf_first_page_thumbnail, await self.office_pdf(), out)
+        except (ImageError, MediaError) as exc:
+            raise SnapshotError(str(exc)) from exc
+        return GeneratedArtifact(artifact_type, out.name, "image/webp", path=out)
+
+    async def _screenshot(self) -> GeneratedArtifact:
+        if self.facts.is_link:
+            capture = await self.capture()
+            if capture.screenshot is None:
+                raise SnapshotError("Page screenshot was not captured.", retryable=True)
+            return GeneratedArtifact(
+                "screenshot", "screenshot.jpg", "image/jpeg", path=capture.screenshot
             )
-        if asset.mime_type == "text/html" or suffix in {".html", ".htm"}:
-            path.write_bytes(source_path.read_bytes())
+        if self.facts.media_type == "image":
+            source = await self.path()
+            return GeneratedArtifact(
+                "screenshot",
+                f"screenshot{file_suffix(self.asset.filename)}",
+                self.asset.mime_type or "application/octet-stream",
+                path=source,
+            )
+        return await self._thumbnail("screenshot")
+
+    async def _pdf(self) -> GeneratedArtifact:
+        facts = self.facts
+        if facts.is_link:
+            capture = await self.capture()
+            if capture.pdf is None:
+                raise SnapshotError("Page PDF was not captured.", retryable=True)
+            return GeneratedArtifact("pdf", "snapshot.pdf", "application/pdf", path=capture.pdf)
+        if facts.is_pdf:
+            return GeneratedArtifact(
+                "pdf", "snapshot.pdf", "application/pdf", path=await self.path()
+            )
+        plain = (
+            self.text_content is not None
+            or facts.suffix in PLAIN_TEXT_PDF_SUFFIXES
+            or (facts.media_type == "text")
+        )
+        if not plain:
+            try:
+                return GeneratedArtifact(
+                    "pdf", "snapshot.pdf", "application/pdf", path=await self.office_pdf()
+                )
+            except SnapshotError:
+                if not self._is_text_like():
+                    raise
+        out = self._out("snapshot.pdf")
+        await asyncio.to_thread(
+            text_pdf, self.asset.filename, (await self.text()).plain_text, out,
+            max_pages=self.settings.snapshot_max_pdf_pages,
+        )  # fmt: skip
+        return GeneratedArtifact("pdf", "snapshot.pdf", "application/pdf", path=out)
+
+    async def _webpage_html(self) -> GeneratedArtifact:
+        out = self._out("snapshot.html")
+        facts = self.facts
+        if facts.is_link:
+            capture = await self.capture()
+            if capture.html is None:
+                raise SnapshotError("Page HTML was not captured.", retryable=True)
+            artifact_id = self.artifact_ids["webpage_html"]
+            resources_dir = self.work_dir / "resources"
+            await asyncio.to_thread(
+                _write_archive, capture, out, resources_dir, artifact_id,
+                self.settings.api_prefix,
+            )  # fmt: skip
+            return GeneratedArtifact(
+                "webpage_html", "snapshot.html", "text/html", path=out,
+                resources_dir=resources_dir if capture.resources else None,
+            )  # fmt: skip
+        if facts.mime_type == "text/html" or facts.suffix in {".html", ".htm"}:
+            source = await self.path()
+            await asyncio.to_thread(shutil.copyfile, source, out)
         else:
-            text = self._text_for_preview(asset=asset, source_path=source_path)
-            if text is None:
-                raise UnsupportedSnapshotError(
-                    "No HTML snapshot extractor is available for this file."
-                )
-            path.write_text(
+            text = (await self.text()).plain_text
+            await asyncio.to_thread(
+                out.write_text,
                 '<!doctype html><html><head><meta charset="utf-8">'
-                f"<title>{html.escape(asset.filename)}</title></head><body><pre>"
+                f"<title>{html.escape(self.asset.filename)}</title></head><body><pre>"
                 f"{html.escape(text)}</pre></body></html>",
                 encoding="utf-8",
             )
-        return GeneratedArtifact(filename="snapshot.html", mime_type="text/html", path=path)
-
-    def _generate_pdf(
-        self,
-        *,
-        asset: ContentAsset,
-        source_path: Path,
-        output_dir: Path,
-    ) -> GeneratedArtifact:
-        if asset.media_type == "link":
-            return self._generate_browser_pdf(
-                asset=asset, source_path=source_path, output_dir=output_dir
-            )
-        path = output_dir / "snapshot.pdf"
-        if self._is_pdf(asset=asset, source_path=source_path):
-            shutil.copyfile(source_path, path)
-            return GeneratedArtifact(
-                filename="snapshot.pdf", mime_type="application/pdf", path=path
-            )
-
-        office_result = self._convert_office_to_pdf(source_path)
-        if office_result.ok and office_result.pdf_path is not None:
-            shutil.copyfile(office_result.pdf_path, path)
-            return GeneratedArtifact(
-                filename="snapshot.pdf", mime_type="application/pdf", path=path
-            )
-
-        text = self._text_for_preview(asset=asset, source_path=source_path)
-        if text is None:
-            raise UnsupportedSnapshotError(
-                office_failure_message(
-                    asset_filename=asset.filename,
-                    result=office_result,
-                    timeout_seconds=get_settings().snapshot_office_converter_timeout_seconds,
-                )
-            )
-
-        try:
-            fitz = _load_fitz()
-        except ImportError as exc:
-            raise UnsupportedSnapshotError("PyMuPDF is required to render PDF snapshots.") from exc
-
-        doc = fitz.open()
-        page = doc.new_page(width=595, height=842)
-        rect = fitz.Rect(54, 54, 541, 788)
-        page.insert_textbox(rect, text[:8000], fontsize=10, fontname="helv")
-        doc.save(path)
-        doc.close()
-        return GeneratedArtifact(filename="snapshot.pdf", mime_type="application/pdf", path=path)
-
-    def _generate_browser_thumbnail(
-        self,
-        *,
-        asset: ContentAsset,
-        source_path: Path,
-        output_dir: Path,
-    ) -> GeneratedArtifact:
-        from app.modules.snapshots.browser import BrowserRenderError, render_url  # noqa: PLC0415
-
-        url = self._link_url(asset=asset, source_path=source_path)
-        try:
-            snapshot = render_url(url)
-        except BrowserRenderError as exc:
-            raise UnsupportedSnapshotError(str(exc)) from exc
-
-        import tempfile  # noqa: PLC0415
-
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-            tmp.write(snapshot.screenshot_bytes)
-            tmp_path = Path(tmp.name)
-        try:
-            return self._render_image_thumbnail(
-                source_path=tmp_path,
-                output_dir=output_dir,
-                filename="thumbnail.jpg",
-            )
-        finally:
-            tmp_path.unlink(missing_ok=True)
-
-    def _generate_browser_screenshot(
-        self,
-        *,
-        asset: ContentAsset,
-        source_path: Path,
-        output_dir: Path,
-    ) -> GeneratedArtifact:
-        from app.modules.snapshots.browser import BrowserRenderError, render_url  # noqa: PLC0415
-
-        url = self._link_url(asset=asset, source_path=source_path)
-        try:
-            snapshot = render_url(url)
-        except BrowserRenderError as exc:
-            raise UnsupportedSnapshotError(str(exc)) from exc
-
-        path = output_dir / "screenshot.jpg"
-        path.write_bytes(snapshot.screenshot_bytes)
-        return GeneratedArtifact(filename="screenshot.jpg", mime_type="image/jpeg", path=path)
-
-    def _generate_browser_html(
-        self,
-        *,
-        asset: ContentAsset,
-        source_path: Path,
-        output_dir: Path,
-    ) -> GeneratedArtifact:
-        from app.modules.snapshots.browser import BrowserRenderError, render_url  # noqa: PLC0415
-
-        url = self._link_url(asset=asset, source_path=source_path)
-        try:
-            snapshot = render_url(url)
-        except BrowserRenderError as exc:
-            raise UnsupportedSnapshotError(str(exc)) from exc
-
-        path = output_dir / "snapshot.html"
-        path.write_text(snapshot.html, encoding="utf-8")
-        return GeneratedArtifact(filename="snapshot.html", mime_type="text/html", path=path)
-
-    def _generate_browser_html_archive(
-        self,
-        *,
-        asset: ContentAsset,
-        source_path: Path,
-        output_dir: Path,
-        artifact_id: str,
-    ) -> GeneratedArtifact:
-        from app.core.config import get_settings  # noqa: PLC0415
-        from app.modules.snapshots.browser import (  # noqa: PLC0415
-            BrowserRenderError,
-            render_url_archive,
-        )
-        from app.modules.snapshots.rewriter import rewrite_css, rewrite_html  # noqa: PLC0415
-
-        url = self._link_url(asset=asset, source_path=source_path)
-        logger.info(
-            "snapshot.artifact.webpage_html_archive.render_start",
-            asset_id=asset.id,
-            artifact_id=artifact_id,
-            url=url,
-        )
-        try:
-            archive = render_url_archive(url)
-        except BrowserRenderError as exc:
-            logger.warning(
-                "snapshot.artifact.webpage_html_archive.render_failed",
-                asset_id=asset.id,
-                artifact_id=artifact_id,
-                url=url,
-                error=str(exc),
-            )
-            raise UnsupportedSnapshotError(str(exc)) from exc
-
-        api_prefix = get_settings().api_prefix
-        manifest: dict[str, str] = {
-            resource.original_url: (
-                f"{api_prefix}/snapshots/artifacts/{artifact_id}/resources/{resource.filename}"
-            )
-            for resource in archive.resources
-        }
-        logger.info(
-            "snapshot.artifact.webpage_html_archive.rendered",
-            asset_id=asset.id,
-            artifact_id=artifact_id,
-            url=url,
-            html_length=len(archive.html),
-            resource_count=len(archive.resources),
-            resource_mime_types=sorted({resource.content_type for resource in archive.resources}),
-        )
-
-        rewritten_html = rewrite_html(archive.html, url, manifest)
-        index_path = output_dir / "snapshot.html"
-        index_path.write_text(rewritten_html, encoding="utf-8")
-
-        resources_dir = output_dir / "resources"
-        resources_dir.mkdir(exist_ok=True)
-        content_type_map: dict[str, str] = {}
-
-        for resource in archive.resources:
-            resource_path = resources_dir / resource.filename
-            if resource.content_type == "text/css":
-                rewritten = rewrite_css(
-                    resource.data.decode("utf-8", errors="replace"),
-                    resource.original_url,
-                    manifest,
-                )
-                resource_path.write_bytes(rewritten.encode("utf-8"))
-            else:
-                resource_path.write_bytes(resource.data)
-            content_type_map[resource.filename] = resource.content_type
-
-        (output_dir / "manifest.json").write_text(
-            json.dumps(content_type_map),
-            encoding="utf-8",
-        )
-        logger.info(
-            "snapshot.artifact.webpage_html_archive.written",
-            asset_id=asset.id,
-            artifact_id=artifact_id,
-            html_path=str(index_path),
-            resource_count=len(content_type_map),
-            manifest_path=str(output_dir / "manifest.json"),
-        )
-        return GeneratedArtifact(
-            filename="snapshot.html",
-            mime_type="text/html",
-            path=index_path,
-            resources_dir=resources_dir,
-        )
-
-    def _generate_browser_pdf(
-        self,
-        *,
-        asset: ContentAsset,
-        source_path: Path,
-        output_dir: Path,
-    ) -> GeneratedArtifact:
-        from app.modules.snapshots.browser import (  # noqa: PLC0415
-            BrowserRenderError,
-            render_url_pdf,
-        )
-
-        url = self._link_url(asset=asset, source_path=source_path)
-        try:
-            pdf_bytes = render_url_pdf(url)
-        except BrowserRenderError as exc:
-            raise UnsupportedSnapshotError(str(exc)) from exc
-
-        path = output_dir / "snapshot.pdf"
-        path.write_bytes(pdf_bytes)
-        return GeneratedArtifact(filename="snapshot.pdf", mime_type="application/pdf", path=path)
-
-    def _render_pdf_first_page(
-        self,
-        *,
-        source_path: Path,
-        output_dir: Path,
-        filename: str,
-    ) -> GeneratedArtifact:
-        try:
-            fitz = _load_fitz()
-        except ImportError as exc:
-            raise UnsupportedSnapshotError("PyMuPDF is required to render PDF thumbnails.") from exc
-
-        doc = fitz.open(str(source_path))
-        try:
-            if doc.page_count == 0:
-                raise UnsupportedSnapshotError("Cannot render an empty PDF.")
-            page = doc[0]
-            zoom = self._thumbnail_zoom(width=page.rect.width, height=page.rect.height)
-            pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
-            path = output_dir / filename
-            pix.save(str(path))
-            return GeneratedArtifact(
-                filename=filename,
-                mime_type="image/jpeg",
-                path=path,
-                width=pix.width,
-                height=pix.height,
-            )
-        finally:
-            doc.close()
-
-    @staticmethod
-    def _render_page_image_for_ocr(page: Any, page_number: int) -> Path:
-        fitz = _load_fitz()
-        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-        temp_file = NamedTemporaryFile(
-            prefix=f"snapshot-page-{page_number}-", suffix=".png", delete=False
-        )
-        temp_file.close()
-        path = Path(temp_file.name)
-        pix.save(str(path))
-        return path
-
-    def _render_image_thumbnail(
-        self,
-        *,
-        source_path: Path,
-        output_dir: Path,
-        filename: str,
-    ) -> GeneratedArtifact:
-        try:
-            fitz = _load_fitz()
-        except ImportError as exc:
-            raise UnsupportedSnapshotError(
-                "PyMuPDF is required to render image thumbnails."
-            ) from exc
-
-        try:
-            doc = fitz.open(str(source_path))
-        except Exception as exc:  # noqa: BLE001
-            raise UnsupportedSnapshotError("Source image cannot be decoded.") from exc
-
-        try:
-            if doc.page_count == 0:
-                raise UnsupportedSnapshotError("Cannot render an empty image.")
-            page = doc[0]
-            zoom = self._thumbnail_zoom(width=page.rect.width, height=page.rect.height)
-            pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
-            path = output_dir / filename
-            pix.save(str(path))
-            return GeneratedArtifact(
-                filename=filename,
-                mime_type="image/jpeg",
-                path=path,
-                width=pix.width,
-                height=pix.height,
-            )
-        finally:
-            doc.close()
-
-    def _render_video_thumbnail(
-        self,
-        *,
-        source_path: Path,
-        output_dir: Path,
-        filename: str,
-    ) -> GeneratedArtifact:
-        frame_path = output_dir / "video-frame.png"
-        command = [
-            "ffmpeg",
-            "-y",
-            "-ss",
-            "0",
-            "-i",
-            str(source_path),
-            "-frames:v",
-            "1",
-            "-f",
-            "image2",
-            str(frame_path),
-        ]
-        try:
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                check=False,
-                text=True,
-                timeout=VIDEO_THUMBNAIL_TIMEOUT_SECONDS,
-            )
-        except FileNotFoundError as exc:
-            raise UnsupportedSnapshotError(
-                "ffmpeg is required to render video thumbnails."
-            ) from exc
-        except subprocess.TimeoutExpired as exc:
-            raise UnsupportedSnapshotError("Video thumbnail rendering timed out.") from exc
-
-        if result.returncode != 0 or not frame_path.exists() or frame_path.stat().st_size == 0:
-            stderr_tail = (result.stderr or "")[-500:]
-            logger.warning(
-                "snapshot.video_thumbnail.ffmpeg_failed",
-                source_path=str(source_path),
-                returncode=result.returncode,
-                stderr_tail=stderr_tail,
-            )
-            raise UnsupportedSnapshotError("Video thumbnail frame could not be extracted.")
-
-        return self._render_video_frame_thumbnail(
-            frame_path=frame_path,
-            output_dir=output_dir,
-            filename=filename,
-        )
-
-    def _render_audio_thumbnail(
-        self,
-        *,
-        asset: ContentAsset,
-        output_dir: Path,
-        filename: str,
-    ) -> GeneratedArtifact:
-        return self._render_text_thumbnail(
-            output_dir=output_dir,
-            filename=filename,
-            title=asset.filename,
-            body="Audio file\n\nSaved voice or audio attachment.",
-        )
-
-    def _render_video_frame_thumbnail(
-        self,
-        *,
-        frame_path: Path,
-        output_dir: Path,
-        filename: str,
-    ) -> GeneratedArtifact:
-        try:
-            fitz = _load_fitz()
-        except ImportError as exc:
-            raise UnsupportedSnapshotError(
-                "PyMuPDF is required to render video thumbnails."
-            ) from exc
-
-        try:
-            frame_doc = fitz.open(str(frame_path))
-        except Exception as exc:  # noqa: BLE001
-            raise UnsupportedSnapshotError("Video thumbnail frame cannot be decoded.") from exc
-
-        try:
-            if frame_doc.page_count == 0:
-                raise UnsupportedSnapshotError("Cannot render an empty video frame.")
-            frame_page = frame_doc[0]
-            zoom = self._thumbnail_zoom(width=frame_page.rect.width, height=frame_page.rect.height)
-            frame_pix = frame_page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
-        finally:
-            frame_doc.close()
-
-        path = output_dir / filename
-        frame_pix.save(str(path))
-        return GeneratedArtifact(
-            filename=filename,
-            mime_type="image/jpeg",
-            path=path,
-            width=frame_pix.width,
-            height=frame_pix.height,
-        )
-
-    @staticmethod
-    def _thumbnail_zoom(*, width: float, height: float) -> float:
-        if width <= 0 or height <= 0:
-            raise UnsupportedSnapshotError("Cannot render a thumbnail for zero-sized content.")
-        return min(THUMBNAIL_MAX_WIDTH / width, THUMBNAIL_MAX_HEIGHT / height, 1.0)
-
-    def _render_text_thumbnail(
-        self,
-        *,
-        output_dir: Path,
-        filename: str,
-        title: str,
-        body: str,
-    ) -> GeneratedArtifact:
-        try:
-            fitz = _load_fitz()
-        except ImportError as exc:
-            raise UnsupportedSnapshotError(
-                "PyMuPDF is required to render text thumbnails."
-            ) from exc
-
-        doc = fitz.open()
-        try:
-            page = doc.new_page(width=595, height=842)
-            page.insert_textbox(
-                fitz.Rect(48, 42, 547, 92),
-                title[:140],
-                fontsize=16,
-                fontname="helv",
-            )
-            page.insert_textbox(
-                fitz.Rect(48, 116, 547, 800),
-                body[:5000],
-                fontsize=10,
-                fontname="cour",
-            )
-            zoom = self._thumbnail_zoom(width=page.rect.width, height=page.rect.height)
-            pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
-            path = output_dir / filename
-            pix.save(str(path))
-            return GeneratedArtifact(filename=filename, mime_type="image/jpeg", path=path)
-        finally:
-            doc.close()
-
-    def _copy_image_snapshot(
-        self,
-        *,
-        source_path: Path,
-        output_dir: Path,
-        filename: str,
-        mime_type: str,
-    ) -> GeneratedArtifact:
-        path = output_dir / filename
-        shutil.copyfile(source_path, path)
-        return GeneratedArtifact(filename=filename, mime_type=mime_type, path=path)
-
-    def _write_svg_preview(
-        self,
-        *,
-        output_dir: Path,
-        filename: str,
-        title: str,
-        body: str,
-    ) -> GeneratedArtifact:
-        path = output_dir / filename
-        safe_title = html.escape(title[:80])
-        safe_body = html.escape(body[:500])
-        path.write_text(
-            '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" '
-            'viewBox="0 0 640 360">'
-            '<rect width="640" height="360" rx="18" fill="#f4f6f8"/>'
-            '<rect x="36" y="36" width="568" height="288" rx="12" fill="#ffffff"/>'
-            '<text x="64" y="94" font-family="Arial, sans-serif" font-size="26" '
-            f'font-weight="700" fill="#17202a">{safe_title}</text>'
-            '<foreignObject x="64" y="124" width="512" height="150">'
-            '<div xmlns="http://www.w3.org/1999/xhtml" '
-            'style="font: 18px Arial, sans-serif; color: #34495e; line-height: 1.4; '
-            f'white-space: pre-wrap; word-break: break-word;">{safe_body}</div>'
-            "</foreignObject>"
-            "</svg>",
-            encoding="utf-8",
-        )
-        return GeneratedArtifact(filename=filename, mime_type="image/svg+xml", path=path)
-
-    def _text_for_preview(self, *, asset: ContentAsset, source_path: Path) -> str | None:
-        return self._extract_markdown_text(asset=asset, source_path=source_path)
-
-    def _text_for_thumbnail_preview(self, *, asset: ContentAsset, source_path: Path) -> str | None:
-        suffix = source_path.suffix.lower()
-        text_mime_types = {
-            "application/json",
-            "text/csv",
-            "text/html",
-            "text/markdown",
-            "text/plain",
-            "text/uri-list",
-        }
-        if (
-            asset.media_type == "text"
-            or asset.media_type == "link"
-            or asset.mime_type in text_mime_types
-            or suffix in {".csv", ".html", ".htm", ".json", ".md", ".markdown", ".txt", ".url"}
-        ):
-            return self._extract_markdown_text(asset=asset, source_path=source_path)
-        return None
-
-    def _text_for_thumbnail_text(self, *, asset: ContentAsset, source_path: Path) -> str | None:
-        suffix = source_path.suffix.lower()
-        if (
-            asset.media_type == "text"
-            or asset.mime_type in {"text/markdown", "text/plain"}
-            or suffix in {".md", ".markdown", ".txt"}
-        ):
-            return self._extract_markdown_text(asset=asset, source_path=source_path)
-        return None
-
-    def _extract_markdown_text(self, *, asset: ContentAsset, source_path: Path) -> str | None:
-        if asset.media_type == "link":
-            webpage = self._fetch_webpage(self._link_url(asset=asset, source_path=source_path))
-            return self._html_to_text(webpage.html)
-        if asset.text_content:
-            return asset.text_content
-
-        suffix = source_path.suffix.lower()
-        if asset.media_type == "text" or suffix in {".txt", ".md", ".markdown", ".csv", ".json"}:
-            return self._decode_text(source_path)
-        if asset.mime_type == "text/html" or suffix in {".html", ".htm"}:
-            text = self._decode_text(source_path)
-            return self._html_to_text(text) if text is not None else None
-        if self._is_pdf(asset=asset, source_path=source_path):
-            return self._extract_pdf_text(source_path)
-        if suffix == ".docx":
-            return self._extract_docx_text(source_path)
-        return None
-
-    @staticmethod
-    def _is_pdf(*, asset: ContentAsset, source_path: Path) -> bool:
-        return asset.mime_type == "application/pdf" or source_path.suffix.lower() == ".pdf"
-
-    @staticmethod
-    def _decode_text(source_path: Path) -> str | None:
-        data = source_path.read_bytes()
-        for encoding in ("utf-8", "utf-16", "cp1251"):
-            try:
-                return data.decode(encoding)
-            except UnicodeDecodeError:
-                continue
-        return None
-
-    @staticmethod
-    def _html_to_text(value: str) -> str:
-        without_scripts = re.sub(
-            r"<(script|style).*?</\1>",
-            "",
-            value,
-            flags=re.IGNORECASE | re.DOTALL,
-        )
-        without_tags = re.sub(r"<[^>]+>", " ", without_scripts)
-        return html.unescape(re.sub(r"\s+", " ", without_tags)).strip()
-
-    @staticmethod
-    def _extract_pdf_text(source_path: Path) -> str | None:
-        try:
-            fitz = _load_fitz()
-        except ImportError:
-            return None
-        doc = fitz.open(str(source_path))
-        try:
-            return "\n".join(page.get_text("text") for page in doc).strip() or None
-        finally:
-            doc.close()
-
-    @staticmethod
-    def _extract_docx_text(source_path: Path) -> str | None:
-        try:
-            with zipfile.ZipFile(source_path) as archive:
-                xml = archive.read("word/document.xml")
-        except (KeyError, zipfile.BadZipFile):
-            return None
-
-        root = ElementTree.fromstring(xml)
-        namespace = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
-        values = [node.text or "" for node in root.iter(f"{namespace}t")]
-        text = "\n".join(value for value in values if value.strip()).strip()
-        return text or None
-
-    def _link_url(self, *, asset: ContentAsset, source_path: Path) -> str:
-        value = asset.text_content or self._decode_text(source_path)
-        if value is None:
-            raise UnsupportedSnapshotError("Link asset does not contain a URL.")
-        for line in value.splitlines():
-            candidate = line.strip()
-            if candidate and not candidate.startswith("#"):
-                self._validate_fetchable_url(candidate)
-                return candidate
-        raise UnsupportedSnapshotError("Link asset does not contain a URL.")
-
-    def _fetch_webpage(self, url: str) -> FetchedWebpage:
-        self._validate_fetchable_url(url)
-        try:
-            response = httpx.get(
-                url,
-                follow_redirects=True,
-                timeout=10,
-                headers={"User-Agent": "VKR Snapshot Worker/1.0"},
-            )
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise UnsupportedSnapshotError(f"Failed to fetch webpage: {exc}") from exc
-        return FetchedWebpage(url=str(response.url), html=response.text)
-
-    @classmethod
-    def _validate_fetchable_url(cls, url: str) -> None:
-        parsed = urlparse(url)
-        if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
-            raise UnsupportedSnapshotError("Only HTTP and HTTPS URLs can be snapshotted.")
-        host = parsed.hostname.casefold()
-        if host in {"localhost", "localhost.localdomain"} or host.endswith(".localhost"):
-            raise UnsupportedSnapshotError("Local URLs cannot be snapshotted.")
-
-        try:
-            addresses = [ipaddress.ip_address(host)]
-        except ValueError:
-            try:
-                address_info = socket.getaddrinfo(host, parsed.port or 443, type=socket.SOCK_STREAM)
-            except OSError as exc:
-                raise UnsupportedSnapshotError(f"Failed to resolve URL host: {host}") from exc
-            addresses = [ipaddress.ip_address(item[4][0]) for item in address_info]
-
-        if any(cls._is_blocked_address(address) for address in addresses):
-            raise UnsupportedSnapshotError("Private or local URLs cannot be snapshotted.")
-
-    @staticmethod
-    def _is_blocked_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-        return (
-            address.is_loopback
-            or address.is_link_local
-            or address.is_private
-            or address.is_multicast
-            or address.is_reserved
-            or address.is_unspecified
-        )
-
-    @staticmethod
-    def _convert_office_to_pdf(source_path: Path) -> OfficeConversionResult:
-        settings = get_settings()
-        command = settings.snapshot_office_converter_command
-        if not command:
-            return OfficeConversionResult(pdf_path=None, failure_kind="no_command")
-
-        timeout = settings.snapshot_office_converter_timeout_seconds
-        with TemporaryDirectory() as temp_dir:
-            output_dir = Path(temp_dir)
-            try:
-                result = subprocess.run(
-                    [
-                        command,
-                        "--headless",
-                        "--convert-to",
-                        "pdf",
-                        "--outdir",
-                        str(output_dir),
-                        str(source_path),
-                    ],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                )
-            except FileNotFoundError:
-                logger.warning(
-                    "snapshot.office_convert.no_command",
-                    filename=source_path.name,
-                    command=command,
-                )
-                return OfficeConversionResult(pdf_path=None, failure_kind="no_command")
-            except subprocess.TimeoutExpired as exc:
-                logger.warning(
-                    "snapshot.office_convert.timeout",
-                    filename=source_path.name,
-                    timeout_seconds=timeout,
-                )
-                return OfficeConversionResult(
-                    pdf_path=None,
-                    failure_kind="timeout",
-                    stderr_tail=str(exc)[-800:],
-                )
-
-            stderr_tail = (result.stderr or "")[-800:]
-            if result.returncode != 0:
-                logger.warning(
-                    "snapshot.office_convert.exit_error",
-                    filename=source_path.name,
-                    returncode=result.returncode,
-                    stderr_tail=stderr_tail,
-                )
-                return OfficeConversionResult(
-                    pdf_path=None,
-                    failure_kind="exit_error",
-                    stderr_tail=stderr_tail,
-                )
-            pdf_path = output_dir / f"{source_path.stem}.pdf"
-            if not pdf_path.exists():
-                logger.warning(
-                    "snapshot.office_convert.no_output",
-                    filename=source_path.name,
-                    stderr_tail=stderr_tail,
-                )
-                return OfficeConversionResult(
-                    pdf_path=None,
-                    failure_kind="no_output",
-                    stderr_tail=stderr_tail,
-                )
-            stable_path = source_path.parent / f".converted-{source_path.stem}.pdf"
-            shutil.copyfile(pdf_path, stable_path)
-            return OfficeConversionResult(pdf_path=stable_path)
-
-
-def _load_fitz() -> Any:
-    return importlib.import_module("fitz")
+        return GeneratedArtifact("webpage_html", "snapshot.html", "text/html", path=out)
+
+
+def _write_archive(
+    capture: PageCapture, out: Path, resources_dir: Path, artifact_id: str, api_prefix: str
+) -> None:
+    """Rewrite the page and its CSS to point at the archived copies; scripts are removed."""
+    base = f"{api_prefix}/snapshots/artifacts/{artifact_id}/resources/"
+    manifest = {item.original_url: base + item.filename for item in capture.resources}
+    for item in capture.resources:
+        if item.content_type == "text/css":
+            path = resources_dir / item.filename
+            css = path.read_bytes().decode("utf-8", errors="replace")
+            path.write_text(rewrite_css(css, item.original_url, manifest), encoding="utf-8")
+    out.write_text(rewrite_html(capture.html or "", capture.url, manifest), encoding="utf-8")
+
+
+def _read_head(path: Path, size: int) -> bytes:
+    with path.open("rb") as handle:
+        return handle.read(size)

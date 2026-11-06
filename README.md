@@ -1,195 +1,218 @@
 # Seyvix
 
-Seyvix - монорепозиторий с FastAPI backend в `backend/` и Vite/React frontend в
-`web/`. Docker и Compose управляются из корня репозитория.
+Личная база заметок: тексты, ссылки, файлы, изображения, документы и медиа — с автоматическими
+снимками страниц, извлечением текста, гибридным поиском (полнотекстовый + векторный),
+автотегами и таксономией. Вход через Telegram, приём заметок через Telegram-бота и
+Telegram Web App.
 
-## Структура
+- `backend/` — FastAPI API + фоновые модули (`python -m app.worker ...`), PostgreSQL/pgvector.
+- `web/` — SPA (React Router, TanStack Query); в продакшене — статика в образе Caddy.
+- `telegram-bot/` — бот (aiogram), общается только с API.
+- `docker-compose.yml` — весь стек (локально и на сервере), `docker-compose.dev.yml` — dev-оверлей.
+- `scripts/` — `init-env.sh`, `deploy.sh`, `backup.sh`, `restore.sh`, `bootstrap-server.sh`.
+- Архитектура и SQL-протокол очередей: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+  Правила разработки: [`AGENTS.md`](AGENTS.md).
 
-- `backend/` - backend, workers, migrations, tests.
-- `web/` - frontend-приложение.
-- `docker/nginx/` - шаблон reverse proxy.
-- `docker-compose.yml` - production-like стек.
-- `docker-compose.dev.yml` - dev override с reload и прямыми портами.
-- `.env.example` - единый шаблон окружения для всего продукта.
+Из инфраструктуры нужен только PostgreSQL. Файлы — в Docker-томе (или S3). AI — любой
+OpenAI-совместимый API, необязателен.
 
-## Окружение
+## Быстрый старт (разработка)
 
-Создай один общий `.env` в корне репозитория:
-
-```bash
-cp .env.example .env
-```
-
-Для локальной разработки дефолты уже подходят. Перед деплоем на сервер обязательно
-поменяй как минимум:
-
-- `AUTH_JWT_SECRET`
-- `POSTGRES_PASSWORD`
-- `S3_SECRET_KEY`
-- `TELEGRAM_BOT_TOKEN`
-- `TELEGRAM_WEB_APP_URL`
-- `TELEGRAM_LOGIN_REDIRECT_URL`
-- `TELEGRAM_OIDC_CLIENT_ID`
-- `TELEGRAM_OIDC_CLIENT_SECRET`
-- `CORS_ALLOWED_ORIGINS`
-- `APP_SERVER_NAME`, `WEB_SERVER_NAME`, `API_SERVER_NAME`, если используются реальные домены
-
-Для Docker Compose не нужны отдельные `backend/.env` или `web/.env`.
-
-## Разработка
-
-Запуск полного dev-стека:
+Нужны Docker с compose ≥ 2.24 и `make`; для запуска тестов вне Docker — `uv` и Node 22.
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+make env     # .env из .env.example с сгенерированными секретами
+make dev     # postgres + migrate + api (reload) + воркеры + Vite
 ```
 
-Дефолтные адреса:
+- приложение: http://localhost:5173 (Vite проксирует `/api` в api);
+- API и Swagger: http://localhost:8000/api/v1/docs;
+- PostgreSQL: `localhost:5432` (только 127.0.0.1).
 
-- приложение через один порт: `http://localhost:8080`
-- backend через proxy: `http://localhost:8080/api/v1/health`
-- frontend напрямую через Vite: `http://localhost:5173`
-- backend напрямую: `http://localhost:8000/api/v1/health`
-- MinIO console: `http://localhost:9001`
-- RabbitMQ management: `http://localhost:15672`
+Dev-оверлей сам включает `APP_ENV=development` и dev-вход без Telegram
+(`TELEGRAM_DEV_LOGIN_ENABLED`), dev-пользователь (`777001`) — администратор. Код `backend/`
+и `web/` монтируется в контейнеры; после изменения зависимостей: `make dev` снова
+(`--build`), для web — `docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build -V web`.
 
-Dev override монтирует `backend/` и `web/` внутрь контейнеров. Backend запускается с
-Uvicorn reload, frontend - с Vite HMR.
+Можно запускать Vite локально: `cd web && npm ci && npm run dev` (прокси на `localhost:8000`).
 
-Остановить стек:
+Тесты и проверки:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.dev.yml down
+make testdb   # одноразовый Postgres для тестов на :55432 (таблицы пересоздаются!)
+make lint     # ruff + mypy (backend), ruff (бот), tsc (web)
+make test     # pytest backend и бота, тесты web
+make config   # валидация compose-файлов
 ```
 
-Сбросить локальные Docker-данные:
+Продакшен-подобный запуск локально: `make up` (собирает образы, Caddy на http://localhost,
+порт меняется `HTTP_PORT`).
+
+## Деплой на сервер
+
+Рассчитано на один сервер с 4 ГБ RAM (2 vCPU, 30+ ГБ диска), Ubuntu 22.04/24.04 или
+Debian 12/13, архитектура amd64 (образы CI собираются под amd64).
+
+### 1. Сервер
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.dev.yml down -v
+# под root: Docker, swap 2 ГБ, ufw (22/80/443), пользователь deploy, каталог /opt/seyvix
+bash bootstrap-server.sh deploy /opt/seyvix
 ```
 
-## Деплой
+(файл — `scripts/bootstrap-server.sh` из репозитория). Вход по SSH для `deploy` — по ключу.
 
-На сервере настрой `.env`, затем запусти:
+### 2. DNS и HTTPS
 
-```bash
-docker compose up -d --build
-```
-
-Production Compose наружу публикует только `proxy` на `APP_PORT`. PostgreSQL,
-Redis, RabbitMQ, MinIO, API, frontend и workers остаются во внутренней Docker-сети.
-
-Проверить состояние:
-
-```bash
-docker compose ps
-docker compose logs -f proxy backend web
-```
-
-Миграции backend при необходимости можно запустить вручную:
-
-```bash
-docker compose run --rm backend alembic upgrade head
-```
-
-Сервис `backend` также запускает миграции при старте.
-
-### Автодеплой через GitHub Actions
-
-В репозитории настроен workflow `.github/workflows/deploy.yml`. На каждый push в
-`main` он:
-
-- запускает проверки backend, telegram-bot и frontend;
-- собирает Docker-образы `backend`, `web`, `telegram-bot` в GitHub Actions;
-- публикует образы в GHCR с тегами `latest` и SHA коммита;
-- копирует Compose-файлы на сервер;
-- делает на сервере только `docker compose pull` и `docker compose up -d --no-build`.
-
-На сервере должны быть установлены Docker и Docker Compose plugin. В директории
-деплоя должен лежать production `.env`; исходники проекта на сервере не нужны.
-
-Добавь в GitHub Environment `production` или в repository secrets:
-
-- `DEPLOY_HOST` - адрес сервера;
-- `DEPLOY_USER` - SSH-пользователь;
-- `DEPLOY_SSH_KEY` - приватный SSH-ключ для входа на сервер;
-- `DEPLOY_PATH` - директория деплоя на сервере, например `/opt/seyvix`;
-- `DEPLOY_PORT` - SSH-порт, опционально, по умолчанию `22`;
-- `DEPLOY_KNOWN_HOSTS` - known_hosts запись сервера, опционально.
-
-Для ручного деплоя готовыми образами можно использовать:
-
-```bash
-export BACKEND_IMAGE=ghcr.io/seyvix/seyvix/backend:<tag>
-export WEB_IMAGE=ghcr.io/seyvix/seyvix/web:<tag>
-export TELEGRAM_BOT_IMAGE=ghcr.io/seyvix/seyvix/telegram-bot:<tag>
-
-docker compose -f docker-compose.yml -f docker-compose.deploy.yml pull
-docker compose -f docker-compose.yml -f docker-compose.deploy.yml up -d --no-build --remove-orphans
-```
-
-## Маршрутизация
-
-Дефолтный режим использует один внешний порт:
-
-- `/api/*` -> FastAPI `backend:8000`
-- `/*` -> frontend `web`
-
-Пример для одного домена:
+Создайте A (и AAAA, если есть IPv6) запись `seyvix.example.com` → IP сервера. В `.env`:
 
 ```env
-APP_PORT=8080
-APP_SERVER_NAME=example.com
-TELEGRAM_WEB_APP_URL=https://example.com
-TELEGRAM_LOGIN_REDIRECT_URL=https://example.com/auth/callback
-TELEGRAM_OIDC_CLIENT_ID=<BotFather Web Login Client ID>
-TELEGRAM_OIDC_CLIENT_SECRET=<BotFather Web Login Client Secret>
-CORS_ALLOWED_ORIGINS=["https://example.com"]
+SITE_ADDRESS=seyvix.example.com
+PUBLIC_URL=https://seyvix.example.com
 ```
 
-Тот же proxy поддерживает отдельные домены на том же внешнем порту:
+Caddy сам получит сертификат Let's Encrypt и будет его продлевать (сертификаты — в томе
+`caddy_data`). Порты 80 и 443 (TCP, плюс 443/UDP для HTTP/3) должны быть доступны из
+интернета. Только Caddy публикует порты; API, воркеры и БД наружу не открыты.
 
-```env
-APP_SERVER_NAME=example.com
-WEB_SERVER_NAME=app.example.com
-API_SERVER_NAME=api.example.com
-TELEGRAM_WEB_APP_URL=https://app.example.com
-TELEGRAM_LOGIN_REDIRECT_URL=https://app.example.com/auth/callback
-TELEGRAM_OIDC_CLIENT_ID=<BotFather Web Login Client ID>
-TELEGRAM_OIDC_CLIENT_SECRET=<BotFather Web Login Client Secret>
-CORS_ALLOWED_ORIGINS=["https://example.com","https://app.example.com","https://api.example.com"]
-```
+### 3. Конфигурация
 
-В таком режиме:
-
-- `https://example.com/api/*` и `https://api.example.com/*` идут в backend.
-- `https://example.com/*` и `https://app.example.com/*` идут во frontend.
-
-Для TLS поставь Caddy, Traefik, nginx или cloud load balancer перед этим Compose
-стеком и прокинь трафик на `APP_PORT`.
-
-## Проверки
-
-Backend:
+На сервере в `/opt/seyvix` (CI сам кладёт туда `docker-compose.yml`, `.env.example` и
+`scripts/`; для первого раза можно скопировать их вручную через `scp`):
 
 ```bash
-cd backend
-uv run pytest
-uv run ruff check app tests
-uv run mypy app
+scripts/init-env.sh   # сгенерирует POSTGRES_PASSWORD, AUTH_JWT_SECRET, TELEGRAM_INTERNAL_TOKEN
+nano .env             # SITE_ADDRESS, PUBLIC_URL, ADMIN_TELEGRAM_IDS, TELEGRAM_*, AI_*
 ```
 
-Frontend:
+При `APP_ENV=production` API и воркеры не стартуют со слабыми/дефолтными секретами, без
+`ADMIN_TELEGRAM_IDS` в режиме allowlist или с включённым dev-входом — смотрите
+`docker compose logs migrate api`.
+
+### 4. CI/CD (GitHub Actions)
+
+`.github/workflows/ci.yml`: на каждый PR и push в `main` — ruff/mypy/pytest backend
+(с pgvector), ruff/pytest бота, typecheck/test/build web, валидация compose и shellcheck.
+На push в `main` дополнительно: сборка образов `api`, `worker-snapshots`, `web`,
+`telegram-bot` → GHCR (`ghcr.io/<owner>/<repo>/<name>:<sha>` и `:latest`) → деплой по SSH:
+копирует compose-файл и скрипты и выполняет `scripts/deploy.sh <sha> <prefix>`
+(`pull` → `up -d --no-build --wait`; job падает, если сервис не стал healthy).
+
+Секреты (Settings → Environments → `production`):
+
+| секрет | значение |
+|---|---|
+| `DEPLOY_HOST` | адрес сервера |
+| `DEPLOY_USER` | `deploy` |
+| `DEPLOY_SSH_KEY` | приватный ключ (публичный — в `~deploy/.ssh/authorized_keys`) |
+| `DEPLOY_KNOWN_HOSTS` | вывод `ssh-keyscan -p <port> <host>`, **проверенный** по отпечатку сервера |
+| `DEPLOY_PORT` | необязательно, 22 |
+| `DEPLOY_PATH` | необязательно, `/opt/seyvix` |
+
+Для pull на сервере используется временный `GITHUB_TOKEN` (логин → pull → logout).
+
+### 5. Первый запуск без CI
+
+С образами из реестра: `docker login ghcr.io` и `scripts/deploy.sh <sha> ghcr.io/<owner>/<repo>`.
+Или сборка прямо на сервере из клона репозитория: `docker compose up -d --build --wait`
+(сборка snapshot-образа занимает несколько минут).
+
+### Telegram
+
+1. Создайте бота в @BotFather → `TELEGRAM_BOT_TOKEN`.
+2. Вход на сайте: BotFather → Bot Settings → Web Login, redirect URL
+   `https://<домен>/auth/callback` → `TELEGRAM_OIDC_CLIENT_ID`, `TELEGRAM_OIDC_CLIENT_SECRET`.
+   Для виджета Telegram Login укажите домен сайта в BotFather (`/setdomain`).
+3. Бот: `COMPOSE_PROFILES=telegram` в `.env` (и `TELEGRAM_INTERNAL_TOKEN`). При `https://`
+   в `PUBLIC_URL` бот показывает кнопку Telegram Web App.
+
+### Доступ (allowlist)
+
+По умолчанию `ACCESS_MODE=allowlist`: войти и пользоваться ботом могут только
+администраторы (`ADMIN_TELEGRAM_IDS`, через запятую) и пользователи с выданным доступом.
+Выдавать/отзывать доступ: в веб-интерфейсе (раздел доступа в настройках, виден админам)
+или командами бота `/allow <id|@username> [заметка]`, `/deny <id|@username>`, `/access`.
+Отзыв доступа сразу завершает сессии пользователя. `ACCESS_MODE=open` — вход для всех.
+
+### AI
+
+Задайте `AI_API_KEY` (и при необходимости `AI_BASE_URL` — OpenAI, OpenRouter, vLLM,
+Ollama `/v1` и т.п.) и модели `AI_*_MODEL`. Включаются: эмбеддинги и гибридный поиск,
+автотеги, таксономия, OCR изображений; опционально описание изображений/видео
+(`AI_VISION_ENABLED`), транскрипция аудио/видео (`AI_TRANSCRIPTION_ENABLED`), расширение
+поисковых запросов (`AI_QUERY_EXPANSION_ENABLED`). Без ключа всё остальное работает,
+поиск — полнотекстовый. `AI_EMBEDDING_DIMENSIONS` зашита в схему БД — выберите до
+первого запуска.
+
+## Переменные окружения
+
+Полный список с комментариями — [`.env.example`](.env.example); все настройки и дефолты —
+`backend/app/core/config.py` (имя поля в верхнем регистре = переменная).
+
+| группа | переменные |
+|---|---|
+| сервер | `SITE_ADDRESS`, `HTTP_PORT`, `HTTPS_PORT`, `MAX_BODY_SIZE`, `COMPOSE_PROFILES`, `IMAGE_PREFIX`, `IMAGE_TAG` |
+| приложение | `APP_ENV`, `PUBLIC_URL`, `LOG_LEVEL`, `MAX_UPLOAD_BYTES`, `CORS_ALLOWED_ORIGINS` |
+| БД | `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` |
+| файлы | `STORAGE_BACKEND` (`local`/`s3`), `S3_*` |
+| вход и доступ | `AUTH_JWT_SECRET`, `ACCESS_MODE`, `ADMIN_TELEGRAM_IDS`, `TELEGRAM_*` |
+| AI | `AI_BASE_URL`, `AI_API_KEY`, `AI_*_MODEL`, `AI_EMBEDDING_DIMENSIONS`, `AI_*_ENABLED` |
+| снимки | `SNAPSHOT_*_ENABLED`, `WORKER_SNAPSHOT_CONCURRENCY` |
+| обслуживание | `TRASH_RETENTION_DAYS` |
+
+## Бэкапы и восстановление
 
 ```bash
-cd web
-npm test
-npm run build
+scripts/backup.sh            # backups/<UTC-время>/{db.dump, storage.tar.gz, env}
+scripts/restore.sh backups/20260101T030000Z
 ```
 
-Проверка Compose-конфигов:
+`backup.sh` работает на живом стеке (pg_dump — консистентный снимок), удаляет бэкапы
+старше `BACKUP_KEEP_DAYS` (14). При `STORAGE_BACKEND=s3` файлы бэкапьте средствами
+провайдера. Каталог `backups/` содержит копию `.env` с секретами — храните копии вне
+сервера (например, `rclone`/`rsync` на другой хост). Ежедневно через cron пользователя
+`deploy`:
+
+```cron
+30 3 * * * cd /opt/seyvix && scripts/backup.sh >> backups/backup.log 2>&1
+```
+
+`restore.sh` останавливает приложение, пересоздаёт БД из дампа, заменяет файлы и
+поднимает стек обратно. `.env` не перезаписывается — сверьте с `env` из бэкапа.
+
+## Обновление и откат
+
+- Обновление — push в `main` (CI задеплоит) или вручную `scripts/deploy.sh <sha>`.
+  Миграции применяет сервис `migrate` перед стартом api и воркеров.
+- Откат: `scripts/deploy.sh <предыдущий-sha>` — история в `.deploy-history`, последние три
+  версии образов остаются на диске. Если новая версия меняла схему БД, откат кода без
+  восстановления бэкапа может не подняться — делайте `scripts/backup.sh` перед рискованными
+  обновлениями.
+- Текущий тег хранится в `.env` (`IMAGE_TAG`), поэтому обычные `docker compose ...`
+  на сервере работают с задеплоенной версией.
+
+## Диагностика
 
 ```bash
-docker compose config
-docker compose -f docker-compose.yml -f docker-compose.dev.yml config
+docker compose ps                     # статусы и healthchecks
+docker compose logs -f --tail=200 api # логи сервиса (api, worker, snapshot-worker, migrate, caddy)
+curl -s https://<домен>/api/v1/health/ready  # готовность (БД + хранилище)
+docker compose exec postgres psql -U seyvix seyvix
 ```
+
+- **Сайт не открывается по HTTPS** — DNS указывает на сервер? 80/443 открыты? Ошибки
+  ACME — в `docker compose logs caddy`. Let's Encrypt ограничивает частоту выпусков:
+  не пересоздавайте том `caddy_data`.
+- **api/воркеры перезапускаются** — `docker compose logs migrate api`: чаще всего
+  проверка production-конфигурации (секреты, `ADMIN_TELEGRAM_IDS`).
+- **Заметки не обрабатываются** (нет превью/текста/тегов) — `docker compose logs
+  snapshot-worker worker`; состояние очередей — SQL из `docs/ARCHITECTURE.md`.
+- **OOM / контейнер убит** (`docker compose ps` → exit 137) — снизьте
+  `WORKER_SNAPSHOT_CONCURRENCY`, проверьте swap (`free -h`).
+- **403 `access_denied` при входе** — пользователя нет в allowlist (см. «Доступ»).
+- **413 при загрузке** — файл больше `MAX_UPLOAD_BYTES`/`MAX_BODY_SIZE`.
+
+## Roadmap
+
+- Теги на двух языках (сейчас английский, затем ещё русский).
+- Саммери заметки по кнопке.

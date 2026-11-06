@@ -54,6 +54,7 @@ def material_from_mapping(message: Mapping[str, Any]) -> InboundMaterial | None:
             caption=caption,
             source=source,
             file_id=str(document["file_id"]),
+            file_size=_int_or_none(document.get("file_size")),
             filename=str(document.get("file_name") or "telegram-document"),
             mime_type=_string_or_none(document.get("mime_type")),
         )
@@ -69,6 +70,7 @@ def material_from_mapping(message: Mapping[str, Any]) -> InboundMaterial | None:
             caption=caption,
             source=source,
             file_id=str(video["file_id"]),
+            file_size=_int_or_none(video.get("file_size")),
             filename=str(video.get("file_name") or "telegram-video.mp4"),
             mime_type=_string_or_none(video.get("mime_type")) or "video/mp4",
         )
@@ -84,6 +86,7 @@ def material_from_mapping(message: Mapping[str, Any]) -> InboundMaterial | None:
             caption=caption,
             source=source,
             file_id=str(video_note["file_id"]),
+            file_size=_int_or_none(video_note.get("file_size")),
             filename="telegram-video-note.mp4",
             mime_type="video/mp4",
         )
@@ -99,6 +102,7 @@ def material_from_mapping(message: Mapping[str, Any]) -> InboundMaterial | None:
             caption=caption,
             source=source,
             file_id=str(voice["file_id"]),
+            file_size=_int_or_none(voice.get("file_size")),
             filename="telegram-voice.ogg",
             mime_type=_string_or_none(voice.get("mime_type")) or "audio/ogg",
         )
@@ -114,6 +118,7 @@ def material_from_mapping(message: Mapping[str, Any]) -> InboundMaterial | None:
             caption=caption,
             source=source,
             file_id=str(audio["file_id"]),
+            file_size=_int_or_none(audio.get("file_size")),
             filename=str(audio.get("file_name") or "telegram-audio.mp3"),
             mime_type=_string_or_none(audio.get("mime_type")) or "audio/mpeg",
         )
@@ -135,6 +140,7 @@ def material_from_mapping(message: Mapping[str, Any]) -> InboundMaterial | None:
                 caption=caption,
                 source=source,
                 file_id=str(photo["file_id"]),
+                file_size=_int_or_none(photo.get("file_size")),
                 filename="telegram-photo.jpg",
                 mime_type="image/jpeg",
             )
@@ -169,6 +175,7 @@ def _attachment_material(
     caption: str | None,
     source: SourceMetadata,
     file_id: str,
+    file_size: int | None,
     filename: str,
     mime_type: str | None,
 ) -> InboundMaterial:
@@ -184,9 +191,14 @@ def _attachment_material(
             file_id=file_id,
             filename=filename,
             mime_type=mime_type,
+            file_size=file_size,
         ),
         source=source,
     )
+
+
+def _int_or_none(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _string_or_none(value: object) -> str | None:

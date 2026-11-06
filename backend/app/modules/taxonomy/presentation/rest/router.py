@@ -1,13 +1,33 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Annotated
+
+from fastapi import APIRouter, Depends, Query, Request, Response, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_db_session
 from app.api.errors import AppError
 from app.api.schemas import ErrorResponse
 from app.modules.auth.presentation.rest.router import get_auth_context
 from app.modules.auth.service import AuthContext
+from app.modules.llm.client import get_ai_client
+from app.modules.tags.ai import ai_disabled_error, interactive_ai, taxonomy_ai_enabled
+from app.modules.taxonomy.classification import TaxonomyClassifier, build_response
+from app.modules.taxonomy.errors import (
+    TaxonomyConflictError,
+    TaxonomyNotFoundError,
+    TaxonomyPermissionError,
+    TaxonomyValidationError,
+)
 from app.modules.taxonomy.models import TaxonomyClassificationJob
+from app.modules.taxonomy.onboarding import list_interest_options as interest_options
+from app.modules.taxonomy.prompts import (
+    PROFILE_SYSTEM_PROMPT,
+    ProfileDraftOutput,
+    profile_user_prompt,
+)
 from app.modules.taxonomy.schemas import (
     TaxonomyAssignmentCreateRequest,
     TaxonomyAssignmentResponse,
@@ -35,16 +55,7 @@ from app.modules.taxonomy.schemas import (
     TaxonomySettingsPatchRequest,
     TaxonomySettingsResponse,
 )
-from app.modules.taxonomy.service import (
-    TaxonomyConflictError,
-    TaxonomyLLMClassificationError,
-    TaxonomyNotFoundError,
-    TaxonomyPermissionError,
-    TaxonomyService,
-    TaxonomyValidationError,
-)
-from fastapi import APIRouter, Depends, Query, Response, status
-from sqlalchemy.ext.asyncio import AsyncSession
+from app.modules.taxonomy.service import TaxonomyService
 
 router = APIRouter(prefix="/taxonomy", tags=["taxonomy"])
 
@@ -365,6 +376,7 @@ async def archive_category(
 async def delete_category(
     category_id: str,
     payload: TaxonomyCategoryDeleteRequest,
+    request: Request,
     context: Annotated[AuthContext, Depends(get_auth_context)],
     service: Annotated[TaxonomyService, Depends(get_taxonomy_service)],
 ) -> TaxonomyCategoryDeleteResponse:
@@ -375,6 +387,7 @@ async def delete_category(
             delete_notes=payload.delete_notes,
             confirm_category_name=payload.confirm_category_name,
             confirm_delete_notes_text=payload.confirm_delete_notes_text,
+            storage=request.app.state.storage,
         )
     except TaxonomyNotFoundError as exc:
         raise _not_found("Category or inbox not found.") from exc
@@ -461,10 +474,12 @@ async def put_profile(
     "/categories/{category_id}/profile/improve",
     response_model=TaxonomyProfileDraftResponse,
     summary="Suggest taxonomy category profile improvements",
+    description="Returns an AI-written draft (not saved). Bounded by a short AI timeout.",
     responses={
         401: {"model": ErrorResponse},
         404: {"model": ErrorResponse},
-        503: {"model": ErrorResponse},
+        409: {"model": ErrorResponse, "description": "AI is disabled."},
+        503: {"model": ErrorResponse, "description": "AI service unavailable."},
     },
 )
 async def suggest_profile_improvement(
@@ -473,20 +488,33 @@ async def suggest_profile_improvement(
     context: Annotated[AuthContext, Depends(get_auth_context)],
     service: Annotated[TaxonomyService, Depends(get_taxonomy_service)],
 ) -> TaxonomyProfileDraftResponse:
+    ai = get_ai_client(service.settings) if taxonomy_ai_enabled(service.settings) else None
+    if ai is None:
+        raise ai_disabled_error("AI profile suggestions are disabled on this server.")
     try:
-        return await service.suggest_profile_improvement(
-            owner_user_id=context.user.id,
-            category_id=category_id,
-            user_guidance=payload.user_guidance,
+        category, children = await service.profile_improvement_context(
+            owner_user_id=context.user.id, category_id=category_id
         )
     except TaxonomyNotFoundError as exc:
         raise _not_found("Category not found.") from exc
-    except TaxonomyLLMClassificationError as exc:
-        raise AppError(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            code="taxonomy_profile_llm_unavailable",
-            message="LLM category profile improvement is unavailable.",
-        ) from exc
+    await service.session.commit()  # release the DB connection before the AI call
+    draft = await interactive_ai(
+        ai.chat_json(
+            [
+                {"role": "system", "content": PROFILE_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": profile_user_prompt(category, children, payload.user_guidance),
+                },
+            ],
+            ProfileDraftOutput,
+            model=service.settings.ai_chat_model,
+            temperature=0.2,
+            max_tokens=1200,
+        ),
+        operation="taxonomy.profile.improve",
+    )
+    return TaxonomyProfileDraftResponse.model_validate(draft, from_attributes=True)
 
 
 @router.post(
@@ -586,20 +614,25 @@ async def get_current_assignment(
     context: Annotated[AuthContext, Depends(get_auth_context)],
     service: Annotated[TaxonomyService, Depends(get_taxonomy_service)],
 ) -> TaxonomyAssignmentResponse | None:
-    try:
-        assignment = await service.get_current_assignment(
-            owner_user_id=context.user.id,
-            content_object_id=content_object_id,
-        )
-    except TaxonomyNotFoundError as exc:
-        raise _not_found("Content object not found.") from exc
+    if not await service.repository.content_exists(
+        owner_user_id=context.user.id, content_object_id=content_object_id
+    ):
+        raise _not_found("Content object not found.")
+    assignment = await service.get_current_assignment(
+        owner_user_id=context.user.id, content_object_id=content_object_id
+    )
     return service.assignment_response(assignment) if assignment is not None else None
 
 
 @router.post(
     "/content/{content_object_id}/classify",
     response_model=TaxonomyClassificationResponse,
-    summary="Classify a content object using semantic taxonomy category candidates",
+    summary="Classify a content object into the user's taxonomy now",
+    description=(
+        "Runs synchronously. Without AI (or if AI fails) it classifies by keyword matching "
+        "against category profiles. `mode=llm_judge` additionally asks the AI to pick among "
+        "candidates. User-chosen categories are replaced only by this explicit request."
+    ),
     responses={
         401: {"model": ErrorResponse},
         404: {"model": ErrorResponse},
@@ -608,27 +641,47 @@ async def get_current_assignment(
 )
 async def classify_content_object(
     content_object_id: str,
+    request: Request,
     context: Annotated[AuthContext, Depends(get_auth_context)],
     service: Annotated[TaxonomyService, Depends(get_taxonomy_service)],
     payload: TaxonomyClassificationRequest | None = None,
 ) -> TaxonomyClassificationResponse:
-    request = payload or TaxonomyClassificationRequest()
-    try:
-        return await service.classify_content_object_with_response(
-            owner_user_id=context.user.id,
-            content_object_id=content_object_id,
-            mode=request.mode,
-            candidate_limit=request.candidate_limit,
-            dry_run=request.dry_run,
+    options = payload or TaxonomyClassificationRequest()
+    settings = service.settings
+    ai = get_ai_client(settings) if taxonomy_ai_enabled(settings) else None
+    classifier = TaxonomyClassifier(settings, ai)
+    data = await classifier.load_input(
+        service.session,
+        request.app.state.storage,
+        owner_user_id=context.user.id,
+        content_object_id=content_object_id,
+    )
+    if data is None:
+        raise _not_found("Content object not found.")
+    await service.session.commit()  # release the DB connection before AI calls
+
+    @asynccontextmanager
+    async def read_session() -> AsyncIterator[AsyncSession]:
+        yield service.session
+        await service.session.commit()
+
+    decision = await interactive_ai(
+        classifier.decide(
+            data,
+            mode=options.mode,
+            candidate_limit=options.candidate_limit,
+            read_session=read_session,
+            allow_degrade=True,
+        ),
+        operation="taxonomy.classify",
+    )
+    assignment = None
+    if not options.dry_run:
+        assignment = await classifier.apply(
+            service.session, data, decision, respect_user_choice=False
         )
-    except TaxonomyNotFoundError as exc:
-        raise _not_found("Content object not found.") from exc
-    except TaxonomyLLMClassificationError as exc:
-        raise AppError(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            code="taxonomy_llm_classification_unavailable",
-            message="LLM taxonomy classification is unavailable.",
-        ) from exc
+        await service.session.commit()
+    return build_response(data, decision, assignment, dry_run=options.dry_run)
 
 
 @router.post(
@@ -691,15 +744,12 @@ async def reject_assignment(
 )
 async def list_interest_options(
     _: Annotated[AuthContext, Depends(get_auth_context)],
-    service: Annotated[TaxonomyService, Depends(get_taxonomy_service)],
 ) -> list[TaxonomyInterestOptionResponse]:
     return [
         TaxonomyInterestOptionResponse(
-            slug=option.slug,
-            name=option.name,
-            description=option.description,
+            slug=option.slug, name=option.name, description=option.description
         )
-        for option in service.list_interest_options()
+        for option in interest_options()
     ]
 
 
@@ -719,11 +769,13 @@ async def initialize_taxonomy_from_interests(
     context: Annotated[AuthContext, Depends(get_auth_context)],
     service: Annotated[TaxonomyService, Depends(get_taxonomy_service)],
 ) -> TaxonomyInitializeResponse:
+    settings = service.settings
     try:
         result = await service.initialize_from_interests(
             owner_user_id=context.user.id,
             interest_slugs=payload.interest_slugs,
             custom_description=payload.custom_description,
+            ai=get_ai_client(settings) if taxonomy_ai_enabled(settings) else None,
         )
     except TaxonomyConflictError as exc:
         raise _conflict("Taxonomy already exists for this user.") from exc

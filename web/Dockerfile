@@ -1,46 +1,33 @@
-FROM node:22-alpine AS base
+# Build context: repository root (see /.dockerignore).
+#
+# Targets:
+#   build  compile the SPA (build/client)
+#   dev    Vite dev server; ./web is bind-mounted over /app
+#   (last) caddy: static SPA + /api reverse proxy + automatic HTTPS
 
+ARG NODE_IMAGE=node:22-alpine
+ARG CADDY_IMAGE=caddy:2-alpine
+
+FROM ${NODE_IMAGE} AS deps
 WORKDIR /app
-
-FROM base AS production-base
-
-ENV NODE_ENV=production
-ENV HOST=0.0.0.0
-ENV PORT=80
-
 COPY web/package.json web/package-lock.json ./
-RUN npm ci --omit=dev
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --no-audit --no-fund
 
-EXPOSE 80
-
-CMD ["npm", "run", "start"]
-
-FROM production-base AS production-prebuilt
-
-COPY web/build ./build
-COPY web/server.js ./server.js
-
-FROM base AS dependencies
-
-COPY web/package.json web/package-lock.json ./
-RUN npm ci
-
-FROM dependencies AS development
-
-COPY web/ ./
-
+FROM deps AS dev
 EXPOSE 5173
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"]
 
-CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
-
-FROM dependencies AS build
-
-ENV VITE_BUILD_MINIFY=false
-
+FROM deps AS build
 COPY web/ ./
-RUN npm run build
+RUN npm run build && test -f build/client/index.html
 
-FROM production-base AS production
-
-COPY --from=build /app/build ./build
-COPY web/server.js ./server.js
+FROM ${CADDY_IMAGE} AS caddy
+COPY web/Caddyfile /etc/caddy/Caddyfile
+RUN SITE_ADDRESS=:80 caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile \
+    && addgroup -S -g 10001 caddy \
+    && adduser -S -D -H -u 10001 -G caddy caddy \
+    && chown -R caddy:caddy /data /config
+COPY --from=build /app/build/client /srv
+USER caddy
+EXPOSE 80 443 443/udp

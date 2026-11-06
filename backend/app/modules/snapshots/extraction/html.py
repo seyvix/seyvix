@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib
 import re
 from html import unescape
 from typing import Any
@@ -31,17 +30,7 @@ def html_to_markdown(
     source_url: str | None = None,
     source_kind: str = "html",
 ) -> ExtractionResult:
-    trafilatura_result = _try_trafilatura(value, source_url=source_url)
-    if trafilatura_result:
-        return ExtractionResult(
-            markdown=trafilatura_result,
-            plain_text=plain_text_from_markdown(trafilatura_result),
-            source_kind=source_kind,
-            method="trafilatura",
-            quality=_quality_score(trafilatura_result),
-            metadata={"source_url": source_url} if source_url else {},
-        )
-
+    """Readable markdown of the main content (CPU-bound: call via `asyncio.to_thread`)."""
     soup = BeautifulSoup(value, "html.parser")
     _remove_noise(soup)
     root = _main_content_root(soup)
@@ -59,22 +48,6 @@ def html_to_markdown(
         quality=_quality_score(markdown),
         metadata={"source_url": source_url} if source_url else {},
     )
-
-
-def _try_trafilatura(value: str, *, source_url: str | None) -> str | None:
-    try:
-        trafilatura = importlib.import_module("trafilatura")
-    except ImportError:
-        return None
-    extracted = trafilatura.extract(
-        value,
-        url=source_url,
-        output_format="markdown",
-        include_links=True,
-        include_tables=True,
-        favor_precision=True,
-    )
-    return normalize_blank_lines(extracted or "") or None
 
 
 def _remove_noise(soup: BeautifulSoup) -> None:

@@ -1,421 +1,433 @@
+"""Snapshot worker: event handler (schedules jobs) and job runner (produces artifacts).
+
+Runner protocol (see `app.platform.jobs`): claim every due job of one source asset in a short
+transaction → generate all requested outputs with no DB connection held (one page render /
+one office conversion / one extraction shared by all outputs) → upload files → finalize in
+one short transaction (artifact rows replaced, job states, change-feed bump, text event) →
+delete the replaced artifacts' files after commit.
+"""
+
 from __future__ import annotations
 
-import copy
-import json
-import shutil
-from datetime import UTC, datetime
+import asyncio
+import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from typing import Final
 from uuid import uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, exists, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.contracts.events import EventEnvelope, SnapshotTextRepresentationCompletedPayload
-from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.modules.content.models import ContentAsset, ContentObject
+from app.modules.content.models import ContentAsset
+from app.modules.content.sync import touch_content_objects
 from app.modules.snapshots.artifacts import (
     GeneratedArtifact,
-    SnapshotArtifactGenerator,
-    UnsupportedSnapshotError,
+    Outcome,
+    SnapshotGenerator,
+    SourceAsset,
 )
-from app.modules.snapshots.infrastructure.repositories import (
-    SnapshotArtifactRepository,
-    SnapshotContentRepository,
-    SnapshotJobRepository,
-)
+from app.modules.snapshots.browser import BrowserManager
+from app.modules.snapshots.egress import EgressProxy
+from app.modules.snapshots.errors import SnapshotError
+from app.modules.snapshots.extraction.ai import AIEnrichment
 from app.modules.snapshots.models import SnapshotArtifact, SnapshotJob
-from app.modules.snapshots.service import SnapshotService
-from app.platform.events.idempotency import EventAlreadyProcessedError, ProcessedEventStore
-from app.platform.events.outbox import EventOutboxRepository
-from app.platform.storage.factory import build_storage_backend
-from app.platform.storage.repositories import StorageObjectRepository
-from app.platform.storage.service import StorageBackend, StorageKeyBuilder
+from app.modules.snapshots.rewriter import mime_for_resource
+from app.modules.snapshots.service import artifact_dir, schedule_content_object
+from app.platform.events import EventPublisher
+from app.platform.jobs import (
+    JOB_ACTIVE_STATUSES,
+    JOB_PENDING,
+    JOB_PROCESSING,
+    JobQueue,
+)
+from app.platform.storage.keys import asset_artifact_key
+from app.platform.storage.service import StorageError
+from app.worker.context import WorkerContext
 
 logger = get_logger(__name__)
 
-
-def extraction_metadata_from_generated_artifact(
-    generated: GeneratedArtifact,
-) -> dict[str, object] | None:
-    if generated.metadata_path is None or not generated.metadata_path.exists():
-        return None
-    try:
-        value = json.loads(generated.metadata_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return value if isinstance(value, dict) else None
+SCHEDULING_EVENTS: Final = frozenset({"content.object.created", "content.object.updated"})
+BUSY_POLL_SECONDS: Final = 5.0
+SHUTDOWN_GRACE_SECONDS: Final = 10.0
+MAX_JOBS_PER_ASSET: Final = 16
 
 
-class SnapshotWorker:
-    consumer_name = "snapshot-worker"
+# --- events ---------------------------------------------------------------------------------
+class SnapshotEventHandler:
+    """content.object.created/updated → queue snapshot jobs (idempotent, no commit)."""
 
-    def __init__(
-        self,
-        session: AsyncSession,
-        storage_root: Path | None = None,
-        storage_backend: StorageBackend | None = None,
-    ) -> None:
+    def __init__(self, session: AsyncSession, ctx: WorkerContext) -> None:
         self.session = session
-        self.storage_root = storage_root or Path("data/content")
-        self.storage_backend = storage_backend or build_storage_backend(
-            get_settings(),
-            local_root=self.storage_root,
-        )
-        self.jobs = SnapshotJobRepository(session)
-        self.artifacts = SnapshotArtifactRepository(session)
-        self.content = SnapshotContentRepository(session)
-        self.storage_objects = StorageObjectRepository(session)
-        self.idempotency = ProcessedEventStore(session)
-        self.outbox = EventOutboxRepository(session)
+        self.ctx = ctx
 
-    async def run_once(self, limit: int | None = None) -> int:
-        jobs = await self.jobs.list_pending(limit or get_settings().snapshot_worker_batch_size)
-        processed = 0
-        for job in jobs:
-            await self._process_job(job)
-            processed += 1
-            await self.session.commit()
-        if processed == 0:
-            await self.session.commit()
-        return processed
-
-    async def handle_event(self, envelope: EventEnvelope) -> int:
-        try:
-            await self.idempotency.mark_processing(
-                event_id=envelope.event_id,
-                consumer_name=self.consumer_name,
-            )
-        except EventAlreadyProcessedError:
-            logger.info(
-                "snapshot.event.duplicate",
-                event_id=envelope.event_id,
-                correlation_id=envelope.correlation_id,
-            )
-            return 0
-
-        content_object = await self.content.get_object(envelope.entity_id)
-        if content_object is None:
-            logger.warning(
-                "snapshot.event.content_object_missing",
-                event_id=envelope.event_id,
-                correlation_id=envelope.correlation_id,
-                content_object_id=envelope.entity_id,
-            )
-            await self.session.commit()
-            return 0
-
-        await SnapshotService(
+    async def handle_event(self, envelope: EventEnvelope) -> None:
+        if envelope.event_name not in SCHEDULING_EVENTS:
+            return
+        queued = await schedule_content_object(
             self.session,
-            self.storage_root,
-            self.storage_backend,
-        ).enqueue_for_content_object(
-            content_object,
+            envelope.entity_id,
             correlation_id=envelope.correlation_id,
             source_event_id=envelope.event_id,
         )
-        jobs = await self.jobs.list_pending_for_object(
-            content_object_id=content_object.id,
-            limit=get_settings().snapshot_worker_batch_size,
-        )
-        processed = 0
-        for job in jobs:
-            await self._process_job(job)
-            processed += 1
-            await self.session.commit()
-        if processed == 0:
-            await self.session.commit()
-        return processed
-
-    async def _process_job(self, job: SnapshotJob) -> None:
-        job.status = "processing"
-        job.attempts += 1
-        job.started_at = datetime.now(UTC)
+        if queued is None:
+            return
         await self.session.flush()
-
-        content_object = await self.content.get_object(job.content_object_id)
-        asset = await self.content.get_asset(job.source_asset_id) if job.source_asset_id else None
-        if content_object is None:
-            self._fail_job(job, "Content object not found.")
-            return
-        logger.info(
-            "snapshot.job.loaded",
-            job_id=job.id,
-            job_type=job.job_type,
-            content_object_id=job.content_object_id,
-            source_asset_id=job.source_asset_id,
-            asset_found=asset is not None,
-            asset_media_type=asset.media_type if asset is not None else None,
-            asset_mime_type=asset.mime_type if asset is not None else None,
+        # Nothing (left) to extract: downstream consumers still get their trigger now.
+        await publish_text_completed_if_settled(
+            self.session,
+            content_object_id=envelope.entity_id,
+            owner_user_id=envelope.user_id,
+            correlation_id=envelope.correlation_id,
         )
 
-        pregenerated_artifact_id: str | None = None
-        if job.job_type == "webpage_html" and asset is not None and asset.media_type == "link":
-            pregenerated_artifact_id = str(uuid4())
-            logger.info(
-                "snapshot.job.webpage_html_artifact_id_pregenerated",
-                job_id=job.id,
-                source_asset_id=asset.id,
-                artifact_id=pregenerated_artifact_id,
-            )
 
-        try:
-            generated = self._generate_with_storage(
-                content_object=content_object,
-                asset=asset,
-                job=job,
-                artifact_id=pregenerated_artifact_id,
-            )
-            logger.info(
-                "snapshot.job.generated",
-                job_id=job.id,
-                job_type=job.job_type,
-                filename=generated.filename,
-                mime_type=generated.mime_type,
-                size_bytes=generated.path.stat().st_size if generated.path.exists() else None,
-                has_resources=generated.resources_dir is not None,
-                resources_dir=(
-                    str(generated.resources_dir) if generated.resources_dir is not None else None
-                ),
-            )
-        except UnsupportedSnapshotError as exc:
-            logger.warning(
-                "snapshot.job.unsupported",
-                job_id=job.id,
-                job_type=job.job_type,
-                error=str(exc),
-            )
-            self._fail_job(job, str(exc))
-            return
-        except Exception as exc:  # noqa: BLE001
-            logger.error(
-                "snapshot.job.error",
-                job_id=job.id,
-                job_type=job.job_type,
-                error=str(exc),
-                exc_info=True,
-            )
-            self._fail_job(job, str(exc))
-            return
-
-        artifact_id = pregenerated_artifact_id or str(uuid4())
-        stored = self.storage_backend.put_bytes(
-            storage_key=StorageKeyBuilder.snapshot_artifact(
-                content_object_id=job.content_object_id,
-                snapshot_id=job.id,
-                filename=generated.filename,
-            ),
-            data=generated.path.read_bytes(),
-            content_type=generated.mime_type,
-        )
-        extraction_metadata = extraction_metadata_from_generated_artifact(generated)
-        storage_metadata: dict[str, object] = {
-            "job_type": job.job_type,
-            "source_asset_id": job.source_asset_id,
-        }
-        if extraction_metadata is not None:
-            storage_metadata["extraction"] = extraction_metadata
-            job.metadata_ = {**(job.metadata_ or {}), "extraction": extraction_metadata}
-
-        await self.storage_objects.upsert(
-            stored,
-            owner_entity_type="snapshot_artifact",
-            owner_entity_id=artifact_id,
-            metadata=storage_metadata,
-        )
-        if generated.metadata_path is not None and generated.metadata_path.exists():
-            self.storage_backend.put_bytes(
-                storage_key=StorageKeyBuilder.snapshot_artifact(
-                    content_object_id=job.content_object_id,
-                    snapshot_id=job.id,
-                    filename=generated.metadata_path.name,
-                ),
-                data=generated.metadata_path.read_bytes(),
-                content_type="application/json",
-            )
-        if generated.resources_dir is not None and generated.resources_dir.exists():
-            manifest_file = generated.resources_dir.parent / "manifest.json"
-            if manifest_file.exists():
-                self.storage_backend.put_bytes(
-                    storage_key=StorageKeyBuilder.snapshot_artifact_manifest(
-                        content_object_id=job.content_object_id,
-                        snapshot_id=job.id,
-                    ),
-                    data=manifest_file.read_bytes(),
-                    content_type="application/json",
-                )
-            for resource_file in sorted(generated.resources_dir.iterdir()):
-                if not resource_file.is_file():
-                    continue
-                self.storage_backend.put_bytes(
-                    storage_key=StorageKeyBuilder.snapshot_artifact_resource(
-                        content_object_id=job.content_object_id,
-                        snapshot_id=job.id,
-                        filename=resource_file.name,
-                    ),
-                    data=resource_file.read_bytes(),
-                    content_type=None,
-                )
-            logger.info(
-                "snapshot.job.resources_stored",
-                job_id=job.id,
-                artifact_id=artifact_id,
-                resource_count=len([p for p in generated.resources_dir.iterdir() if p.is_file()]),
-                manifest_exists=manifest_file.exists(),
-            )
-        artifact = SnapshotArtifact(
-            id=artifact_id,
-            owner_user_id=job.owner_user_id,
-            content_object_id=job.content_object_id,
-            source_asset_id=job.source_asset_id,
-            artifact_type=job.job_type,
-            filename=generated.filename,
-            mime_type=generated.mime_type,
-            size_bytes=stored.size_bytes,
-            storage_path=stored.storage_key,
-            storage_backend=stored.storage_backend,
-            bucket=stored.bucket,
-            storage_key=stored.storage_key,
-            storage_ref=stored.storage_ref,
-            checksum=stored.checksum,
-            status="ready",
-        )
-        await self.artifacts.upsert_ready(artifact)
-        logger.info(
-            "snapshot.job.artifact_record_created",
-            job_id=job.id,
-            artifact_id=artifact.id,
-            artifact_type=artifact.artifact_type,
-            source_asset_id=artifact.source_asset_id,
-            storage_key=artifact.storage_key,
-            status=artifact.status,
-        )
-
-        job.status = "done"
-        job.error_message = None
-        job.last_error = None
-        job.finished_at = datetime.now(UTC)
-        if (
-            job.job_type == "markdown"
-            and asset is not None
-            and await self._all_text_representation_jobs_finished(
-                content_object_id=job.content_object_id
-            )
-        ):
-            self._enqueue_text_representation_completed_event(
-                job=job,
-                asset=asset,
-                artifact=artifact,
-                extraction_metadata=extraction_metadata,
-            )
-
-    def _generate_with_storage(
-        self,
-        *,
-        content_object: ContentObject,
-        asset: ContentAsset | None,
-        job: SnapshotJob,
-        artifact_id: str | None = None,
-    ) -> GeneratedArtifact:
-        if asset is None:
-            generator = SnapshotArtifactGenerator(self.storage_root)
-            return generator.generate(
-                content_object=content_object,
-                asset=asset,
-                job_type=job.job_type,
-                artifact_id=artifact_id,
-            )
-
-        with TemporaryDirectory() as temp_dir:
-            temp_root = Path(temp_dir)
-            source_key = asset.storage_key or asset.storage_path
-            source_path = temp_root / source_key
-            source_path.parent.mkdir(parents=True, exist_ok=True)
-            source_path.write_bytes(self.storage_backend.get_bytes(source_key))
-
-            local_content_object = copy.copy(content_object)
-            local_content_object.storage_path = f"content-assets/{content_object.id}"
-            local_asset = copy.copy(asset)
-            local_asset.storage_path = source_key
-
-            generator = SnapshotArtifactGenerator(temp_root)
-            generated = generator.generate(
-                content_object=local_content_object,
-                asset=local_asset,
-                job_type=job.job_type,
-                artifact_id=artifact_id,
-            )
-            stable_path = self.storage_root / ".snapshot-worker" / job.id / generated.filename
-            stable_path.parent.mkdir(parents=True, exist_ok=True)
-            stable_path.write_bytes(generated.path.read_bytes())
-            stable_resources_dir: Path | None = None
-            if generated.resources_dir is not None and generated.resources_dir.exists():
-                stable_resources_dir = stable_path.parent / "resources"
-                shutil.copytree(generated.resources_dir, stable_resources_dir)
-                manifest_src = generated.resources_dir.parent / "manifest.json"
-                if manifest_src.exists():
-                    shutil.copy2(manifest_src, stable_path.parent / "manifest.json")
-            stable_metadata_path: Path | None = None
-            if generated.metadata_path is not None and generated.metadata_path.exists():
-                stable_metadata_path = stable_path.with_suffix(".extraction.json")
-                shutil.copy2(generated.metadata_path, stable_metadata_path)
-            return type(generated)(
-                filename=generated.filename,
-                mime_type=generated.mime_type,
-                path=stable_path,
-                width=generated.width,
-                height=generated.height,
-                resources_dir=stable_resources_dir,
-                metadata_path=stable_metadata_path,
-            )
-
-    @staticmethod
-    def _fail_job(job: SnapshotJob, message: str) -> None:
-        job.status = "failed"
-        job.error_message = message[:4000]
-        job.last_error = message[:4000]
-        job.finished_at = datetime.now(UTC)
-
-    def _enqueue_text_representation_completed_event(
-        self,
-        *,
-        job: SnapshotJob,
-        asset: ContentAsset,
-        artifact: SnapshotArtifact,
-        extraction_metadata: dict[str, object] | None,
-    ) -> None:
-        envelope = EventEnvelope.new(
-            event_name="snapshot.text_representation.completed",
-            entity_id=job.content_object_id,
-            correlation_id=job.correlation_id or str(uuid4()),
-            user_id=job.owner_user_id,
-            payload=SnapshotTextRepresentationCompletedPayload(
-                content_object_id=job.content_object_id,
-                source_asset_id=asset.id,
-                artifact_id=artifact.id,
-                representation_type="markdown",
-                source_media_type=asset.media_type,
-                source_mime_type=asset.mime_type,
-                source_filename=asset.filename,
-                metadata={
-                    "job_id": job.id,
-                    "job_type": job.job_type,
-                    "source_event_id": job.source_event_id,
-                    "extraction": extraction_metadata,
-                },
-            ),
-        )
-        self.outbox.add(envelope, routing_key="snapshot.text_representation.completed")
-
-    async def _all_text_representation_jobs_finished(self, *, content_object_id: str) -> bool:
-        unfinished_count = await self.session.scalar(
-            select(func.count())
-            .select_from(SnapshotJob)
-            .where(
+async def publish_text_completed_if_settled(
+    session: AsyncSession,
+    *,
+    content_object_id: str,
+    owner_user_id: str | None,
+    correlation_id: str | None,
+    asset: SourceAsset | None = None,
+    artifact_id: str | None = None,
+    metadata: dict[str, object] | None = None,
+) -> bool:
+    """Publish `snapshot.text_representation.completed` once no markdown job of the object
+    is pending/processing. Serialized per object so concurrent finalizers cannot both miss
+    the moment the last job settles. The caller must have flushed its own job update."""
+    await session.execute(select(func.pg_advisory_xact_lock(func.hashtext(content_object_id))))
+    active = await session.scalar(
+        select(
+            exists().where(
                 SnapshotJob.content_object_id == content_object_id,
                 SnapshotJob.job_type == "markdown",
-                SnapshotJob.status.in_(("pending", "processing", "retrying")),
+                SnapshotJob.status.in_(JOB_ACTIVE_STATUSES),
             )
         )
-        return int(unfinished_count or 0) == 0
+    )
+    if active:
+        return False
+    EventPublisher(session).publish(
+        EventEnvelope.new(
+            event_name="snapshot.text_representation.completed",
+            entity_id=content_object_id,
+            correlation_id=correlation_id or str(uuid4()),
+            user_id=owner_user_id,
+            payload=SnapshotTextRepresentationCompletedPayload(
+                content_object_id=content_object_id,
+                source_asset_id=asset.id if asset is not None else None,
+                artifact_id=artifact_id,
+                source_media_type=asset.media_type if asset is not None else None,
+                source_mime_type=asset.mime_type if asset is not None else None,
+                source_filename=asset.filename if asset is not None else None,
+                metadata=metadata or {},
+            ),
+        )
+    )
+    return True
+
+
+# --- jobs -----------------------------------------------------------------------------------
+@dataclass(slots=True)
+class _Unit:
+    """All claimed jobs of one source asset."""
+
+    asset: SourceAsset
+    owner_user_id: str
+    correlation_id: str | None
+    job_ids: dict[str, str]  # job_type -> job id
+    artifact_ids: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class _Stored:
+    generated: GeneratedArtifact
+    artifact_id: str
+    key: str | None
+    size_bytes: int
+    checksum: str | None
+
+
+class SnapshotJobRunner:
+    def __init__(self, ctx: WorkerContext) -> None:
+        settings = ctx.settings
+        self.ctx = ctx
+        self.queue = JobQueue(
+            SnapshotJob, lease_seconds=settings.worker_job_lease_seconds, worker_id=ctx.worker_id
+        )
+        self.egress = EgressProxy()
+        self.browser = BrowserManager(settings, self.egress)
+        self.generator = SnapshotGenerator(
+            settings, ctx.storage, self.browser, self.egress, AIEnrichment.from_settings(settings)
+        )
+        self.concurrency = settings.worker_snapshot_concurrency
+        # Never outlive the lease: a job still running past it could be claimed twice.
+        self.job_budget_seconds = max(settings.worker_job_lease_seconds - 60, 60)
+        self._inflight: dict[asyncio.Task[None], _Unit] = {}
+
+    async def run_once(self) -> int:
+        claimed = 0
+        while len(self._inflight) < self.concurrency:
+            unit = await self._claim()
+            if unit is None:
+                break
+            task = asyncio.create_task(self._process(unit), name=f"snapshot:{unit.asset.id}")
+            self._inflight[task] = unit
+            claimed += 1
+        if not self._inflight:
+            return 0
+        done, _ = await asyncio.wait(
+            self._inflight, timeout=BUSY_POLL_SECONDS, return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in done:
+            self._inflight.pop(task, None)
+            if not task.cancelled() and task.exception() is not None:
+                logger.error(
+                    "snapshot.unit.crashed", error=str(task.exception()), exc_info=task.exception()
+                )
+        # Busy (or just finished work): ask the supervisor to call again right away.
+        return claimed + len(done) + len(self._inflight)
+
+    async def aclose(self) -> None:
+        if self._inflight:
+            await asyncio.wait(self._inflight, timeout=SHUTDOWN_GRACE_SECONDS)
+        for task in self._inflight:
+            task.cancel()
+        await asyncio.gather(*self._inflight, return_exceptions=True)
+        self._inflight.clear()
+        await self.browser.aclose()
+        await self.egress.aclose()
+
+    # --- claim ---------------------------------------------------------------------------
+    async def _claim(self) -> _Unit | None:
+        async with self.ctx.session_factory() as session:
+            first = await self.queue.claim(session, limit=1)
+            if not first:
+                await session.rollback()
+                return None
+            job = first[0]
+            siblings = await self.queue.claim(
+                session,
+                limit=MAX_JOBS_PER_ASSET,
+                filters=[SnapshotJob.source_asset_id == job.source_asset_id],
+            )
+            jobs = [job, *siblings]
+            asset = await session.get(ContentAsset, job.source_asset_id)
+            if asset is None or not asset.storage_key:
+                for item in jobs:
+                    JobQueue.fail(item, "Source asset no longer exists.", retryable=False)
+                await session.commit()
+                return None
+            unit = _Unit(
+                asset=SourceAsset(
+                    id=asset.id,
+                    content_object_id=job.content_object_id,
+                    media_type=asset.media_type,
+                    mime_type=asset.mime_type,
+                    filename=asset.filename,
+                    storage_key=asset.storage_key,
+                    text_content=asset.text_content,
+                ),
+                owner_user_id=job.owner_user_id,
+                correlation_id=job.correlation_id,
+                job_ids={item.job_type: item.id for item in jobs},
+            )
+            await session.commit()
+        unit.artifact_ids = {job_type: str(uuid4()) for job_type in unit.job_ids}
+        return unit
+
+    # --- process -------------------------------------------------------------------------
+    async def _process(self, unit: _Unit) -> None:
+        log = logger.bind(asset_id=unit.asset.id, job_types=sorted(unit.job_ids))
+        work_dir = tempfile.TemporaryDirectory(prefix="seyvix-snapshot-")
+        try:
+            try:
+                async with asyncio.timeout(self.job_budget_seconds):
+                    outcomes = await self.generator.generate(
+                        unit.asset, unit.job_ids, Path(work_dir.name),
+                        artifact_ids=unit.artifact_ids,
+                    )  # fmt: skip
+            except TimeoutError:
+                outcomes = {
+                    job_type: SnapshotError("Snapshot timed out.", retryable=True)
+                    for job_type in unit.job_ids
+                }
+            stored = await self._upload(unit, outcomes)
+            stale = await self._finalize(unit, stored)
+            await self._delete_prefixes(stale)
+            log.info(
+                "snapshot.unit.done",
+                results={
+                    job_type: "ok" if isinstance(result, _Stored) else str(result)[:200]
+                    for job_type, result in stored.items()
+                },
+            )
+        except asyncio.CancelledError:
+            await asyncio.shield(self._release(unit))
+            raise
+        finally:
+            await asyncio.to_thread(work_dir.cleanup)
+
+    async def _upload(
+        self, unit: _Unit, outcomes: dict[str, Outcome]
+    ) -> dict[str, _Stored | SnapshotError]:
+        storage = self.ctx.storage
+        results: dict[str, _Stored | SnapshotError] = {}
+        for job_type, outcome in outcomes.items():
+            if isinstance(outcome, SnapshotError):
+                results[job_type] = outcome
+                continue
+            artifact_id = unit.artifact_ids[job_type]
+            if outcome.path is None:
+                text = outcome.text or ""
+                results[job_type] = _Stored(outcome, artifact_id, None, len(text.encode()), None)
+                continue
+            key = asset_artifact_key(
+                unit.asset.storage_key, job_type, artifact_id, outcome.filename
+            )
+            try:
+                put = await storage.put_file(key, outcome.path, outcome.mime_type)
+                if outcome.resources_dir is not None:
+                    for resource in await asyncio.to_thread(_list_files, outcome.resources_dir):
+                        await storage.put_file(
+                            asset_artifact_key(
+                                unit.asset.storage_key,
+                                job_type,
+                                artifact_id,
+                                "resources",
+                                resource.name,
+                            ),
+                            resource,
+                            mime_for_resource(resource.name),
+                        )
+            except (StorageError, OSError) as exc:
+                logger.warning("snapshot.upload.failed", key=key, error=str(exc))
+                await self._delete_prefixes([artifact_dir(key)])
+                results[job_type] = SnapshotError(f"Storage upload failed: {exc}", retryable=True)
+                continue
+            results[job_type] = _Stored(outcome, artifact_id, put.key, put.size_bytes, put.checksum)
+        return results
+
+    async def _finalize(
+        self, unit: _Unit, results: dict[str, _Stored | SnapshotError]
+    ) -> list[str]:
+        """Apply results in one short transaction; returns storage prefixes to delete."""
+        to_delete: list[str] = []
+        async with self.ctx.session_factory() as session:
+            jobs = {
+                job.job_type: job
+                for job in await session.scalars(
+                    select(SnapshotJob)
+                    .where(SnapshotJob.id.in_(list(unit.job_ids.values())))
+                    .with_for_update()
+                )
+            }
+            changed = False
+            markdown_settled: SnapshotJob | None = None
+            content_object_id = unit.asset.content_object_id
+            for job_type, result in results.items():
+                job = jobs.get(job_type)
+                owned = (
+                    job is not None
+                    and job.status == JOB_PROCESSING
+                    and job.locked_by == self.queue.worker_id
+                )
+                if job is None or not owned:
+                    # Re-queued (source changed / reprocess) or deleted while we worked.
+                    if isinstance(result, _Stored) and result.key is not None:
+                        to_delete.append(artifact_dir(result.key))
+                    continue
+                content_object_id = job.content_object_id
+                if isinstance(result, _Stored):
+                    to_delete.extend(await self._replace_artifact(session, job, result))
+                    job.metadata_ = dict(result.generated.metadata)
+                    JobQueue.succeed(job)
+                    changed = True
+                else:
+                    JobQueue.fail(job, str(result), retryable=result.retryable)
+                    changed = changed or job.status != JOB_PENDING
+                if job_type == "markdown" and job.status != JOB_PENDING:
+                    markdown_settled = job
+            await session.flush()
+            if markdown_settled is not None:
+                markdown = results.get("markdown")
+                stored = markdown if isinstance(markdown, _Stored) else None
+                await publish_text_completed_if_settled(
+                    session,
+                    content_object_id=content_object_id,
+                    owner_user_id=unit.owner_user_id,
+                    correlation_id=markdown_settled.correlation_id,
+                    asset=unit.asset if stored is not None else None,
+                    artifact_id=stored.artifact_id if stored is not None else None,
+                    metadata={"job_id": markdown_settled.id},
+                )
+            if changed:
+                await touch_content_objects(session, [content_object_id])
+            await session.commit()
+        return to_delete
+
+    async def _replace_artifact(
+        self, session: AsyncSession, job: SnapshotJob, stored: _Stored
+    ) -> list[str]:
+        old_keys = list(
+            await session.scalars(
+                delete(SnapshotArtifact)
+                .where(
+                    SnapshotArtifact.source_asset_id == job.source_asset_id,
+                    SnapshotArtifact.artifact_type == job.job_type,
+                )
+                .returning(SnapshotArtifact.storage_key)
+            )
+        )
+        generated = stored.generated
+        session.add(
+            SnapshotArtifact(
+                id=stored.artifact_id,
+                owner_user_id=job.owner_user_id,
+                content_object_id=job.content_object_id,
+                source_asset_id=job.source_asset_id,
+                artifact_type=job.job_type,
+                filename=generated.filename,
+                mime_type=generated.mime_type,
+                size_bytes=stored.size_bytes,
+                storage_key=stored.key,
+                checksum=stored.checksum,
+                text_content=generated.text,
+            )
+        )
+        return [artifact_dir(key) for key in old_keys if key and key != stored.key]
+
+    async def _release(self, unit: _Unit) -> None:
+        """Shutdown mid-job: hand the jobs back without burning an attempt."""
+        try:
+            async with self.ctx.session_factory() as session:
+                await session.execute(
+                    update(SnapshotJob)
+                    .where(
+                        SnapshotJob.id.in_(list(unit.job_ids.values())),
+                        SnapshotJob.status == JOB_PROCESSING,
+                        SnapshotJob.locked_by == self.queue.worker_id,
+                    )
+                    .values(
+                        status=JOB_PENDING,
+                        attempts=func.greatest(SnapshotJob.attempts - 1, 0),
+                        locked_at=None,
+                        locked_by=None,
+                    )
+                )
+                await session.commit()
+        except Exception:  # noqa: BLE001 - the lease expiry recovers the jobs anyway
+            logger.warning("snapshot.release.failed", asset_id=unit.asset.id, exc_info=True)
+
+    async def _delete_prefixes(self, prefixes: list[str]) -> None:
+        for prefix in prefixes:
+            try:
+                await self.ctx.storage.delete_prefix(prefix)
+            except StorageError:
+                logger.warning("snapshot.storage.cleanup_failed", prefix=prefix, exc_info=True)
+
+
+def _list_files(directory: Path) -> list[Path]:
+    return sorted(path for path in directory.iterdir() if path.is_file())
