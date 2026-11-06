@@ -1,0 +1,107 @@
+@keyframes addCardGlow {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.3), 0 0 20px rgba(99, 102, 241, 0.15); }
+  50%       { box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.7), 0 0 32px rgba(99, 102, 241, 0.35); }
+}
+
+/* === Add card === */
+.addCard {
+  background: color-mix(in srgb, var(--color-surface) 88%, #202334 12%);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 148px;
+  transition: border-color var(--duration-fast), color var(--duration-fast), background 0.2s, box-shadow 0.2s;
+  font-family: var(--font-family);
+  overflow: visible;
+  position: relative;
+}
+
+/* Кнопка-триггер внутри addCard (режим по умолчанию) */
+.addCardTrigger {
+  all: unset;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 12px;
+  flex: 1;
+  width: 100%;
+  min-height: 148px;
+  cursor: pointer;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  box-sizing: border-box;
+  transition: color var(--duration-fast), background var(--duration-fast);
+  padding: 18px;
+}
+
+.addCard:hover .addCardTrigger {
+  color: var(--color-text-primary);
+}
+
+.addCard:hover {
+  border-color: rgba(255, 255, 255, 0.14);
+  box-shadow: var(--shadow-sm);
+}
+
+.addCardTriggerText {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.addCardTriggerText strong {
+  color: #ff5a2f;
+  font-size: 11px;
+  line-height: 1.1;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.addCardTriggerText span {
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+@media (max-width: 430px) {
+  .addCardTrigger {
+    min-height: 116px;
+    gap: 9px;
+    padding: 13px;
+  }
+
+  .addCardTriggerText strong {
+    font-size: 10px;
+  }
+
+  .addCardTriggerText span {
+    font-size: 12px;
+    line-height: 1.35;
+  }
+}
+
+.addCardFileDrag {
+  border-color: var(--color-accent);
+  border-style: solid;
+  color: var(--color-accent);
+  background: rgba(99, 102, 241, 0.08);
+  animation: addCardGlow 1s ease-in-out infinite;
+  transition: background 0.2s, color 0.2s;
+}
+
+/* Файл завис прямо над AddNoteCard */
+.addCardOver {
+  border-color: var(--color-accent) !important;
+  border-style: solid !important;
+  color: var(--color-accent);
+  background: rgba(99, 102, 241, 0.14);
+  animation: none;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.4), 0 0 40px rgba(99, 102, 241, 0.25);
+}
+
+.addIcon {
+  flex-shrink: 0;
+}

@@ -1,0 +1,115 @@
+.tree {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.treeRow {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+  padding-left: calc(var(--depth) * 18px);
+}
+
+.treeToggle {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  display: flex;
+  flex-shrink: 0;
+  height: 28px;
+  justify-content: center;
+  padding: 0;
+  width: 24px;
+}
+
+.treeToggle:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--color-text-primary);
+}
+
+.treeToggle:disabled {
+  cursor: default;
+  opacity: 0.25;
+}
+
+.treeChildren {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.treeItem {
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  display: flex;
+  flex: 1;
+  font-size: var(--font-size-sm);
+  gap: 8px;
+  min-height: 34px;
+  min-width: 0;
+  padding: 7px 8px;
+  text-decoration: none;
+  transition: background var(--duration-fast), border-color var(--duration-fast), color var(--duration-fast);
+}
+
+.treeItem:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--color-text-primary);
+}
+
+.treeItemActive {
+  background: rgba(99, 102, 241, 0.13);
+  border-color: rgba(129, 140, 248, 0.26);
+  color: var(--color-text-primary);
+}
+
+.treeRail {
+  background: rgba(129, 140, 248, 0.72);
+  border-radius: 999px;
+  height: 18px;
+  opacity: 0.4;
+  width: 2px;
+}
+
+.treeItemActive .treeRail {
+  opacity: 1;
+}
+
+.treeName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.treeCount {
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 999px;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+  min-width: 22px;
+  padding: 2px 7px;
+  text-align: center;
+}
+
+@media (max-width: 920px) {
+  .tree {
+    max-height: 210px;
+  }
+}
+
+@media (max-width: 620px) {
+  .tree {
+    max-height: calc(min(34vh, 260px) - 52px);
+  }
+}

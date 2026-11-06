@@ -1,265 +1,130 @@
+"""Object storage abstraction shared by the API and every worker.
+
+All methods are async and streaming-first: large payloads move between disk and the backend
+in fixed-size chunks and are never held in memory. Keys are relative, `/`-separated paths
+(see `app.platform.storage.keys` for the layout).
+"""
+
 from __future__ import annotations
 
-import hashlib
-import re
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import Protocol
-from unicodedata import normalize
-from urllib.parse import urlparse
+from typing import Literal, Protocol
 
-from minio import Minio
+DEFAULT_CHUNK_SIZE = 256 * 1024
 
 
-@dataclass(slots=True)
+class StorageError(Exception):
+    """Base class for storage failures."""
+
+
+class StorageObjectNotFoundError(StorageError, FileNotFoundError):
+    """The requested key does not exist."""
+
+
+class InvalidStorageKeyError(StorageError, ValueError):
+    """The key is empty, absolute or escapes the storage root."""
+
+
+@dataclass(frozen=True, slots=True)
 class StoredObject:
-    storage_backend: str
-    bucket: str
-    storage_key: str
-    storage_ref: str
-    content_type: str | None
+    key: str
     size_bytes: int
+    # "sha256:<hex>" computed while the payload was streamed to the backend.
     checksum: str
+    content_type: str | None
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class StorageObjectInfo:
+    key: str
     size_bytes: int
     content_type: str | None
+    modified_at: datetime
+    etag: str
 
 
 class StorageBackend(Protocol):
-    bucket: str
+    name: Literal["local", "s3"]
 
-    def put_bytes(
-        self,
-        *,
-        storage_key: str,
-        data: bytes,
-        content_type: str | None,
-    ) -> StoredObject: ...
+    async def put_file(self, key: str, path: Path, content_type: str | None = None) -> StoredObject:
+        """Stream a local file to `key` (overwrites). The source file is left untouched."""
+        ...
 
-    def get_bytes(self, storage_key: str) -> bytes: ...
-
-    def stat_object(self, storage_key: str) -> StorageObjectInfo: ...
-
-    def iter_object_bytes(
-        self,
-        storage_key: str,
-        *,
-        offset: int = 0,
-        length: int | None = None,
-        chunk_size: int = 1024 * 1024,
-    ) -> Iterator[bytes]: ...
-
-    def delete_object(self, storage_key: str) -> None: ...
-
-
-class StorageKeyBuilder:
-    @staticmethod
-    def content_asset_original(
-        *,
-        content_object_id: str,
-        asset_id: str,
-        filename: str,
-    ) -> str:
-        suffix = Path(filename).suffix.lower()
-        if not suffix:
-            suffix = ".bin"
-        return f"content-assets/{content_object_id}/{asset_id}/original{suffix}"
-
-    @staticmethod
-    def pending_upload(*, owner_user_id: str, upload_id: str, filename: str) -> str:
-        return f"pending-uploads/{owner_user_id}/{upload_id}/{_safe_file_name(filename)}"
-
-    @staticmethod
-    def content_manifest(*, content_object_id: str) -> str:
-        return f"content-assets/{content_object_id}/manifest.json"
-
-    @staticmethod
-    def snapshot_artifact(
-        *,
-        content_object_id: str,
-        snapshot_id: str,
-        filename: str,
-    ) -> str:
-        return f"snapshots/{content_object_id}/{snapshot_id}/{_safe_file_name(filename)}"
-
-    @staticmethod
-    def snapshot_artifact_resource(
-        *,
-        content_object_id: str,
-        snapshot_id: str,
-        filename: str,
-    ) -> str:
-        return f"snapshots/{content_object_id}/{snapshot_id}/resources/{_safe_file_name(filename)}"
-
-    @staticmethod
-    def snapshot_artifact_manifest(
-        *,
-        content_object_id: str,
-        snapshot_id: str,
-    ) -> str:
-        return f"snapshots/{content_object_id}/{snapshot_id}/manifest.json"
-
-
-class LocalVolumeStorage:
-    def __init__(self, *, root: Path, bucket: str) -> None:
-        self.root = root
-        self.bucket = bucket
-        self.storage_backend = "local"
-
-    def put_bytes(
-        self,
-        *,
-        storage_key: str,
-        data: bytes,
-        content_type: str | None,
+    async def put_bytes(
+        self, key: str, data: bytes, content_type: str | None = None
     ) -> StoredObject:
-        path = self.root / storage_key
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
-        return StoredObject(
-            storage_backend=self.storage_backend,
-            bucket=self.bucket,
-            storage_key=storage_key,
-            storage_ref=self.storage_ref(storage_key),
-            content_type=content_type,
-            size_bytes=len(data),
-            checksum=_sha256(data),
-        )
+        """Store a small payload (manifests, short text). Use `put_file` for anything large."""
+        ...
 
-    def get_bytes(self, storage_key: str) -> bytes:
-        return (self.root / storage_key).read_bytes()
+    async def get_bytes(self, key: str) -> bytes:
+        """Read a small object fully. Raises `StorageObjectNotFoundError`."""
+        ...
 
-    def stat_object(self, storage_key: str) -> StorageObjectInfo:
-        path = self.root / storage_key
-        return StorageObjectInfo(size_bytes=path.stat().st_size, content_type=None)
-
-    def iter_object_bytes(
+    def iter_bytes(
         self,
-        storage_key: str,
-        *,
+        key: str,
         offset: int = 0,
         length: int | None = None,
-        chunk_size: int = 1024 * 1024,
-    ) -> Iterator[bytes]:
-        remaining = length
-        with (self.root / storage_key).open("rb") as file:
-            file.seek(offset)
-            while remaining is None or remaining > 0:
-                read_size = chunk_size if remaining is None else min(chunk_size, remaining)
-                chunk = file.read(read_size)
-                if not chunk:
-                    break
-                if remaining is not None:
-                    remaining -= len(chunk)
-                yield chunk
-
-    def delete_object(self, storage_key: str) -> None:
-        path = self.root / storage_key
-        if path.exists():
-            path.unlink()
-
-    def storage_ref(self, storage_key: str) -> str:
-        return f"s3://{self.bucket}/{storage_key}"
-
-
-class S3CompatibleStorage:
-    def __init__(
-        self,
         *,
-        endpoint_url: str,
-        access_key: str,
-        secret_key: str,
-        bucket: str,
-        region: str | None,
-        secure: bool | None = None,
-    ) -> None:
-        parsed = urlparse(endpoint_url)
-        if secure is None:
-            secure = parsed.scheme == "https"
-        endpoint = parsed.netloc or parsed.path
-        self.bucket = bucket
-        self.storage_backend = "s3"
-        self.client = Minio(
-            endpoint=endpoint,
-            access_key=access_key,
-            secret_key=secret_key,
-            secure=secure,
-            region=region,
-        )
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+    ) -> AsyncIterator[bytes]:
+        """Stream `length` bytes (or until EOF) starting at `offset`.
+        Raises `StorageObjectNotFoundError` on first iteration if the key is missing."""
+        ...
 
-    def put_bytes(
-        self,
-        *,
-        storage_key: str,
-        data: bytes,
-        content_type: str | None,
-    ) -> StoredObject:
-        from io import BytesIO
+    async def stat(self, key: str) -> StorageObjectInfo:
+        """Raises `StorageObjectNotFoundError`."""
+        ...
 
-        if not self.client.bucket_exists(self.bucket):
-            self.client.make_bucket(self.bucket)
-        self.client.put_object(
-            self.bucket,
-            storage_key,
-            BytesIO(data),
-            length=len(data),
-            content_type=content_type or "application/octet-stream",
-        )
-        return StoredObject(
-            storage_backend=self.storage_backend,
-            bucket=self.bucket,
-            storage_key=storage_key,
-            storage_ref=f"s3://{self.bucket}/{storage_key}",
-            content_type=content_type,
-            size_bytes=len(data),
-            checksum=_sha256(data),
-        )
+    async def exists(self, key: str) -> bool: ...
 
-    def get_bytes(self, storage_key: str) -> bytes:
-        response = self.client.get_object(self.bucket, storage_key)
-        try:
-            return response.read()
-        finally:
-            response.close()
-            response.release_conn()
+    async def delete(self, key: str) -> None:
+        """Delete one object; missing keys are ignored."""
+        ...
 
-    def stat_object(self, storage_key: str) -> StorageObjectInfo:
-        stat = self.client.stat_object(self.bucket, storage_key)
-        return StorageObjectInfo(size_bytes=stat.size, content_type=stat.content_type)
+    async def delete_prefix(self, prefix: str) -> int:
+        """Delete every object under `prefix` (must end with `/`). Returns the count."""
+        ...
 
-    def iter_object_bytes(
-        self,
-        storage_key: str,
-        *,
-        offset: int = 0,
-        length: int | None = None,
-        chunk_size: int = 1024 * 1024,
-    ) -> Iterator[bytes]:
-        response = self.client.get_object(
-            self.bucket,
-            storage_key,
-            offset=offset,
-            length=length,
-        )
-        try:
-            yield from response.stream(chunk_size)
-        finally:
-            response.close()
-            response.release_conn()
+    async def move(self, source_key: str, target_key: str) -> None:
+        """Rename an object (atomic on the local backend, server-side copy on S3).
+        Raises `StorageObjectNotFoundError` when the source is missing."""
+        ...
 
-    def delete_object(self, storage_key: str) -> None:
-        self.client.remove_object(self.bucket, storage_key)
+    async def list_prefixes(self, prefix: str) -> list[str]:
+        """Names of the immediate child "directories" under `prefix` (must end with `/`)."""
+        ...
+
+    async def prefix_modified_at(self, prefix: str) -> datetime | None:
+        """Newest modification time of any object under `prefix`; None when empty."""
+        ...
+
+    def local_path(self, key: str) -> Path | None:
+        """Filesystem path of `key` for the local backend (None for remote backends).
+        The file may not exist; check with `exists`/`stat`."""
+        ...
+
+    async def download_to(self, key: str, path: Path) -> None:
+        """Copy the object to a local file (streams; creates parent directories)."""
+        ...
+
+    async def is_ready(self) -> bool: ...
 
 
-def _sha256(data: bytes) -> str:
-    return f"sha256:{hashlib.sha256(data).hexdigest()}"
+def validate_key(key: str) -> str:
+    """Reject keys that could escape the storage root or address a directory."""
+    if not key or key.startswith("/") or key.endswith("/") or "\\" in key or "\x00" in key:
+        raise InvalidStorageKeyError(key)
+    if any(part in {"", ".", ".."} for part in key.split("/")):
+        raise InvalidStorageKeyError(key)
+    return key
 
 
-def _safe_file_name(value: str) -> str:
-    normalized = normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
-    normalized = re.sub(r"[^a-zA-Z0-9._-]+", "-", normalized).strip(".-")
-    return normalized or "file"
+def validate_prefix(prefix: str) -> str:
+    if not prefix.endswith("/"):
+        raise InvalidStorageKeyError(f"prefix must end with '/': {prefix!r}")
+    validate_key(prefix[:-1])
+    return prefix

@@ -12,7 +12,6 @@ import {
 import type { SearchMode } from '../components/SearchBar/SearchBar'
 import { BulkToolbar } from '../components/BulkToolbar/BulkToolbar'
 import { BulkSelectProvider } from '../contexts/BulkSelectContext'
-import { useThumbnailPoller } from '../hooks/useThumbnailPoller'
 import { nextSearchHistory, readSearchHistory, writeSearchHistory } from '../utils/searchHistory'
 import { useSearchCapabilities } from '../hooks/useSearchCapabilities'
 import { normalizeSearchMode } from '../utils/searchMode'
@@ -36,6 +35,8 @@ const TYPE_OPTIONS = [
   { value: 'document', label: 'Documents', description: 'Файлы и документы' },
   { value: 'collection', label: 'Collections', description: 'Коллекции материалов' },
 ]
+
+const SEARCH_DEBOUNCE_MS = 300
 
 const SOURCE_OPTIONS = [
   { value: 'telegram', label: 'Telegram', description: 'Материалы из Telegram' },
@@ -79,6 +80,8 @@ export default function NotesPage() {
 
   const [inputValue, setInputValue] = useState(search)
   const preserveDraftOnUrlSync = useRef(false)
+  const searchDebounceRef = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(searchDebounceRef.current), [])
   const [searchHistory, setSearchHistory] = useState<string[]>(() => readSearchHistory())
 
   useEffect(() => {
@@ -166,8 +169,6 @@ export default function NotesPage() {
     return undefined
   }, [hasActiveSearchOrFilters, notes.length, notesQuery.isError, notesQuery.isFetching])
 
-  useThumbnailPoller(notes, { enabled: !hasActiveSearchOrFilters })
-
   const handleLoadMore = useCallback(() => {
     if (!hasNextPage || isFetchingNextPage) return
     void fetchNextPage()
@@ -181,15 +182,27 @@ export default function NotesPage() {
     }, { replace })
   }
 
+  function cancelPendingSearch() {
+    window.clearTimeout(searchDebounceRef.current)
+  }
+
   function handleSearchChange(value: string) {
     const parsed = parseSearchInput(value)
     const nextFilters = mergeParsedFilters(filters, parsed.filters)
-    setInputValue(hasCommittedFilters(parsed.filters) && !parsed.activeToken ? parsed.text : value)
-    preserveDraftOnUrlSync.current = Boolean(parsed.activeToken)
-    applyFilters(nextFilters, true)
+    const committedFilter = hasCommittedFilters(parsed.filters) && !parsed.activeToken
+    setInputValue(committedFilter ? parsed.text : value)
+    cancelPendingSearch()
+    const commit = () => {
+      preserveDraftOnUrlSync.current = Boolean(parsed.activeToken)
+      applyFilters(nextFilters, true)
+    }
+    // Filter tokens apply at once; free text waits for a typing pause (one query, not one per key).
+    if (committedFilter) commit()
+    else searchDebounceRef.current = window.setTimeout(commit, SEARCH_DEBOUNCE_MS)
   }
 
   function handleHistorySelect(value: string) {
+    cancelPendingSearch()
     const nextFilters = { ...filters, text: value }
     setInputValue(value)
     applyFilters(nextFilters, true)
@@ -200,6 +213,7 @@ export default function NotesPage() {
   }
 
   function handleFilterApply(filter: AppliedSearchFilter) {
+    cancelPendingSearch()
     const parsed = parseSearchInput(inputValue)
     let nextFilters = { ...filters, text: parsed.text }
     if (filter.key === 'tag') {
@@ -251,6 +265,7 @@ export default function NotesPage() {
   }
 
   function handleClear() {
+    cancelPendingSearch()
     setInputValue('')
     preserveDraftOnUrlSync.current = false
     navigate('/notes', { replace: true })

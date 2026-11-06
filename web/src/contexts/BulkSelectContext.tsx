@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
 
 interface BulkSelectContextValue {
   isBulk: boolean
@@ -31,22 +31,16 @@ export function BulkSelectProvider({ children }: { children: ReactNode }) {
 
   const clearSelection = useCallback(() => setSelectedSlugs(new Set()), [])
 
-  return (
-    <BulkSelectContext.Provider value={{ isBulk, selectedSlugs, toggleBulk, toggleSelect, clearSelection }}>
-      {children}
-    </BulkSelectContext.Provider>
+  const value = useMemo(
+    () => ({ isBulk, selectedSlugs, toggleBulk, toggleSelect, clearSelection }),
+    [isBulk, selectedSlugs, toggleBulk, toggleSelect, clearSelection],
   )
-}
 
-const NOOP = () => {}
-const DEFAULT: BulkSelectContextValue = {
-  isBulk: false,
-  selectedSlugs: new Set(),
-  toggleBulk: NOOP,
-  toggleSelect: NOOP,
-  clearSelection: NOOP,
+  return <BulkSelectContext.Provider value={value}>{children}</BulkSelectContext.Provider>
 }
 
 export function useBulkSelect(): BulkSelectContextValue {
-  return useContext(BulkSelectContext) ?? DEFAULT
+  const ctx = useContext(BulkSelectContext)
+  if (!ctx) throw new Error('useBulkSelect must be used within BulkSelectProvider')
+  return ctx
 }

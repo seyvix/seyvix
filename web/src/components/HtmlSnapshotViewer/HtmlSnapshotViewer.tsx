@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { apiFetch } from '../../lib/apiClient'
 import { LoaderSpinner } from '../LoaderSpinner'
 import styles from './HtmlSnapshotViewer.module.css'
@@ -8,109 +8,53 @@ interface Props {
   className?: string
 }
 
+type PrimeState = 'priming' | 'ready' | 'error'
+
+/**
+ * Archived web page in a sandboxed iframe. The iframe cannot send the bearer token, so one
+ * authenticated request first makes the API set a short-lived, artifact-scoped cookie that the
+ * iframe (and the page's /resources/*) then use. Only the response headers are needed: the body
+ * is cancelled instead of downloading the page twice.
+ */
 export default function HtmlSnapshotViewer({ src, className }: Props) {
-  const iframeRef = useRef<HTMLIFrameElement>(null)
-  const [primeDone, setPrimeDone] = useState(false)
-  const [docReady, setDocReady] = useState(false)
-  const [error, setError] = useState(false)
+  const [prime, setPrime] = useState<PrimeState>('priming')
+  const [frameLoaded, setFrameLoaded] = useState(false)
 
   useEffect(() => {
-    let cancelled = false
-    setPrimeDone(false)
-    setDocReady(false)
-    setError(false)
-
-    console.debug('[HtmlSnapshotViewer] priming snapshot cookie', { src })
-    apiFetch(src)
-      .then(r => {
-        if (!r.ok) throw new Error('fetch failed')
-        console.debug('[HtmlSnapshotViewer] cookie prime response', {
-          src,
-          status: r.status,
-        })
-        if (!cancelled) setPrimeDone(true)
+    const controller = new AbortController()
+    setPrime('priming')
+    setFrameLoaded(false)
+    apiFetch(src, { signal: controller.signal })
+      .then(response => {
+        if (!response.ok) throw new Error(`Snapshot request failed with ${response.status}`)
+        void response.body?.cancel()
+        setPrime('ready')
       })
-      .catch(err => {
-        console.debug('[HtmlSnapshotViewer] cookie prime failed', { src, err })
-        if (!cancelled) setError(true)
+      .catch(error => {
+        if (controller.signal.aborted) return
+        console.warn('Failed to open page snapshot', error)
+        setPrime('error')
       })
-
-    return () => {
-      cancelled = true
-    }
+    return () => controller.abort()
   }, [src])
 
-  useEffect(() => {
-    if (!primeDone || error) return
-    const iframe = iframeRef.current
-    if (!iframe) return
-
-    let cancelled = false
-
-    const finish = () => {
-      if (cancelled) return
-      setDocReady(true)
-    }
-
-    const onInnerDomReady = () => {
-      try {
-        const doc = iframe.contentDocument ?? iframe.contentWindow?.document
-        if (doc && doc.readyState === 'loading') {
-          doc.addEventListener('DOMContentLoaded', finish, { once: true })
-          return
-        }
-        if (doc) {
-          finish()
-          return
-        }
-      } catch {
-        /* cross-origin or blocked */
-      }
-      finish()
-    }
-
-    iframe.addEventListener('load', onInnerDomReady, { once: true })
-
-    return () => {
-      cancelled = true
-      iframe.removeEventListener('load', onInnerDomReady)
-      try {
-        const doc = iframe.contentDocument ?? iframe.contentWindow?.document
-        doc?.removeEventListener('DOMContentLoaded', finish)
-      } catch {
-        /* ignore */
-      }
-    }
-  }, [primeDone, error, src])
-
-  function handleFrameError() {
-    console.debug('[HtmlSnapshotViewer] iframe load error', { src })
-    setError(true)
+  if (prime === 'error') {
+    return <div className={styles.errorRoot}>Не удалось загрузить снимок страницы</div>
   }
-
-  if (error) {
-    return (
-      <div className={styles.errorRoot}>
-        Не удалось загрузить снимок страницы
-      </div>
-    )
-  }
-
-  const showOverlay = !primeDone || !docReady
 
   return (
     <div className={styles.viewRoot}>
-      {primeDone && (
+      {prime === 'ready' && (
         <iframe
-          ref={iframeRef}
           src={src}
-          className={`${styles.frame} ${className ?? ''}`}
-          title="Archived page snapshot"
+          className={className ? `${styles.frame} ${className}` : styles.frame}
+          title="Снимок страницы"
           sandbox="allow-same-origin"
-          onError={handleFrameError}
+          onLoad={() => setFrameLoaded(true)}
+          onError={() => setPrime('error')}
         />
       )}
-      {showOverlay && (
+      {!frameLoaded && (
         <div className={styles.loadingOverlay} aria-busy="true">
           <LoaderSpinner />
         </div>

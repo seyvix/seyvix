@@ -1,258 +1,220 @@
-x-backend-build: &backend-build
-  context: .
-  dockerfile: backend/Dockerfile
-  target: production
+# Seyvix production stack (also used locally: `docker compose up --build`).
+#
+#   build locally:  docker compose build
+#   server:         IMAGE_TAG=<sha> docker compose pull && docker compose up -d --no-build --wait
+#
+# Configuration comes from ./.env (see .env.example). Only caddy publishes ports.
+name: seyvix
 
-x-backend-env: &backend-env
-  env_file:
-    - .env
-  extra_hosts:
-    - "host.docker.internal:host-gateway"
-  environment:
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+x-backend: &backend
+  <<: *hardening
+  image: ${IMAGE_PREFIX:-seyvix}/api:${IMAGE_TAG:-local}
+  env_file: .env
+  environment: &backend-environment
     POSTGRES_HOST: postgres
-    REDIS_HOST: redis
-    RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
-    STORAGE_BACKEND: s3
-    S3_ENDPOINT_URL: http://minio:9000
-    SEARCH_ENGINE: meilisearch
-    SEARCH_MEILISEARCH_URL: http://meilisearch:7700
+    POSTGRES_PORT: "5432"
+    CONTENT_STORAGE_ROOT: /data/content
+  volumes:
+    - storage:/data/content
+  init: true
+  restart: unless-stopped
+  logging: *logging
 
-x-backend-depends: &backend-depends
+x-after-migrate: &after-migrate
   postgres:
     condition: service_healthy
-  redis:
-    condition: service_healthy
-  rabbitmq:
-    condition: service_healthy
-  minio:
-    condition: service_healthy
-  minio-init:
+  migrate:
     condition: service_completed_successfully
-  meilisearch:
-    condition: service_healthy
 
-x-telegram-bot-env: &telegram-bot-env
-  env_file:
-    - .env
-  environment:
-    POSTGRES_HOST: postgres
-    TELEGRAM_BACKEND_BASE_URL: http://backend:8000/api/v1
+x-worker-healthcheck: &worker-healthcheck
+  # The supervisor touches this file every 15 s while its loops are alive.
+  test: ["CMD-SHELL", "test -n \"$(find /tmp/seyvix-worker.heartbeat -mmin -1 2>/dev/null)\""]
+  interval: 30s
+  timeout: 5s
+  retries: 3
+  start_period: 30s
 
 services:
-  proxy:
-    image: nginx:1.27-alpine
-    restart: unless-stopped
-    ports:
-      - "8080:80"
-      - "443:443"
-    environment:
-      APP_SERVER_NAME: ${APP_SERVER_NAME:-_}
-      WEB_SERVER_NAME: ${WEB_SERVER_NAME:-web.localhost}
-      API_SERVER_NAME: ${API_SERVER_NAME:-api.localhost}
-      WEB_UPSTREAM: ${WEB_UPSTREAM:-web:80}
-      API_UPSTREAM: ${API_UPSTREAM:-backend:8000}
-      SSL_CERT_PATH: ${SSL_CERT_PATH:-/etc/nginx/templates/seyvix_certificate.pem}
-      SSL_CERT_KEY_PATH: ${SSL_CERT_KEY_PATH:-/etc/nginx/templates/seyvix_certificate_private.pem}
-      CLIENT_MAX_BODY_SIZE: ${CLIENT_MAX_BODY_SIZE:-100m}
-    volumes:
-      - ./docker/nginx:/etc/nginx/templates:ro
-    depends_on:
-      backend:
-        condition: service_healthy
-      web:
-        condition: service_healthy
-
-  web:
-    image: ${WEB_IMAGE:-seyvix-web:local}
+  caddy:
+    image: ${IMAGE_PREFIX:-seyvix}/web:${IMAGE_TAG:-local}
     build:
       context: .
       dockerfile: web/Dockerfile
-      target: production-prebuilt
-    restart: unless-stopped
     environment:
-      SSR_API_BASE_URL: http://backend:8000
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+      MAX_BODY_SIZE: ${MAX_BODY_SIZE:-110MB}
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+      - "${HTTPS_PORT:-443}:443/udp"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_started
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
     healthcheck:
-      test: wget -qO- http://127.0.0.1/health >/dev/null || exit 1
-      interval: 10s
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2080/healthz"]
+      interval: 30s
       timeout: 5s
-      retries: 10
-      start_period: 20s
-
-  backend:
-    <<: *backend-env
-    image: ${BACKEND_IMAGE:-seyvix-backend:local}
-    build: *backend-build
+      retries: 3
+      start_period: 10s
+    mem_limit: 128m
     restart: unless-stopped
-    depends_on: *backend-depends
-    command: >
-      sh -c "alembic upgrade head &&
-             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    stop_grace_period: 15s
+    logging: *logging
+
+  api:
+    <<: *backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      target: api
+    depends_on: *after-migrate
     healthcheck:
       test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health')",
-        ]
-      interval: 10s
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/ready', timeout=4)"
+      interval: 15s
       timeout: 5s
-      retries: 10
+      retries: 4
+      start_period: 30s
+    mem_limit: 448m
+    stop_grace_period: 25s
 
-  outbox-publisher:
-    <<: *backend-env
-    image: ${BACKEND_IMAGE:-seyvix-backend:local}
-    build: *backend-build
-    restart: unless-stopped
+  migrate:
+    <<: *backend
+    command: ["alembic", "upgrade", "head"]
+    volumes: []
     depends_on:
       postgres:
         condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-    command: python -m app.workers.run.outbox
+    restart: "no"
+    mem_limit: 256m
+
+  worker:
+    <<: *backend
+    command: ["python", "-m", "app.worker", "vectorization", "tags", "taxonomy", "maintenance"]
+    depends_on: *after-migrate
+    healthcheck: *worker-healthcheck
+    mem_limit: 384m
+    stop_grace_period: 40s
 
   snapshot-worker:
-    <<: *backend-env
-    image: ${BACKEND_IMAGE:-seyvix-backend:local}
-    build: *backend-build
-    restart: unless-stopped
-    depends_on: *backend-depends
-    command: python -m app.workers.run.snapshot
-
-  vectorization-worker:
-    <<: *backend-env
-    image: ${BACKEND_IMAGE:-seyvix-backend:local}
-    build: *backend-build
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-      meilisearch:
-        condition: service_healthy
-    command: python -m app.workers.run.vectorization
-
-  taxonomy-worker:
-    <<: *backend-env
-    image: ${BACKEND_IMAGE:-seyvix-backend:local}
-    build: *backend-build
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-    command: python -m app.workers.run.taxonomy
-
-  tags-worker:
-    <<: *backend-env
-    image: ${BACKEND_IMAGE:-seyvix-backend:local}
-    build: *backend-build
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-    command: python -m app.workers.run.tags
+    <<: *backend
+    image: ${IMAGE_PREFIX:-seyvix}/worker-snapshots:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      target: worker-snapshots
+    depends_on: *after-migrate
+    healthcheck: *worker-healthcheck
+    mem_limit: 1536m
+    # Lower CPU weight than the API under contention (Chromium/LibreOffice are bursty).
+    cpu_shares: 512
+    stop_grace_period: 40s
 
   telegram-bot:
-    <<: *telegram-bot-env
-    image: ${TELEGRAM_BOT_IMAGE:-seyvix-telegram-bot:local}
+    <<: *hardening
+    profiles: ["telegram"]
+    image: ${IMAGE_PREFIX:-seyvix}/telegram-bot:${IMAGE_TAG:-local}
     build:
       context: .
       dockerfile: telegram-bot/Dockerfile
-      target: production
-    restart: unless-stopped
+    # Explicit env: the bot needs no database or JWT secrets.
+    environment:
+      # Required by the bot itself (it exits with a clear error when they are empty).
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_INTERNAL_TOKEN: ${TELEGRAM_INTERNAL_TOKEN:-}
+      BACKEND_URL: http://api:8000/api/v1
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      TELEGRAM_API_BASE: ${TELEGRAM_API_BASE:-}
+      TELEGRAM_GROUP_WINDOW_SECONDS: ${TELEGRAM_GROUP_WINDOW_SECONDS:-3}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
     depends_on:
-      backend:
+      api:
         condition: service_healthy
+    init: true
+    mem_limit: 192m
+    restart: unless-stopped
+    stop_grace_period: 20s
+    logging: *logging
 
   postgres:
-    image: pgvector/pgvector:pg16
-    restart: unless-stopped
+    image: pgvector/pgvector:0.8.7-pg16-bookworm
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-vkr_api}
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-seyvix}
+      POSTGRES_USER: ${POSTGRES_USER:-seyvix}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    # Tuned for a 4 GB host shared with the app (see README).
+    command:
+      - postgres
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - effective_cache_size=1536MB
+      - -c
+      - work_mem=8MB
+      - -c
+      - maintenance_work_mem=128MB
+      - -c
+      - max_connections=60
+      - -c
+      - wal_buffers=16MB
+      - -c
+      - min_wal_size=256MB
+      - -c
+      - max_wal_size=1GB
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=200
+      - -c
+      - jit=off
+      - -c
+      - idle_in_transaction_session_timeout=5min
+      - -c
+      - log_min_duration_statement=2000
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
+    shm_size: 256m
     healthcheck:
-      test: pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-vkr_api}
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 5s
       timeout: 5s
-      retries: 10
-
-  redis:
-    image: redis:7.4-alpine
+      retries: 12
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  rabbitmq:
-    image: rabbitmq:4.2-management-alpine
-    restart: unless-stopped
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  minio:
-    image: minio/minio:latest
-    restart: unless-stopped
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minio}
-      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minio-password}
-    volumes:
-      - minio_data:/data
-    healthcheck:
-      test: curl -f http://127.0.0.1:9000/minio/health/live || exit 1
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  minio-init:
-    image: minio/mc:latest
-    depends_on:
-      minio:
-        condition: service_healthy
-    environment:
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minio}
-      S3_SECRET_KEY: ${S3_SECRET_KEY:-minio-password}
-      S3_BUCKET: ${S3_BUCKET:-app-storage}
-    entrypoint: >
-      /bin/sh -c "
-      mc alias set local http://minio:9000 $${S3_ACCESS_KEY} $${S3_SECRET_KEY};
-      mc mb --ignore-existing local/$${S3_BUCKET};
-      "
-
-  meilisearch:
-    image: getmeili/meilisearch:v1.15
-    restart: unless-stopped
-    environment:
-      MEILI_ENV: development
-    volumes:
-      - meilisearch_data:/meili_data
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:7700/health"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
+    stop_grace_period: 60s
+    logging: *logging
 
 volumes:
-  postgres_data:
-  redis_data:
-  rabbitmq_data:
-  minio_data:
-  meilisearch_data:
+  pgdata:
+  storage:
+  caddy_data:
+  caddy_config:

@@ -14,31 +14,24 @@ export function useBulkDeleteNotes() {
     mutationFn: (slugs: string[]) => deleteNotes(slugs),
 
     onMutate: async (slugs: string[]) => {
-      const slugSet = new Set(slugs)
-
-      // Optimistically remove from cache
+      await queryClient.cancelQueries({ queryKey: ['notes'] })
       queryClient.setQueriesData<NotesQueryData>({ queryKey: ['notes'] }, old =>
-        removeNotesFromNotesQueryData(old, slugSet),
+        removeNotesFromNotesQueryData(old, slugs) ?? old,
       )
-
-      // Remove local notes
       slugs.forEach(slug => removeLocalNote(slug))
-
-      return { slugSet }
     },
 
-    onSuccess: (_data, _vars, ctx) => {
-      // Ensure server state is consistent
-      queryClient.invalidateQueries({ queryKey: ['notes'] })
-      queryClient.invalidateQueries({ queryKey: SEARCH_CAPABILITIES_QUERY_KEY })
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['notes-trash'] })
+      void queryClient.invalidateQueries({ queryKey: ['folders'] })
+      void queryClient.invalidateQueries({ queryKey: SEARCH_CAPABILITIES_QUERY_KEY })
       clearSelection()
       toggleBulk()
     },
 
-    onError: (_err, _vars, _ctx) => {
-      // Revert: re-fetch from server
-      queryClient.invalidateQueries({ queryKey: ['notes'] })
-      queryClient.invalidateQueries({ queryKey: SEARCH_CAPABILITIES_QUERY_KEY })
+    onError: () => {
+      // The optimistic removal may be wrong: reload the lists from the server.
+      void queryClient.invalidateQueries({ queryKey: ['notes'] })
     },
   })
 }

@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, useEffect } from 'react'
+import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react'
 import type { Note } from '../types'
 
 const STORAGE_KEY = 'seyvix_local_notes'
@@ -41,12 +41,7 @@ function entryKey(e: LocalNoteEntry) {
 }
 
 export function LocalNotesProvider({ children }: { children: React.ReactNode }) {
-  const [entries, setEntries] = useState<LocalNoteEntry[]>([])
-
-  useEffect(() => {
-    const stored = readStorage()
-    if (stored.length) setEntries(stored)
-  }, [])
+  const [entries, setEntries] = useState<LocalNoteEntry[]>(readStorage)
 
   const addLocalNote = useCallback((note: Note, payload: LocalNotePayload) => {
     setEntries(prev => {
@@ -79,15 +74,20 @@ export function LocalNotesProvider({ children }: { children: React.ReactNode }) 
     })
   }, [])
 
+  // Read through a ref so `getPayload` stays stable while entries change.
+  const entriesRef = useRef(entries)
+  entriesRef.current = entries
   const getPayload = useCallback((stableKey: string) => {
-    return entries.find(e => entryKey(e) === stableKey)?.payload
-  }, [entries])
+    return entriesRef.current.find(e => entryKey(e) === stableKey)?.payload
+  }, [])
 
-  return (
-    <LocalNotesContext.Provider value={{ localNotes: entries.map(e => e.note), addLocalNote, updateLocalNote, removeLocalNote, getPayload }}>
-      {children}
-    </LocalNotesContext.Provider>
+  const localNotes = useMemo(() => entries.map(e => e.note), [entries])
+  const value = useMemo(
+    () => ({ localNotes, addLocalNote, updateLocalNote, removeLocalNote, getPayload }),
+    [localNotes, addLocalNote, updateLocalNote, removeLocalNote, getPayload],
   )
+
+  return <LocalNotesContext.Provider value={value}>{children}</LocalNotesContext.Provider>
 }
 
 export function useLocalNotes() {

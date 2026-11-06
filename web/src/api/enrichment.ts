@@ -1,4 +1,6 @@
 import { apiFetch } from '../lib/apiClient.ts'
+import { ensureOk, readJson } from '../lib/apiError.ts'
+import { slugify } from '../utils/slugify.ts'
 import type { TaxonomyCategory } from '../types'
 
 const API = '/api/v1'
@@ -112,66 +114,6 @@ export interface TaxonomyClassificationJob {
   updated_at: string
 }
 
-async function readJson<T>(res: Response, fallbackMessage: string): Promise<T> {
-  if (!res.ok) {
-    let message = fallbackMessage
-    try {
-      const body = await res.json()
-      message = body?.error?.message ?? body?.message ?? message
-    } catch {
-      message = res.statusText || message
-    }
-    throw new Error(message)
-  }
-  return res.json() as Promise<T>
-}
-
-const cyrillicTranslit: Record<string, string> = {
-  а: 'a',
-  б: 'b',
-  в: 'v',
-  г: 'g',
-  д: 'd',
-  е: 'e',
-  ё: 'e',
-  ж: 'zh',
-  з: 'z',
-  и: 'i',
-  й: 'j',
-  к: 'k',
-  л: 'l',
-  м: 'm',
-  н: 'n',
-  о: 'o',
-  п: 'p',
-  р: 'r',
-  с: 's',
-  т: 't',
-  у: 'u',
-  ф: 'f',
-  х: 'h',
-  ц: 'c',
-  ч: 'ch',
-  ш: 'sh',
-  щ: 'sch',
-  ъ: '',
-  ы: 'y',
-  ь: '',
-  э: 'e',
-  ю: 'yu',
-  я: 'ya',
-}
-
-function slugify(value: string): string {
-  const transliterated = value
-    .trim()
-    .toLowerCase()
-    .split('')
-    .map(char => cyrillicTranslit[char] ?? char)
-    .join('')
-  return transliterated.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'category'
-}
-
 export async function fetchSnapshotArtifacts(contentObjectId: string): Promise<SnapshotArtifact[]> {
   const params = new URLSearchParams({ content_object_id: contentObjectId })
   const res = await apiFetch(`${API}/snapshots/artifacts?${params}`)
@@ -223,10 +165,11 @@ export async function createOrFindTag(name: string): Promise<TagDetail> {
   if (existing) return existing
   try {
     return await createTag(name)
-  } catch {
+  } catch (error) {
+    // Lost a create race (409): the tag exists now.
     const retry = (await fetchTags()).find((tag) => tag.slug === normalized)
     if (retry) return retry
-    throw new Error('Failed to create tag')
+    throw error
   }
 }
 
@@ -246,7 +189,7 @@ export async function assignExistingTagToContent(contentObjectId: string, tagId:
 
 export async function removeTagFromContent(contentObjectId: string, tagId: string): Promise<void> {
   const res = await apiFetch(`${API}/content/${contentObjectId}/tags/${tagId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } })
-  if (!res.ok) throw new Error('Failed to remove tag')
+  await ensureOk(res, 'Failed to remove tag')
 }
 
 export async function requestContentTagSuggestions(contentObjectId: string): Promise<{ job_id: string; status: string }> {

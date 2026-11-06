@@ -1,23 +1,38 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { configureApiClient, refreshApiToken } from '../lib/apiClient.ts'
+import { setAccessToken } from '../lib/apiClient.ts'
+import { ApiError } from '../lib/apiError.ts'
 import {
   authenticatedBlobUrl,
   cachedAuthenticatedBlobUrl,
+  clearAuthenticatedBlobCache,
   openAuthenticatedAsset,
+  retainAuthenticatedBlobUrl,
 } from './authenticatedBlobUrl.ts'
 
-test('protected media assets are fetched with auth and cached as object URLs', async () => {
-  const calls: Array<{ url: string; headers: Headers }> = []
-  configureApiClient({
-    getToken: () => 'access-token',
-    setToken: () => {},
-    onUnauthenticated: () => {},
-  })
+function blobResponse(body = 'media', size = 0) {
+  return new Response(new Blob([size ? 'x'.repeat(size) : body]), { status: 200 })
+}
+
+const originalRevoke = URL.revokeObjectURL
+let revoked: string[] = []
+URL.revokeObjectURL = (url: string) => {
+  revoked.push(url)
+  originalRevoke(url)
+}
+
+test.beforeEach(() => {
+  clearAuthenticatedBlobCache()
+  revoked = []
+  setAccessToken('access-token')
+})
+
+test('protected assets are fetched with auth and cached as object URLs', async () => {
+  const calls: Array<{ url: string; authorization: string | null }> = []
   globalThis.fetch = async (input, init) => {
-    calls.push({ url: String(input), headers: new Headers(init?.headers) })
-    return new Response(new Blob(['media'], { type: 'audio/ogg' }), { status: 200 })
+    calls.push({ url: String(input), authorization: new Headers(init?.headers).get('Authorization') })
+    return blobResponse()
   }
 
   const first = await authenticatedBlobUrl('/api/v1/notes/note/asset/audio')
@@ -26,107 +41,62 @@ test('protected media assets are fetched with auth and cached as object URLs', a
   assert.match(first, /^blob:/)
   assert.equal(second, first)
   assert.equal(cachedAuthenticatedBlobUrl('/api/v1/notes/note/asset/audio'), first)
-  assert.equal(calls.length, 1)
-  assert.equal(calls[0].url, '/api/v1/notes/note/asset/audio')
-  assert.equal(calls[0].headers.get('Authorization'), 'Bearer access-token')
+  assert.deepEqual(calls, [{ url: '/api/v1/notes/note/asset/audio', authorization: 'Bearer access-token' }])
 })
 
-test('concurrent protected media requests share one fetch and one object URL', async () => {
+test('concurrent requests share one fetch and one object URL', async () => {
   const calls: string[] = []
-  configureApiClient({
-    getToken: () => 'access-token',
-    setToken: () => {},
-    onUnauthenticated: () => {},
-  })
+  const gate = Promise.withResolvers<void>()
   globalThis.fetch = async (input) => {
     calls.push(String(input))
-    await new Promise(resolve => setTimeout(resolve, 1))
-    return new Response(new Blob(['image'], { type: 'image/png' }), { status: 200 })
+    await gate.promise
+    return blobResponse()
   }
 
   const src = '/api/v1/notes/note/asset/image'
-  const [first, second, third] = await Promise.all([
-    authenticatedBlobUrl(src),
-    authenticatedBlobUrl(src),
-    authenticatedBlobUrl(src),
-  ])
+  const pending = [authenticatedBlobUrl(src), authenticatedBlobUrl(src), authenticatedBlobUrl(src)]
+  gate.resolve()
+  const urls = await Promise.all(pending)
 
-  assert.match(first, /^blob:/)
-  assert.equal(second, first)
-  assert.equal(third, first)
-  assert.equal(cachedAuthenticatedBlobUrl(src), first)
+  assert.equal(new Set(urls).size, 1)
   assert.deepEqual(calls, [src])
 })
 
-test('protected media waits for an in-flight refresh before first fetch', async () => {
-  let token: string | null = null
-  const calls: Array<{ url: string; authorization: string | null }> = []
+test('failed asset requests reject with an ApiError and are not cached', async () => {
+  globalThis.fetch = async () => Response.json({ error: { code: 'not_found', message: 'Нет файла' } }, { status: 404 })
 
-  configureApiClient({
-    getToken: () => token,
-    setToken: (nextToken) => { token = nextToken },
-    onUnauthenticated: () => {},
-  })
-
-  globalThis.fetch = async (input, init) => {
-    const url = String(input)
-    calls.push({ url, authorization: new Headers(init?.headers).get('Authorization') })
-
-    if (url === '/api/v1/auth/refresh') {
-      await new Promise(resolve => setTimeout(resolve, 1))
-      return Response.json({
-        access_token: 'fresh-access-token',
-        token_type: 'bearer',
-        user: { id: 'u1', display_name: 'User', is_active: true },
-      })
-    }
-
-    return new Response(new Blob(['image'], { type: 'image/png' }), { status: 200 })
-  }
-
-  const refresh = refreshApiToken()
-  const objectUrl = await authenticatedBlobUrl('/api/v1/notes/note/asset/after-refresh')
-  await refresh
-
-  assert.match(objectUrl, /^blob:/)
-  assert.deepEqual(calls, [
-    { url: '/api/v1/auth/refresh', authorization: null },
-    { url: '/api/v1/notes/note/asset/after-refresh', authorization: 'Bearer fresh-access-token' },
-  ])
+  await assert.rejects(
+    () => authenticatedBlobUrl('/api/v1/notes/note/asset/missing'),
+    (error: unknown) => error instanceof ApiError && error.status === 404 && error.message === 'Нет файла',
+  )
+  assert.equal(cachedAuthenticatedBlobUrl('/api/v1/notes/note/asset/missing'), null)
 })
 
-test('protected media refreshes before the first fetch when no token is loaded', async () => {
-  let token: string | null = null
-  const calls: Array<{ url: string; authorization: string | null }> = []
+test('idle object URLs are revoked beyond the byte budget, retained ones never', async () => {
+  globalThis.fetch = async () => blobResponse('', 40 * 1024 * 1024)
 
-  configureApiClient({
-    getToken: () => token,
-    setToken: (nextToken) => { token = nextToken },
-    onUnauthenticated: () => {},
-  })
+  const release = retainAuthenticatedBlobUrl('/a')
+  const retained = await authenticatedBlobUrl('/a')
+  const b = await authenticatedBlobUrl('/b')
+  const c = await authenticatedBlobUrl('/c') // idle: /b + /c = 80 MB > 64 MB → LRU idle /b goes
 
-  globalThis.fetch = async (input, init) => {
-    const url = String(input)
-    calls.push({ url, authorization: new Headers(init?.headers).get('Authorization') })
+  assert.deepEqual(revoked, [b])
+  assert.equal(cachedAuthenticatedBlobUrl('/a'), retained) // also marks /a most recently used
+  assert.equal(cachedAuthenticatedBlobUrl('/b'), null)
 
-    if (url === '/api/v1/auth/refresh') {
-      return Response.json({
-        access_token: 'fresh-access-token',
-        token_type: 'bearer',
-        user: { id: 'u1', display_name: 'User', is_active: true },
-      })
-    }
+  release()
+  await authenticatedBlobUrl('/d') // idle: /c, /a, /d = 120 MB → evict /c, then /a
+  assert.deepEqual(revoked, [b, c, retained])
+})
 
-    return new Response(new Blob(['image'], { type: 'image/png' }), { status: 200 })
-  }
+test('logout cleanup revokes every cached object URL', async () => {
+  globalThis.fetch = async () => blobResponse()
 
-  const objectUrl = await authenticatedBlobUrl('/api/v1/notes/note/asset/no-token-yet')
+  const url = await authenticatedBlobUrl('/api/v1/notes/note/asset/x')
+  clearAuthenticatedBlobCache()
 
-  assert.match(objectUrl, /^blob:/)
-  assert.deepEqual(calls, [
-    { url: '/api/v1/auth/refresh', authorization: null },
-    { url: '/api/v1/notes/note/asset/no-token-yet', authorization: 'Bearer fresh-access-token' },
-  ])
+  assert.ok(revoked.includes(url))
+  assert.equal(cachedAuthenticatedBlobUrl('/api/v1/notes/note/asset/x'), null)
 })
 
 test('protected assets open from an authenticated object URL', async () => {
@@ -134,30 +104,25 @@ test('protected assets open from an authenticated object URL', async () => {
   const openedWindow = { location: { href: 'about:blank' }, opener: {}, close: () => {} }
   const originalWindow = globalThis.window
 
-  configureApiClient({
-    getToken: () => 'access-token',
-    setToken: () => {},
-    onUnauthenticated: () => {},
-  })
   globalThis.fetch = async (input, init) => {
     events.push(`fetch:${String(input)}:${new Headers(init?.headers).get('Authorization')}`)
-    return new Response(new Blob(['image'], { type: 'image/jpeg' }), { status: 200 })
+    return blobResponse()
   }
   globalThis.window = {
-    open: (url?: string, target?: string, features?: string) => {
-      events.push(`open:${url ?? ''}:${target ?? ''}:${features ?? ''}`)
+    open: (url?: string, target?: string) => {
+      events.push(`open:${url ?? ''}:${target ?? ''}`)
       return openedWindow
     },
+    setTimeout: () => 0,
   } as unknown as Window & typeof globalThis
 
   try {
     const objectUrl = await openAuthenticatedAsset('/api/v1/notes/note/asset/open-image')
 
-    assert.match(objectUrl, /^blob:/)
     assert.equal(openedWindow.location.href, objectUrl)
     assert.equal(openedWindow.opener, null)
     assert.deepEqual(events, [
-      'open::_blank:',
+      'open::_blank',
       'fetch:/api/v1/notes/note/asset/open-image:Bearer access-token',
     ])
   } finally {

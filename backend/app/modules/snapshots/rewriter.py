@@ -24,6 +24,20 @@ MIME_TO_EXT: dict[str, str] = {
 }
 
 RESOURCE_WHITELIST: frozenset[str] = frozenset(MIME_TO_EXT.keys())
+# Archived resources are named `rNNNN<ext>`, so the extension alone gives the content type.
+EXT_TO_MIME: dict[str, str] = {
+    ".css": "text/css",
+    ".jpg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+    ".ico": "image/x-icon",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+    ".ttf": "font/ttf",
+    ".otf": "font/otf",
+}
 
 _URL_RE = re.compile(r"url\(([^)]+)\)", re.IGNORECASE)
 _TAG_ATTRS: tuple[tuple[str, str], ...] = (
@@ -41,6 +55,15 @@ _TAG_ATTRS: tuple[tuple[str, str], ...] = (
 def ext_for_mime(mime_type: str) -> str:
     base = mime_type.split(";")[0].strip().lower()
     return MIME_TO_EXT.get(base, ".bin")
+
+
+def mime_for_resource(filename: str) -> str:
+    _, dot, ext = filename.rpartition(".")
+    return (
+        EXT_TO_MIME.get(f".{ext.lower()}", "application/octet-stream")
+        if dot
+        else ("application/octet-stream")
+    )
 
 
 def rewrite_css(css_text: str, css_base_url: str, manifest: dict[str, str]) -> str:

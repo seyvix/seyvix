@@ -1,10 +1,4 @@
-import { createContext, useContext, useState, useCallback } from 'react'
-
-export interface UploadJobEntry {
-  jobId: string
-  noteId: string
-  label?: string
-}
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
 export interface UploadNotice {
   id: string
@@ -14,10 +8,6 @@ export interface UploadNotice {
 const NOTICE_AUTO_DISMISS_MS = 7000
 
 interface UploadContextValue {
-  jobs: UploadJobEntry[]
-  addJob: (entry: UploadJobEntry) => void
-  removeJob: (jobId: string) => void
-  hasActiveJobs: boolean
   notices: UploadNotice[]
   pushNotice: (message: string) => void
   dismissNotice: (id: string) => void
@@ -26,39 +16,36 @@ interface UploadContextValue {
 const UploadContext = createContext<UploadContextValue | null>(null)
 
 export function UploadProvider({ children }: { children: React.ReactNode }) {
-  const [jobs, setJobs] = useState<UploadJobEntry[]>([])
   const [notices, setNotices] = useState<UploadNotice[]>([])
+  const timersRef = useRef(new Map<string, number>())
 
-  const addJob = useCallback((entry: UploadJobEntry) => {
-    setJobs(prev => prev.some(j => j.jobId === entry.jobId) ? prev : [...prev, entry])
-  }, [])
-
-  const removeJob = useCallback((jobId: string) => {
-    setJobs(prev => prev.filter(j => j.jobId !== jobId))
+  useEffect(() => {
+    const timers = timersRef.current
+    return () => {
+      for (const timer of timers.values()) window.clearTimeout(timer)
+      timers.clear()
+    }
   }, [])
 
   const dismissNotice = useCallback((id: string) => {
+    const timer = timersRef.current.get(id)
+    if (timer !== undefined) window.clearTimeout(timer)
+    timersRef.current.delete(id)
     setNotices(prev => prev.filter(n => n.id !== id))
   }, [])
 
   const pushNotice = useCallback((message: string) => {
-    const id = `notice-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
-    setNotices(prev => {
+    setNotices((prev) => {
       if (prev.some(n => n.message === message)) return prev
+      const id = `notice-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+      timersRef.current.set(id, window.setTimeout(() => dismissNotice(id), NOTICE_AUTO_DISMISS_MS))
       return [...prev, { id, message }]
     })
-    window.setTimeout(() => dismissNotice(id), NOTICE_AUTO_DISMISS_MS)
   }, [dismissNotice])
 
-  return (
-    <UploadContext.Provider value={{
-      jobs, addJob, removeJob,
-      hasActiveJobs: jobs.length > 0,
-      notices, pushNotice, dismissNotice,
-    }}>
-      {children}
-    </UploadContext.Provider>
-  )
+  const value = useMemo(() => ({ notices, pushNotice, dismissNotice }), [notices, pushNotice, dismissNotice])
+
+  return <UploadContext.Provider value={value}>{children}</UploadContext.Provider>
 }
 
 export function useUploadContext() {

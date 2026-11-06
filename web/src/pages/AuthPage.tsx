@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 import { motion, useMotionValue, useTransform, useSpring } from 'framer-motion'
-import { Bot, ExternalLink, ShieldCheck, Sparkles } from 'lucide-react'
+import { Bot, Check, Copy, ExternalLink, ShieldCheck, ShieldX, Sparkles } from 'lucide-react'
 import { apiTelegramWebApp } from '../api/auth'
 import CircularText from '../components/CircularText/CircularText'
 import { LoaderSpinner } from '../components/LoaderSpinner'
 import { useAuth } from '../contexts/AuthContext'
+import { accessDeniedInfo, type AccessDeniedInfo } from '../lib/apiError'
 import {
   getTelegramWebApp,
   isTelegramMiniApp,
@@ -13,7 +14,6 @@ import {
 import styles from './AuthPage.module.css'
 
 const AUTH_RING_DEFAULT_SIZE = 236
-const DevLoginIcon = Bot
 
 function useElementWidth<T extends HTMLElement>(fallbackWidth: number) {
   const ref = useRef<T | null>(null)
@@ -104,16 +104,78 @@ const ERROR_MESSAGES: Record<string, string> = {
   telegram_web_app_failed: 'Не удалось войти внутри Telegram. Попробуй открыть вход заново.',
 }
 
+const COPY_FEEDBACK_MS = 2000
+
+function AccessDeniedPanel({ denied, onRetry }: { denied: AccessDeniedInfo; onRetry: () => void }) {
+  const [copied, setCopied] = useState(false)
+  const idText = denied.telegramUserId === null ? null : String(denied.telegramUserId)
+
+  useEffect(() => {
+    if (!copied) return
+    const timer = window.setTimeout(() => setCopied(false), COPY_FEEDBACK_MS)
+    return () => window.clearTimeout(timer)
+  }, [copied])
+
+  async function copyId() {
+    if (!idText) return
+    try {
+      await navigator.clipboard.writeText(idText)
+      setCopied(true)
+    } catch (error) {
+      // Some webviews (incl. Telegram on older clients) block the clipboard; the ID text is
+      // `user-select: all`, so a long-press/double-click still selects it.
+      console.warn('[auth] clipboard unavailable', error)
+    }
+  }
+
+  return (
+    <section className={styles.denied} role="alert" aria-labelledby="access-denied-title">
+      <h2 id="access-denied-title" className={styles.deniedTitle}>
+        <ShieldX size={22} aria-hidden="true" />
+        Доступ пока не выдан
+      </h2>
+      <p>
+        Seyvix работает по приглашениям. Твой Telegram-аккаунт
+        {denied.username ? ` @${denied.username}` : ''} ещё не добавлен в список доступа.
+      </p>
+      {idText && (
+        <div className={styles.idRow}>
+          <span className={styles.idValue} aria-label="Твой Telegram ID">{idText}</span>
+          <button type="button" className={styles.copyButton} onClick={() => void copyId()}>
+            {copied ? <Check size={15} aria-hidden="true" /> : <Copy size={15} aria-hidden="true" />}
+            {copied ? 'Скопировано' : 'Скопировать ID'}
+          </button>
+        </div>
+      )}
+      <ol className={styles.deniedSteps}>
+        <li>Отправь {idText ? 'этот ID' : 'свой Telegram username'} администратору Seyvix.</li>
+        <li>
+          Администратор выдаст доступ в «Настройки → Доступ» или командой{' '}
+          <code>/allow {idText ?? '@username'}</code> в боте.
+        </li>
+        <li>После этого нажми «Попробовать снова».</li>
+      </ol>
+      <div className={styles.actions}>
+        <button type="button" className={styles.primaryButton} onClick={onRetry}>
+          <ExternalLink size={17} aria-hidden="true" />
+          <span>Попробовать снова</span>
+        </button>
+      </div>
+    </section>
+  )
+}
+
 export default function AuthPage() {
   const navigate = useNavigate()
-  const { loginWithTokens } = useAuth()
+  const { loginWithTokens, accessDenied, reportAccessDenied } = useAuth()
   const [searchParams] = useSearchParams()
   const webApp = useMemo(() => getTelegramWebApp(), [])
   const miniApp = isTelegramMiniApp(webApp)
   const errorCode = searchParams.get('error')
-  const [loading, setLoading] = useState(miniApp && !errorCode)
+  const canAutoLogin = miniApp && !errorCode && !accessDenied
+  const [loading, setLoading] = useState(canAutoLogin)
   const [mode, setMode] = useState<'idle' | 'mini-app' | 'oauth' | 'dev'>(
-    miniApp && !errorCode ? 'mini-app' : 'idle',
+    canAutoLogin ? 'mini-app' : 'idle',
   )
   const [ringRef, ringWidth] = useElementWidth<HTMLButtonElement>(AUTH_RING_DEFAULT_SIZE)
   const circularTextRadius = Math.round(ringWidth / 2)
@@ -133,20 +195,25 @@ export default function AuthPage() {
     setMode('mini-app')
     webApp.MainButton?.showProgress?.(true)
     try {
-      const { user, access_token } = await apiTelegramWebApp(webApp.initData)
+      const tokens = await apiTelegramWebApp(webApp.initData)
       webApp.HapticFeedback?.notificationOccurred?.('success')
-      loginWithTokens(user, access_token)
+      loginWithTokens(tokens)
       navigate('/notes', { replace: true })
-    } catch (err) {
-      console.error('[AuthPage] telegram web app login failed:', err)
+    } catch (error) {
       webApp.HapticFeedback?.notificationOccurred?.('error')
-      navigate('/auth?error=telegram_web_app_failed', { replace: true })
+      const denied = accessDeniedInfo(error)
+      if (denied) {
+        reportAccessDenied(denied)
+      } else {
+        console.error('[AuthPage] telegram web app login failed:', error)
+        navigate('/auth?error=telegram_web_app_failed', { replace: true })
+      }
     } finally {
       webApp.MainButton?.hideProgress?.()
       miniAppLoginInFlightRef.current = false
       setLoading(false)
     }
-  }, [loginWithTokens, navigate, webApp])
+  }, [loginWithTokens, navigate, reportAccessDenied, webApp])
 
   useEffect(() => {
     if (!webApp) return
@@ -156,7 +223,7 @@ export default function AuthPage() {
     mainButton?.onClick?.(completeMiniAppLogin)
     mainButton?.show()
 
-    if (webApp.initData && !errorCode && !miniAppAutoAttemptedRef.current) {
+    if (webApp.initData && canAutoLogin && !miniAppAutoAttemptedRef.current) {
       miniAppAutoAttemptedRef.current = true
       void completeMiniAppLogin()
     }
@@ -165,7 +232,7 @@ export default function AuthPage() {
       mainButton?.offClick?.(completeMiniAppLogin)
       mainButton?.hide()
     }
-  }, [completeMiniAppLogin, errorCode, webApp])
+  }, [canAutoLogin, completeMiniAppLogin, webApp])
 
   function handleOAuthClick() {
     setLoading(true)
@@ -178,6 +245,12 @@ export default function AuthPage() {
     setLoading(true)
     setMode('dev')
     window.location.href = '/api/v1/auth/telegram-dev-login'
+  }
+
+  function handleRetryAfterDenial() {
+    reportAccessDenied(null)
+    if (miniApp) void completeMiniAppLogin()
+    else handleOAuthClick()
   }
 
   const loadingText = mode === 'mini-app'
@@ -202,95 +275,103 @@ export default function AuthPage() {
           </div>
 
           <h1>Seyvix</h1>
-          <p>
-            Вход через Telegram без пароля, чтобы сразу перейти к заметкам и сохранённым
-            материалам.
-          </p>
+          {!accessDenied && (
+            <p>
+              Вход через Telegram без пароля, чтобы сразу перейти к заметкам и сохранённым
+              материалам.
+            </p>
+          )}
         </motion.div>
 
-        <motion.button
-          ref={ringRef}
-          type="button"
-          className={styles.ring}
-          onClick={miniApp ? completeMiniAppLogin : handleOAuthClick}
-          disabled={loading}
-          aria-label="Войти через Telegram"
-          initial={{ opacity: 0, scale: 0.94 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ duration: 0.4, delay: 0.08, ease: 'easeOut' }}
-        >
-          <CircularText
-            text={miniApp ? 'TELEGRAM MINI APP • ' : 'АВТОРИЗОВАТЬСЯ В TELEGRAM • '}
-            radius={circularTextRadius}
-            fontSize={circularTextFontSize}
-            spinDuration={14}
-            onHover="speedUp"
-            className={styles.circularText}
-          />
-          <div className={styles.iconCenter}>
-            {loading ? (
-              <div className={styles.loadingMark}>
-                <LoaderSpinner className={styles.authLoader} />
+        {accessDenied ? (
+          <AccessDeniedPanel denied={accessDenied} onRetry={handleRetryAfterDenial} />
+        ) : (
+          <>
+            <motion.button
+              ref={ringRef}
+              type="button"
+              className={styles.ring}
+              onClick={miniApp ? completeMiniAppLogin : handleOAuthClick}
+              disabled={loading}
+              aria-label="Войти через Telegram"
+              initial={{ opacity: 0, scale: 0.94 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ duration: 0.4, delay: 0.08, ease: 'easeOut' }}
+            >
+              <CircularText
+                text={miniApp ? 'TELEGRAM MINI APP • ' : 'АВТОРИЗОВАТЬСЯ В TELEGRAM • '}
+                radius={circularTextRadius}
+                fontSize={circularTextFontSize}
+                spinDuration={14}
+                onHover="speedUp"
+                className={styles.circularText}
+              />
+              <div className={styles.iconCenter}>
+                {loading ? (
+                  <div className={styles.loadingMark}>
+                    <LoaderSpinner className={styles.authLoader} />
+                  </div>
+                ) : (
+                  <TelegramIcon3D />
+                )}
               </div>
-            ) : (
-              <TelegramIcon3D />
+            </motion.button>
+
+            <div className={styles.actions}>
+              {!miniApp && (
+                <button
+                  type="button"
+                  className={styles.primaryButton}
+                  onClick={handleOAuthClick}
+                  disabled={loading}
+                >
+                  <ExternalLink size={17} aria-hidden="true" />
+                  <span>Войти через Telegram</span>
+                </button>
+              )}
+
+              {miniApp && (
+                <button
+                  type="button"
+                  className={styles.primaryButton}
+                  onClick={completeMiniAppLogin}
+                  disabled={loading}
+                >
+                  <Sparkles size={17} aria-hidden="true" />
+                  <span>Подтвердить вход</span>
+                </button>
+              )}
+
+              {import.meta.env.DEV && !miniApp && (
+                <button
+                  type="button"
+                  className={styles.secondaryButton}
+                  onClick={handleDevClick}
+                  disabled={loading}
+                >
+                  <Bot size={17} aria-hidden="true" />
+                  <span>Локальный вход</span>
+                </button>
+              )}
+            </div>
+
+            <motion.p
+              className={styles.subtitle}
+              animate={{ opacity: loading ? 0.4 : 1 }}
+            >
+              {loading ? loadingText : idleText}
+            </motion.p>
+
+            {errorMessage && (
+              <motion.p
+                className={styles.error}
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+              >
+                {errorMessage}
+              </motion.p>
             )}
-          </div>
-        </motion.button>
-
-        <div className={styles.actions}>
-          {!miniApp && (
-            <button
-              type="button"
-              className={styles.primaryButton}
-              onClick={handleOAuthClick}
-              disabled={loading}
-            >
-              <ExternalLink size={17} aria-hidden="true" />
-              <span>Войти через Telegram</span>
-            </button>
-          )}
-
-          {miniApp && (
-            <button
-              type="button"
-              className={styles.primaryButton}
-              onClick={completeMiniAppLogin}
-              disabled={loading}
-            >
-              <Sparkles size={17} aria-hidden="true" />
-              <span>Подтвердить вход</span>
-            </button>
-          )}
-
-          {import.meta.env.DEV && !miniApp && (
-            <button
-              type="button"
-              className={styles.secondaryButton}
-              onClick={handleDevClick}
-              disabled={loading}
-            >
-              <DevLoginIcon size={17} aria-hidden="true" />
-              <span>Локальный вход</span>
-            </button>
-          )}
-        </div>
-
-        <motion.p
-          className={styles.subtitle}
-          animate={{ opacity: loading ? 0.4 : 1 }}
-        >
-          {loading ? loadingText : idleText}
-        </motion.p>
-
-        {errorMessage && (
-          <motion.p
-            className={styles.error}
-            initial={{ opacity: 0, y: 4 }}
-            animate={{ opacity: 1, y: 0 }}
-          >
-            {errorMessage}
-          </motion.p>
+          </>
         )}
       </div>
     </div>

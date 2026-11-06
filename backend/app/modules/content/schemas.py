@@ -120,6 +120,7 @@ class NoteCardResponse(BaseModel):
     search_matches: list[SearchContentMatch] = Field(default_factory=list)
     assets: list[NoteAssetResponse] = Field(default_factory=list)
     items: list[NoteCardResponse] = Field(default_factory=list)
+    processing: bool = False
 
 
 class NoteListResponse(BaseModel):

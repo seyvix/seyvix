@@ -1,21 +1,27 @@
 import { apiFetch } from '../lib/apiClient.ts'
-import { makeMarkdownTitle } from '../utils/markdownPaste.ts'
-import type { Note, NotesPageResult, NotesParams, RecommendedNote, UploadJob } from '../types'
+import { ensureOk, readJson } from '../lib/apiError.ts'
+import { makeMarkdownTitle } from '../utils/markdownTitle.ts'
+import type {
+  Note,
+  NotesChangesResult,
+  NotesPageResult,
+  NotesParams,
+  RecommendedNote,
+} from '../types/index.ts'
 
 const BASE = '/api/v1/notes'
+const JSON_HEADERS = { 'Content-Type': 'application/json' }
 export const NOTES_PAGE_SIZE = 60
-export const MERGE_NOTES_ENABLED = false
+
 export interface ReorderNoteItem {
   slug: string
   position: number
 }
 
-type RecommendedNoteBackendKind = RecommendedNote['type'] | 'complex'
-
 type RecommendedNoteResponse = {
   id: string
   slug: string
-  kind: RecommendedNoteBackendKind
+  kind: RecommendedNote['type'] | 'complex'
   media_type: RecommendedNote['mediaType']
   title: string
   score: number
@@ -50,11 +56,24 @@ export function mapRecommendedNote(item: RecommendedNoteResponse): RecommendedNo
   }
 }
 
-export async function fetchNotes(
-  params: NotesParams = {},
-  signal?: AbortSignal,
-): Promise<Note[]> {
-  return (await fetchNotesPage(params, signal)).items
+export function notesSearchParams(
+  params: NotesParams,
+  page: { limit?: number; offset?: number } = {},
+): URLSearchParams {
+  const query = new URLSearchParams({ view: 'card' })
+  if (page.limit !== undefined) query.set('limit', String(page.limit))
+  if (page.offset) query.set('offset', String(page.offset))
+  if (params.search) query.set('search', params.search)
+  if (params.search && params.searchMode) query.set('search_mode', params.searchMode)
+  if (params.sort) query.set('sort', params.sort)
+  params.tags?.forEach(tag => query.append('tags', tag))
+  params.folders?.forEach(folder => query.append('folders', folder))
+  params.contentTypes?.forEach(type => query.append('types', type))
+  params.sources?.forEach(source => query.append('sources', source))
+  if (params.favorite !== undefined && params.favorite !== null) query.set('favorite', String(params.favorite))
+  if (params.createdAfter) query.set('created_after', params.createdAfter)
+  if (params.createdBefore) query.set('created_before', params.createdBefore)
+  return query
 }
 
 export async function fetchNotesPage(
@@ -62,34 +81,28 @@ export async function fetchNotesPage(
   signal?: AbortSignal,
   page: { limit?: number; offset?: number } = {},
 ): Promise<NotesPageResult> {
-  const origin = typeof window === 'undefined' ? 'http://localhost' : window.location.origin
-  const url = new URL(BASE, origin)
-  url.searchParams.set('view', 'card')
-  if (page.limit !== undefined) url.searchParams.set('limit', String(page.limit))
-  if (page.offset !== undefined && page.offset > 0) {
-    url.searchParams.set('offset', String(page.offset))
-  }
-  if (params.search) url.searchParams.set('search', params.search)
-  if (params.search && params.searchMode) url.searchParams.set('search_mode', params.searchMode)
-  if (params.sort) url.searchParams.set('sort', params.sort)
-  params.tags?.forEach(t => url.searchParams.append('tags', t))
-  params.folders?.forEach(f => url.searchParams.append('folders', f))
-  params.contentTypes?.forEach(type => url.searchParams.append('types', type))
-  params.sources?.forEach(source => url.searchParams.append('sources', source))
-  if (params.favorite !== undefined && params.favorite !== null) {
-    url.searchParams.set('favorite', String(params.favorite))
-  }
-  if (params.createdAfter) url.searchParams.set('created_after', params.createdAfter)
-  if (params.createdBefore) url.searchParams.set('created_before', params.createdBefore)
+  const res = await apiFetch(`${BASE}?${notesSearchParams(params, page)}`, { signal })
+  const data = await readJson<{ items?: Note[]; nextOffset?: number | null }>(res, 'Не удалось загрузить заметки')
+  return { items: data.items ?? [], nextOffset: data.nextOffset ?? null }
+}
 
-  const res = await apiFetch(url.toString(), { signal })
-  if (!res.ok) throw new Error('Failed to fetch notes')
-  const data: unknown = await res.json()
-  if (Array.isArray(data)) return { items: data as Note[], nextOffset: null }
-  const payload = data as { items?: Note[]; nextOffset?: number | null }
+/** Change feed: cards changed since `cursor` (see `hooks/useNotesChangeFeed`). */
+export async function fetchNoteChanges(cursor: string | null, signal?: AbortSignal): Promise<NotesChangesResult> {
+  const query = cursor ? `?${new URLSearchParams({ since: cursor })}` : ''
+  const res = await apiFetch(`${BASE}/changes${query}`, { signal })
+  const data = await readJson<{
+    cursor: string
+    notes?: Note[]
+    removed_ids?: string[]
+    reset?: boolean
+    has_more?: boolean
+  }>(res, 'Не удалось получить обновления заметок')
   return {
-    items: payload.items ?? [],
-    nextOffset: payload.nextOffset ?? null,
+    cursor: data.cursor,
+    notes: data.notes ?? [],
+    removedIds: data.removed_ids ?? [],
+    reset: Boolean(data.reset),
+    hasMore: Boolean(data.has_more),
   }
 }
 
@@ -103,32 +116,26 @@ export async function fetchNoteRecommendations(
     `${BASE}/${encodeURIComponent(noteRef)}/recommendations?limit=${cappedLimit}`,
     { signal },
   )
-  if (!res.ok) throw new Error('Failed to fetch recommendations')
-  const data = (await res.json()) as { items?: RecommendedNoteResponse[] }
+  const data = await readJson<{ items?: RecommendedNoteResponse[] }>(res, 'Не удалось загрузить рекомендации')
   return (data.items ?? []).map(mapRecommendedNote)
 }
 
 export async function reorderNotes(items: ReorderNoteItem[]): Promise<void> {
   const res = await apiFetch(`${BASE}/order`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
+    headers: JSON_HEADERS,
     body: JSON.stringify({ items }),
   })
-  if (!res.ok) throw new Error('Failed to reorder notes')
+  await ensureOk(res, 'Failed to reorder notes')
 }
 
 export async function fetchTrashNotes(): Promise<Note[]> {
-  const res = await apiFetch(`${BASE}/trash`)
-  if (!res.ok) throw new Error('Failed to fetch trash')
-  const data: unknown = await res.json()
-  if (Array.isArray(data)) return data as Note[]
-  return ((data as { items?: Note[] }).items ?? []) as Note[]
+  const data = await readJson<{ items?: Note[] }>(await apiFetch(`${BASE}/trash`), 'Не удалось загрузить корзину')
+  return data.items ?? []
 }
 
-export async function fetchNote(noteRef: string): Promise<Note> {
-  const res = await apiFetch(`${BASE}/${encodeURIComponent(noteRef)}`)
-  if (!res.ok) throw new Error('Failed to fetch note')
-  return (await res.json()) as Note
+export async function fetchNote(noteRef: string, signal?: AbortSignal): Promise<Note> {
+  return readJson(await apiFetch(`${BASE}/${encodeURIComponent(noteRef)}`, { signal }), 'Не удалось загрузить заметку')
 }
 
 export async function decideDeferredLinkSnapshots(
@@ -137,126 +144,99 @@ export async function decideDeferredLinkSnapshots(
 ): Promise<Note> {
   const res = await apiFetch(`${BASE}/${encodeURIComponent(noteRef)}/link-snapshots/decision`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: JSON_HEADERS,
     body: JSON.stringify({ decision }),
   })
-  if (!res.ok) throw new Error('Failed to update link snapshot decision')
-  return (await res.json()) as Note
+  return readJson(res, 'Не удалось сохранить решение по снапшотам ссылок')
 }
 
 export async function createNote(data: Partial<Note>): Promise<Note> {
   const textObj = data.objects?.find(o => o.type === 'text')
-  const backendPayload = {
-    title: data.title ?? null,
-    text: textObj?.content ?? null,
-    media_type: textObj ? 'text' : null,
-    tag_names: data.tags?.map(t => t.name) ?? [],
-    file_upload_ids: [] as string[],
-  }
   const res = await apiFetch(BASE, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(backendPayload),
+    headers: JSON_HEADERS,
+    body: JSON.stringify({
+      title: data.title ?? null,
+      text: textObj?.content ?? null,
+      media_type: textObj ? 'text' : null,
+      tag_names: data.tags?.map(t => t.name) ?? [],
+      file_upload_ids: [],
+    }),
   })
-  if (!res.ok) throw new Error('Failed to create note')
-  return (await res.json()) as Note
+  return readJson(res, 'Не удалось создать заметку')
+}
+
+async function postFiles(form: FormData): Promise<{ files?: Array<{ id: string }>; object?: Note | null }> {
+  const res = await apiFetch(`${BASE}/file/upload`, { method: 'POST', body: form })
+  return readJson(res, 'Не удалось загрузить файлы')
 }
 
 export async function addFilesToNote(noteId: string, files: File[]): Promise<Note> {
-  const formData = new FormData()
-  formData.append('object_id', noteId)
-  files.forEach(f => formData.append('files', f))
-  const res = await apiFetch(`${BASE}/file/upload`, { method: 'POST', body: formData })
-  if (!res.ok) throw new Error('Failed to add files to note')
-  const body = await res.json() as Note & { object?: Note }
-  return (body.object ?? body) as Note
+  const form = new FormData()
+  form.append('object_id', noteId)
+  files.forEach(f => form.append('files', f))
+  const body = await postFiles(form)
+  if (!body.object) throw new Error('Upload response did not include the updated note')
+  return body.object
 }
 
-export async function startUploadJob(
-  files: File[],
-  text?: string,
-): Promise<{ jobId: string; noteId: string; noteSlug: string }> {
+/**
+ * Creates a note from uploaded files (and optional markdown text) and returns the created
+ * note exactly as the server stored it — there is no separate upload job to poll.
+ */
+export async function uploadNoteFiles(files: File[], text?: string): Promise<Note> {
   if (files.length === 0) throw new Error('No files to upload')
+  const form = new FormData()
+  files.forEach(f => form.append('files', f))
 
-  if (text) {
-    const formData = new FormData()
-    files.forEach(f => formData.append('files', f))
-    const uploadRes = await apiFetch(`${BASE}/file/upload`, { method: 'POST', body: formData })
-    if (!uploadRes.ok) throw new Error('Failed to upload files')
-    const uploadResult = await uploadRes.json()
-    const fileIds: string[] = (uploadResult.files ?? []).map((f: { id: string }) => f.id)
-
-    const title = makeMarkdownTitle(text) || files[0]?.name || ''
-    const createRes = await apiFetch(BASE, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, text, media_type: 'text', tag_names: [], file_upload_ids: fileIds }),
-    })
-    if (!createRes.ok) throw new Error('Failed to create note')
-    const note = (await createRes.json()) as Note
-    return { jobId: note.id, noteId: note.id, noteSlug: note.slug }
+  if (!text) {
+    form.append('create_object', 'true')
+    const body = await postFiles(form)
+    if (!body.object) throw new Error('Upload response did not include the created note')
+    return body.object
   }
 
-  const formData = new FormData()
-  files.forEach(f => formData.append('files', f))
-  formData.append('create_object', 'true')
-
-  const res = await apiFetch(`${BASE}/file/upload`, { method: 'POST', body: formData })
-  if (!res.ok) throw new Error('Failed to upload file')
-  const body = await res.json() as Note & { object?: Note }
-  const note = (body.object ?? body) as Note
-  return {
-    jobId: note.id,
-    noteId: note.id,
-    noteSlug: note.slug,
-  }
-}
-
-export async function fetchUploadJob(jobId: string): Promise<UploadJob> {
-  return { id: jobId, status: 'done', files: [], noteId: jobId }
-}
-
-export async function mergeNotes(sourceSlug: string, targetSlug: string, title?: string): Promise<Note> {
-  if (!MERGE_NOTES_ENABLED) {
-    throw new Error('Merging notes is temporarily disabled')
-  }
-  const res = await apiFetch(`${BASE}/merge`, {
+  const uploaded = await postFiles(form)
+  const res = await apiFetch(BASE, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ source_slugs: [sourceSlug], target_slug: targetSlug, title: title ?? null }),
+    headers: JSON_HEADERS,
+    body: JSON.stringify({
+      title: makeMarkdownTitle(text) || files[0]?.name || '',
+      text,
+      media_type: 'text',
+      tag_names: [],
+      file_upload_ids: (uploaded.files ?? []).map(f => f.id),
+    }),
   })
-  if (!res.ok) throw new Error('Failed to merge notes')
-  return (await res.json()) as Note
+  return readJson(res, 'Не удалось создать заметку')
 }
 
 export async function removeCollectionItems(collectionSlug: string, itemSlugs: string[]): Promise<void> {
-  const res = await apiFetch(`${BASE}/${collectionSlug}/items`, {
+  const res = await apiFetch(`${BASE}/${encodeURIComponent(collectionSlug)}/items`, {
     method: 'DELETE',
-    headers: { 'Content-Type': 'application/json' },
+    headers: JSON_HEADERS,
     body: JSON.stringify({ item_slugs: itemSlugs }),
   })
-  if (!res.ok) throw new Error('Failed to remove collection items')
+  await ensureOk(res, 'Не удалось убрать элементы из коллекции')
 }
 
 export async function deleteNotes(slugs: string[]): Promise<void> {
   const res = await apiFetch(BASE, {
     method: 'DELETE',
-    headers: { 'Content-Type': 'application/json' },
+    headers: JSON_HEADERS,
     body: JSON.stringify({ slugs }),
   })
-  if (!res.ok) throw new Error('Failed to delete notes')
+  await ensureOk(res, 'Не удалось удалить заметки')
 }
 
 export async function restoreNote(slug: string): Promise<Note> {
-  const res = await apiFetch(`${BASE}/${encodeURIComponent(slug)}/restore`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
-  if (!res.ok) throw new Error('Failed to restore note')
-  return (await res.json()) as Note
+  const res = await apiFetch(`${BASE}/${encodeURIComponent(slug)}/restore`, { method: 'POST' })
+  return readJson(res, 'Не удалось восстановить заметку')
 }
 
 export async function cleanupTrash(): Promise<{ deletedCount: number }> {
-  const res = await apiFetch(`${BASE}/trash/cleanup`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
-  if (!res.ok) throw new Error('Failed to cleanup trash')
-  const data = await res.json()
+  const res = await apiFetch(`${BASE}/trash/cleanup`, { method: 'POST' })
+  const data = await readJson<{ deleted_count?: number }>(res, 'Не удалось очистить корзину')
   return { deletedCount: data.deleted_count ?? 0 }
 }
 
@@ -264,20 +244,14 @@ export async function updateNote(noteRef: string, data: UpdateNotePayload): Prom
   const textObj = data.objects?.find(o => o.type === 'text')
   const backendPayload: UpdateNoteBackendPayload = {}
   if (data.title !== undefined) backendPayload.title = data.title
-  if ((data as UpdateNotePayload).text !== undefined) {
-    backendPayload.text = (data as UpdateNotePayload).text ?? ''
-  } else if (textObj) {
-    backendPayload.text = textObj.content
-  }
-  if (data.tags !== undefined) {
-    backendPayload.tag_names = data.tags.map(tag => tag.name)
-  }
+  if (data.text !== undefined) backendPayload.text = data.text ?? ''
+  else if (textObj) backendPayload.text = textObj.content
+  if (data.tags !== undefined) backendPayload.tag_names = data.tags.map(tag => tag.name)
 
   const res = await apiFetch(`${BASE}/${encodeURIComponent(noteRef)}`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
+    headers: JSON_HEADERS,
     body: JSON.stringify(backendPayload),
   })
-  if (!res.ok) throw new Error('Failed to update note')
-  return (await res.json()) as Note
+  return readJson(res, 'Не удалось сохранить заметку')
 }

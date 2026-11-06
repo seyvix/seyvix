@@ -3,20 +3,13 @@ from __future__ import annotations
 from logging.config import fileConfig
 
 from alembic import context
-from app.core.config import get_settings
-from app.core.database import Base
-from app.modules.auth import models as auth_models  # noqa: F401
-from app.modules.content import models as content_models  # noqa: F401
-from app.modules.snapshots import models as snapshot_models  # noqa: F401
-from app.modules.tags import models as tags_models  # noqa: F401
-from app.modules.taxonomy import models as taxonomy_models  # noqa: F401
-from app.modules.telegram_integration import models as telegram_integration_models  # noqa: F401
-from app.modules.vectorization import models as vectorization_models  # noqa: F401
-from app.platform.events import models as event_models  # noqa: F401
-from app.platform.storage import models as storage_models  # noqa: F401
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
+
+from app.core.config import get_settings
+from app.core.database import Base
+from app.models import import_all_models
 
 config = context.config
 
@@ -26,6 +19,7 @@ if config.config_file_name is not None:
 settings = get_settings()
 config.set_main_option("sqlalchemy.url", settings.sqlalchemy_database_uri)
 
+import_all_models()
 target_metadata = Base.metadata
 
 

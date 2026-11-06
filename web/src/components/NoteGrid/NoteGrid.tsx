@@ -1,34 +1,27 @@
-import {
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type CSSProperties,
-  type MouseEvent as ReactMouseEvent,
-} from 'react'
-import { flushSync } from 'react-dom'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { Note } from '../../types'
 import { reorderNotes } from '../../api/notes'
-import { NoteCard, AddNoteCard } from '../NoteCard/NoteCard'
+import { NoteCard } from '../NoteCard/NoteCard'
+import { AddNoteCard } from '../NoteCard/AddNoteCard'
+import { NoteCardActionsProvider } from '../NoteCard/NoteCardActions'
 import { DragProvider } from '../../contexts/DragContext'
 import { useSettings } from '../../contexts/SettingsContext'
+import { useMediaQuery } from '../../hooks/useMediaQuery'
 import { LoaderSpinner } from '../LoaderSpinner'
-import {
-  buildMasonryLayoutSlots,
-  calculateMasonryGridMetrics,
-  orderNotesByIds,
-  toReorderPayload,
-  type MasonryGridMetrics,
-} from '../../utils/noteGridOrder'
+import { calculateMasonryGridMetrics, orderNotesByIds, toReorderPayload } from '../../utils/noteGridOrder'
+import { useGridMetrics } from './useGridMetrics'
+import { useMuuriLayout } from './useMuuriLayout'
 import styles from './NoteGrid.module.css'
 
-const GRID_GAP = 8
 const MOBILE_GRID_QUERY = '(max-width: 760px), (pointer: coarse)'
-const DRAG_CLICK_SUPPRESSION_MS = 350
-
-type MuuriGrid = InstanceType<(typeof import('muuri'))['default']>
-type MuuriItem = import('muuri').Item
+const LOAD_MORE_MARGIN_PX = 520
+const ITEM_CLASSES = {
+  dragging: styles.itemDragging,
+  releasing: styles.itemReleasing,
+  hidden: styles.itemHidden,
+  positioning: styles.itemPositioning,
+}
 
 interface NoteGridProps {
   notes: Note[]
@@ -47,6 +40,86 @@ interface NoteGridProps {
   onLoadMore?: () => void
 }
 
+function noteKey(note: Note): string {
+  return note.stableKey ?? note.id
+}
+
+/**
+ * Keeps the user's on-screen order: notes already shown stay where they are (with fresh data),
+ * new notes go to the front. Returns `current` itself when nothing changed so React and Muuri
+ * can skip the update entirely.
+ */
+function mergePreservingOrder(current: Note[], incoming: Note[]): Note[] {
+  if (current.length === 0) return incoming
+  const byId = new Map<string, Note>()
+  for (const note of incoming) {
+    byId.set(note.id, note)
+    if (note.stableKey) byId.set(note.stableKey, note)
+  }
+  const kept: Note[] = []
+  const keptNotes = new Set<Note>()
+  for (const note of current) {
+    const fresh = byId.get(note.id) ?? (note.stableKey ? byId.get(note.stableKey) : undefined)
+    if (fresh && !keptNotes.has(fresh)) {
+      kept.push(fresh)
+      keptNotes.add(fresh)
+    }
+  }
+  const added = incoming.filter(note => !keptNotes.has(note))
+  const next = added.length > 0 ? [...added, ...kept] : kept
+  return next.length === current.length && next.every((note, index) => note === current[index]) ? current : next
+}
+
+function sameOrder(a: readonly Note[], b: readonly Note[]): boolean {
+  return a.length === b.length && a.every((note, index) => note.id === b[index]?.id)
+}
+
+/** Calls the latest callback without changing identity (keeps memoized children/effects stable). */
+function useStableCallback<Args extends unknown[]>(callback: ((...args: Args) => void) | undefined) {
+  const ref = useRef(callback)
+  useLayoutEffect(() => {
+    ref.current = callback
+  })
+  return useCallback((...args: Args) => ref.current?.(...args), [])
+}
+
+function useLoadMoreSentinel(
+  scrollRef: RefObject<HTMLDivElement | null>,
+  sentinelRef: RefObject<HTMLDivElement | null>,
+  enabled: boolean,
+  onLoadMore: () => void,
+) {
+  useEffect(() => {
+    const scrollArea = scrollRef.current
+    const sentinel = sentinelRef.current
+    if (!scrollArea || !sentinel || !enabled) return
+    let requested = false
+    const request = () => {
+      if (requested) return
+      requested = true
+      onLoadMore()
+    }
+
+    if (typeof IntersectionObserver === 'undefined') {
+      const handleScroll = () => {
+        if (scrollArea.scrollHeight - scrollArea.scrollTop - scrollArea.clientHeight < LOAD_MORE_MARGIN_PX) request()
+      }
+      handleScroll()
+      scrollArea.addEventListener('scroll', handleScroll, { passive: true })
+      return () => scrollArea.removeEventListener('scroll', handleScroll)
+    }
+
+    const observer = new IntersectionObserver(
+      entries => {
+        if (entries.some(entry => entry.isIntersecting)) request()
+      },
+      { root: scrollArea, rootMargin: `${LOAD_MORE_MARGIN_PX}px 0px`, threshold: 0 },
+    )
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [scrollRef, sentinelRef, enabled, onLoadMore])
+}
+
 export function NoteGrid({
   notes,
   preserveOrder = true,
@@ -60,479 +133,152 @@ export function NoteGrid({
   isLoadingMore = false,
   onLoadMore,
 }: NoteGridProps) {
-  const knownKeysRef  = useRef(new Set<string>())
-  const isFirstRender = useRef(true)
   const scrollRef = useRef<HTMLDivElement>(null)
   const gridRef = useRef<HTMLDivElement>(null)
   const loadMoreRef = useRef<HTMLDivElement>(null)
-  const muuriRef = useRef<MuuriGrid | null>(null)
-  const itemResizeObserverRef = useRef<ResizeObserver | null>(null)
-  const dragStartOrderRef = useRef<Note[] | null>(null)
-  const isDraggingRef = useRef(false)
-  const suppressDragClickRef = useRef(false)
-  const suppressDragClickTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const pendingNotesRef = useRef<Note[] | null>(null)
-  const orderedNotesRef = useRef<Note[]>(notes)
-  const gridMetricsRef = useRef<MasonryGridMetrics | null>(null)
-  const [orderedNotes, setOrderedNotes] = useState<Note[]>(notes)
-  const [gridMetrics, setGridMetrics] = useState<MasonryGridMetrics | null>(null)
-  const [isMobileGrid, setIsMobileGrid] = useState(false)
-  const [isMasonryReady, setIsMasonryReady] = useState(false)
   const queryClient = useQueryClient()
   const { cols } = useSettings()
-  const hasGridMetrics = gridMetrics !== null
+  const isMobileGrid = useMediaQuery(MOBILE_GRID_QUERY)
+  const metrics = useGridMetrics(scrollRef, cols)
 
-  gridMetricsRef.current = gridMetrics
+  const [orderedNotes, setOrderedNotes] = useState<Note[]>(notes)
+  const orderedNotesRef = useRef(orderedNotes)
+  const dragStartOrderRef = useRef<Note[] | null>(null)
+  const pendingNotesRef = useRef<Note[] | null>(null)
+  const isDraggingRef = useRef(false)
 
-  useLayoutEffect(() => {
-    if (typeof window === 'undefined' || typeof window.matchMedia === 'undefined') return
-    const media = window.matchMedia(MOBILE_GRID_QUERY)
-    const handleChange = () => setIsMobileGrid(media.matches)
-
-    handleChange()
-    media.addEventListener?.('change', handleChange)
-    return () => media.removeEventListener?.('change', handleChange)
+  const applyNotes = useCallback((next: Note[]) => {
+    orderedNotesRef.current = next
+    setOrderedNotes(next)
   }, [])
 
-  function mergeIncomingNotes(incomingNotes: Note[]) {
-    setOrderedNotes(current => {
-      if (!preserveOrder) {
-        orderedNotesRef.current = incomingNotes
-        return incomingNotes
-      }
-
-      if (current.length === 0) {
-        orderedNotesRef.current = incomingNotes
-        return incomingNotes
-      }
-
-      const incomingById = new Map(incomingNotes.map(note => [note.id, note]))
-      const currentIds = new Set(current.map(note => note.id))
-      const added = incomingNotes.filter(note => !currentIds.has(note.id))
-      const kept = current
-        .map(note => incomingById.get(note.id))
-        .filter((note): note is Note => Boolean(note))
-      const next = [...added, ...kept]
-
-      orderedNotesRef.current = next
-      return next
-    })
-  }
+  const mergeIncoming = useCallback((incoming: Note[]) => {
+    applyNotes(preserveOrder ? mergePreservingOrder(orderedNotesRef.current, incoming) : incoming)
+  }, [applyNotes, preserveOrder])
 
   useEffect(() => {
     if (isDraggingRef.current) {
       pendingNotesRef.current = notes
       return
     }
+    mergeIncoming(notes)
+  }, [notes, mergeIncoming])
 
-    mergeIncomingNotes(notes)
-  }, [notes, preserveOrder])
+  const layoutKey = useMemo(() => orderedNotes.map(noteKey).join('|'), [orderedNotes])
 
-  useEffect(() => {
-    orderedNotesRef.current = orderedNotes
-  }, [orderedNotes])
-
-  useEffect(() => {
-    return () => {
-      if (suppressDragClickTimeoutRef.current) {
-        clearTimeout(suppressDragClickTimeoutRef.current)
-      }
-    }
-  }, [])
-
-  function suppressNextDragClick() {
-    suppressDragClickRef.current = true
-    if (suppressDragClickTimeoutRef.current) {
-      clearTimeout(suppressDragClickTimeoutRef.current)
-      suppressDragClickTimeoutRef.current = null
-    }
-  }
-
-  function releaseDragClickSuppression() {
-    if (suppressDragClickTimeoutRef.current) clearTimeout(suppressDragClickTimeoutRef.current)
-    suppressDragClickTimeoutRef.current = setTimeout(() => {
-      suppressDragClickRef.current = false
-      suppressDragClickTimeoutRef.current = null
-    }, DRAG_CLICK_SUPPRESSION_MS)
-  }
-
-  function handleGridClickCapture(event: ReactMouseEvent<HTMLDivElement>) {
-    if (!suppressDragClickRef.current) return
-    event.preventDefault()
-    event.stopPropagation()
-  }
-
-  useLayoutEffect(() => {
-    const scrollArea = scrollRef.current
-    if (!scrollArea) return
-
-    function updateGridMetrics(width: number) {
-      setGridMetrics(calculateMasonryGridMetrics(width, cols))
-    }
-
-    updateGridMetrics(scrollArea.clientWidth)
-
-    if (typeof ResizeObserver === 'undefined') {
-      const handleResize = () => updateGridMetrics(scrollArea.clientWidth)
-      window.addEventListener('resize', handleResize)
-      return () => window.removeEventListener('resize', handleResize)
-    }
-
-    const observer = new ResizeObserver(entries => {
-      const entry = entries[0]
-      if (entry) updateGridMetrics(entry.contentRect.width)
-    })
-    observer.observe(scrollArea)
-    return () => observer.disconnect()
-  }, [cols])
-
-  useLayoutEffect(() => {
-    const gridElement = gridRef.current
-    const initialMetrics = gridMetricsRef.current
-    if (!gridElement || !initialMetrics) return
-
-    let disposed = false
-    let cleanup: (() => void) | null = null
-
-    void import('muuri').then(({ default: Muuri }) => {
-      if (disposed) return
-
-      const grid = new Muuri(gridElement, {
-        items: `.${styles.item}`,
-        layout: (_grid, id, items, _width, _height, callback) => {
-          const metrics = gridMetricsRef.current ?? initialMetrics
-          const layout = buildMasonryLayoutSlots({
-            heights: items.map(item => item.getHeight()),
-            cols: metrics.cols,
-            itemWidth: metrics.itemWidth,
-            gap: GRID_GAP,
-          })
-
-          callback({
-            id,
-            items,
-            slots: layout.slots,
-            styles: {
-              height: `${layout.height}px`,
-            },
-          })
-        },
-        layoutOnResize: 80,
-        layoutDuration: 180,
-        layoutEasing: 'ease',
-        dragEnabled: !isMobileGrid,
-        dragContainer: gridElement,
-        dragStartPredicate: (item, event) => {
-          if (isMobileGrid) return false
-          const element = item.getElement()
-          if (!element || element.dataset.staticItem === 'true' || element.dataset.dragDisabled === 'true') {
-            return false
-          }
-
-          return Muuri.ItemDrag.defaultStartPredicate(item, event, { distance: 6 })
-        },
-        dragSort: true,
-        dragSortHeuristics: {
-          sortInterval: 60,
-          minDragDistance: 8,
-          minBounceBackAngle: 1,
-        },
-        dragSortPredicate: {
-          threshold: 65,
-          action: 'swap',
-          migrateAction: 'swap',
-        },
-        dragRelease: {
-          duration: 180,
-          easing: 'ease',
-          useDragContainer: true,
-        },
-        dragAutoScroll: {
-          targets: () => {
-            const scrollArea = scrollRef.current
-            return scrollArea ? [scrollArea] : []
-          },
-        },
-        itemClass: styles.item,
-        itemDraggingClass: styles.itemDragging,
-        itemReleasingClass: styles.itemReleasing,
-        itemHiddenClass: styles.itemHidden,
-        itemPositioningClass: styles.itemPositioning,
+  const persistOrder = useCallback((next: Note[], previous: Note[] | null) => {
+    const persisted = next.filter(note => !note.isLocal && !note.isLoading)
+    if (persisted.length === 0) return
+    reorderNotes(toReorderPayload(persisted))
+      .catch(error => {
+        console.error('Failed to save note order', error)
+        if (previous) applyNotes(previous)
       })
+      .finally(() => queryClient.invalidateQueries({ queryKey: ['notes'] }))
+  }, [applyNotes, queryClient])
 
-      if (disposed) {
-        grid.destroy(false)
-        return
-      }
+  const { isReady, handleClickCapture } = useMuuriLayout({
+    gridRef,
+    scrollRef,
+    metrics,
+    dragEnabled: !isMobileGrid,
+    itemClassName: styles.item,
+    itemClasses: ITEM_CLASSES,
+    layoutKey,
+    onDragStart: () => {
+      isDraggingRef.current = true
+      dragStartOrderRef.current = orderedNotesRef.current
+    },
+    onDragEnd: orderedIds => {
+      const previous = dragStartOrderRef.current
+      dragStartOrderRef.current = null
+      const next = orderNotesByIds(orderedNotesRef.current, orderedIds)
+      if (sameOrder(orderedNotesRef.current, next)) return
+      applyNotes(next)
+      persistOrder(next, previous)
+    },
+    onDragSettled: () => {
+      isDraggingRef.current = false
+      const pending = pendingNotesRef.current
+      pendingNotesRef.current = null
+      if (pending) mergeIncoming(pending)
+    },
+  })
 
-      muuriRef.current = grid
-      grid.refreshItems(undefined, true).layout(true)
-      flushSync(() => setIsMasonryReady(true))
+  const stableTagClick = useStableCallback(onTagClick)
+  const stableLoadMore = useStableCallback(onLoadMore)
+  useLoadMoreSentinel(scrollRef, loadMoreRef, hasMore && !isLoadingMore && Boolean(onLoadMore), stableLoadMore)
 
-      if (typeof ResizeObserver !== 'undefined') {
-        itemResizeObserverRef.current = new ResizeObserver(() => {
-          if (isDraggingRef.current) return
-          window.requestAnimationFrame(() => {
-            if (!isDraggingRef.current && muuriRef.current === grid) grid.refreshItems().layout()
-          })
-        })
-      }
-
-      const handleDragStart = () => {
-        isDraggingRef.current = true
-        suppressNextDragClick()
-        dragStartOrderRef.current = orderedNotesRef.current
-      }
-
-      const handleDragReleaseEnd = () => {
-        const previous = dragStartOrderRef.current
-        dragStartOrderRef.current = null
-        const nextIds = getNoteIdsFromGrid(grid)
-        const next = orderNotesByIds(orderedNotesRef.current, nextIds)
-        const finishDrag = () => {
-          window.requestAnimationFrame(() => {
-            isDraggingRef.current = false
-            const pendingNotes = pendingNotesRef.current
-            pendingNotesRef.current = null
-            if (pendingNotes) mergeIncomingNotes(pendingNotes)
-            if (muuriRef.current === grid) grid.refreshItems().layout()
-            releaseDragClickSuppression()
-          })
-        }
-
-        if (sameNoteOrder(orderedNotesRef.current, next)) {
-          finishDrag()
-          return
-        }
-
-        orderedNotesRef.current = next
-        flushSync(() => setOrderedNotes(next))
-
-        const persisted = next.filter(note => !note.isLocal && !note.isLoading)
-        if (persisted.length === 0) {
-          finishDrag()
-          return
-        }
-
-        void reorderNotes(toReorderPayload(persisted))
-          .then(() => queryClient.invalidateQueries({ queryKey: ['notes'] }))
-          .catch(() => {
-            if (previous) {
-              orderedNotesRef.current = previous
-              setOrderedNotes(previous)
-            }
-            void queryClient.invalidateQueries({ queryKey: ['notes'] })
-          })
-
-        finishDrag()
-      }
-
-      grid.on('dragStart', handleDragStart)
-      grid.on('dragReleaseEnd', handleDragReleaseEnd)
-
-      cleanup = () => {
-        grid.off('dragStart', handleDragStart)
-        grid.off('dragReleaseEnd', handleDragReleaseEnd)
-        itemResizeObserverRef.current?.disconnect()
-        itemResizeObserverRef.current = null
-        grid.destroy(false)
-        if (muuriRef.current === grid) muuriRef.current = null
-      }
-    })
-
-    return () => {
-      disposed = true
-      cleanup?.()
-    }
-  }, [hasGridMetrics, isMobileGrid, queryClient])
-
-  useLayoutEffect(() => {
-    const grid = muuriRef.current
-    const gridElement = gridRef.current
-    if (!grid || !gridElement || !gridMetrics) return
-    if (isDraggingRef.current) return
-
-    syncMuuriItems(grid, gridElement)
-    observeMuuriItems(itemResizeObserverRef.current, gridElement)
-    grid.refreshItems(undefined, true).synchronize().layout()
-  }, [orderedNotes, gridMetrics])
-
-  useEffect(() => {
-    const scrollArea = scrollRef.current
-    const loadMoreElement = loadMoreRef.current
-    if (!scrollArea || !loadMoreElement || !hasMore || isLoadingMore || !onLoadMore) return
-    let requested = false
-
-    const requestLoadMore = () => {
-      if (requested) return
-      requested = true
-      onLoadMore()
-    }
-
-    if (typeof IntersectionObserver === 'undefined') {
-      const handleScroll = () => {
-        const distanceToBottom = scrollArea.scrollHeight - scrollArea.scrollTop - scrollArea.clientHeight
-        if (distanceToBottom < 520) requestLoadMore()
-      }
-
-      handleScroll()
-      scrollArea.addEventListener('scroll', handleScroll, { passive: true })
-      return () => scrollArea.removeEventListener('scroll', handleScroll)
-    }
-
-    const observer = new IntersectionObserver(
-      entries => {
-        if (entries.some(entry => entry.isIntersecting)) requestLoadMore()
-      },
-      {
-        root: scrollArea,
-        rootMargin: '520px 0px',
-        threshold: 0,
-      },
-    )
-
-    observer.observe(loadMoreElement)
-    return () => observer.disconnect()
-  }, [hasMore, isLoadingMore, onLoadMore])
-
-  if (isFirstRender.current) {
-    isFirstRender.current = false
-    notes.forEach(n => knownKeysRef.current.add(n.stableKey ?? n.id))
-  }
-
-  const visibleMetrics = gridMetrics ?? calculateMasonryGridMetrics(0, cols)
+  const visibleMetrics = metrics ?? calculateMasonryGridMetrics(0, cols)
   const gridStyle = {
     '--note-grid-content-width': `${visibleMetrics.contentWidth}px`,
     '--note-grid-item-width': `${visibleMetrics.itemWidth}px`,
     '--note-grid-cols': visibleMetrics.cols,
   } as CSSProperties
-  const itemStyle = hasGridMetrics
-    ? ({ width: `${visibleMetrics.itemWidth}px` } as CSSProperties)
-    : undefined
-  const isMasonryBootstrapping = !isMasonryReady
+  const itemStyle = metrics ? { width: `${metrics.itemWidth}px` } : undefined
 
   return (
     <DragProvider>
-      <div ref={scrollRef} className={styles.scrollArea}>
-        {isMasonryBootstrapping && (
-          <div className={styles.gridBootLoader} role="status" aria-label="Загрузка заметок">
-            <LoaderSpinner size="md" />
-          </div>
-        )}
-        {isUpdating && !isMasonryBootstrapping && (
-          <div className={styles.updateStatus} role="status" aria-live="polite">
-            <LoaderSpinner size="xs" />
-            <span>{updatingLabel}</span>
-          </div>
-        )}
-        <div
-          ref={gridRef}
-          className={[
-            styles.grid,
-            isMobileGrid ? styles.mobileGrid : '',
-            isUpdating ? styles.gridUpdating : '',
-          ].filter(Boolean).join(' ')}
-          style={gridStyle}
-          onClickCapture={handleGridClickCapture}
-          aria-busy={isUpdating ? 'true' : undefined}
-          data-grid-measured={hasGridMetrics ? 'true' : undefined}
-          data-masonry-bootstrapping={isMasonryBootstrapping ? 'true' : undefined}
-          data-masonry-ready={isMasonryReady ? 'true' : undefined}
-          data-mobile-grid={isMobileGrid ? 'true' : undefined}
-          data-mobile-cols={isMobileGrid ? String(visibleMetrics.cols) : undefined}
-        >
-          {showAddCard && (
-            <div className={`${styles.item} ${styles.addItem}`} style={itemStyle} data-static-item="true" data-muuri-item>
-              <div className={styles.itemContent}>
-                <AddNoteCard onClick={onAddNote} />
-              </div>
+      <NoteCardActionsProvider>
+        <div ref={scrollRef} className={styles.scrollArea}>
+          {!isReady && (
+            <div className={styles.gridBootLoader} role="status" aria-label="Загрузка заметок">
+              <LoaderSpinner size="md" />
             </div>
           )}
-
-          {orderedNotes.length === 0 && emptyState ? (
-            <div className={`${styles.item} ${styles.emptyItem}`} style={itemStyle} data-static-item="true" data-muuri-item>
-              <div className={styles.emptyState}>
-                <h2>{emptyState.title}</h2>
-                <p>{emptyState.description}</p>
-              </div>
+          {isUpdating && isReady && (
+            <div className={styles.updateStatus} role="status" aria-live="polite">
+              <LoaderSpinner size="xs" />
+              <span>{updatingLabel}</span>
             </div>
-          ) : null}
+          )}
+          <div
+            ref={gridRef}
+            className={[styles.grid, isMobileGrid ? styles.mobileGrid : '', isUpdating ? styles.gridUpdating : ''].filter(Boolean).join(' ')}
+            style={gridStyle}
+            onClickCapture={handleClickCapture}
+            aria-busy={isUpdating ? 'true' : undefined}
+            data-grid-measured={metrics ? 'true' : undefined}
+            data-masonry-bootstrapping={isReady ? undefined : 'true'}
+            data-masonry-ready={isReady ? 'true' : undefined}
+            data-mobile-grid={isMobileGrid ? 'true' : undefined}
+            data-mobile-cols={isMobileGrid ? String(visibleMetrics.cols) : undefined}
+          >
+            {showAddCard && (
+              <div className={`${styles.item} ${styles.addItem}`} style={itemStyle} data-static-item="true">
+                <div className={styles.itemContent}>
+                  <AddNoteCard onClick={onAddNote} />
+                </div>
+              </div>
+            )}
 
-          {orderedNotes.map(note => {
-            const key = note.stableKey ?? note.id
-            const isNew = !knownKeysRef.current.has(key)
-            knownKeysRef.current.add(key)
+            {orderedNotes.length === 0 && emptyState ? (
+              <div className={`${styles.item} ${styles.emptyItem}`} style={itemStyle} data-static-item="true">
+                <div className={styles.emptyState}>
+                  <h2>{emptyState.title}</h2>
+                  <p>{emptyState.description}</p>
+                </div>
+              </div>
+            ) : null}
 
-            return (
+            {orderedNotes.map(note => (
               <div
-                key={key}
+                key={noteKey(note)}
                 className={styles.item}
                 data-note-id={note.id}
                 data-note-slug={note.slug}
                 data-drag-disabled={note.isLocal || note.isLoading || isMobileGrid ? 'true' : undefined}
-                data-muuri-item
                 style={itemStyle}
               >
                 <div className={styles.itemContent}>
-                  <NoteCard note={note} isNew={isNew} onTagClick={onTagClick} />
+                  <NoteCard note={note} onTagClick={stableTagClick} />
                 </div>
               </div>
-            )
-          })}
+            ))}
+          </div>
+          {hasMore && <div ref={loadMoreRef} className={styles.loadMoreSentinel} aria-hidden="true" />}
         </div>
-        {hasMore && <div ref={loadMoreRef} className={styles.loadMoreSentinel} aria-hidden="true" />}
-      </div>
+      </NoteCardActionsProvider>
     </DragProvider>
   )
-}
-
-function getNoteIdsFromGrid(grid: MuuriGrid): string[] {
-  return grid
-    .getItems()
-    .map(item => item.getElement()?.dataset.noteId)
-    .filter((id): id is string => Boolean(id))
-}
-
-function sameNoteOrder(a: readonly Note[], b: readonly Note[]): boolean {
-  return a.length === b.length && a.every((note, index) => note.id === b[index]?.id)
-}
-
-function syncMuuriItems(grid: MuuriGrid, gridElement: HTMLElement) {
-  const muuriItems = grid.getItems()
-  const knownElements = new Set(muuriItems.map(item => item.getElement()).filter((element): element is HTMLElement => Boolean(element)))
-  const domItems = Array.from(gridElement.children).filter((element): element is HTMLElement => (
-    element instanceof HTMLElement && element.classList.contains(styles.item)
-  ))
-  const domItemSet = new Set(domItems)
-  const removedItems = muuriItems.filter(item => {
-    const element = item.getElement()
-    return !element || !domItemSet.has(element)
-  })
-  const addedElements = domItems.filter(element => !knownElements.has(element))
-
-  if (removedItems.length > 0) {
-    grid.remove(removedItems as MuuriItem[], { removeElements: false, layout: false })
-  }
-
-  if (addedElements.length > 0) {
-    grid.add(addedElements, { layout: false })
-  }
-
-  const orderedItems = domItems
-    .map(element => grid.getItem(element))
-    .filter((item): item is MuuriItem => Boolean(item))
-
-  if (orderedItems.length === grid.getItems().length) {
-    grid.sort(orderedItems, { layout: false })
-  }
-}
-
-function observeMuuriItems(observer: ResizeObserver | null, gridElement: HTMLElement) {
-  if (!observer) return
-  observer.disconnect()
-  Array.from(gridElement.children).forEach(element => {
-    if (element instanceof HTMLElement && element.classList.contains(styles.item)) {
-      observer.observe(element)
-    }
-  })
 }

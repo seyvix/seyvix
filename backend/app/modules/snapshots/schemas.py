@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-from typing import Literal
-
 from pydantic import BaseModel
 
-SnapshotReprocessJobType = Literal[
-    "markdown", "thumbnail", "thumbnail_text", "screenshot", "webpage_html", "pdf"
-]
+from app.modules.snapshots.planning import SnapshotJobType
 
 
 class SnapshotFormatOption(BaseModel):
@@ -21,7 +17,6 @@ class SnapshotFormatSettings(BaseModel):
     webpage_html: bool
     pdf: bool
     markdown: bool
-    archive_org: bool
 
 
 class SnapshotFormatOverrides(BaseModel):
@@ -29,7 +24,6 @@ class SnapshotFormatOverrides(BaseModel):
     webpage_html: bool | None = None
     pdf: bool | None = None
     markdown: bool | None = None
-    archive_org: bool | None = None
 
 
 class SnapshotSettingsResponse(BaseModel):
@@ -43,7 +37,6 @@ class UpdateSnapshotSettingsRequest(BaseModel):
     webpage_html: bool | None = None
     pdf: bool | None = None
     markdown: bool | None = None
-    archive_org: bool | None = None
 
 
 class SnapshotJobResponse(BaseModel):
@@ -51,6 +44,7 @@ class SnapshotJobResponse(BaseModel):
     content_object_id: str
     source_asset_id: str | None
     job_type: str
+    # pending | processing | done | failed | cancelled
     status: str
     attempts: int
     error_message: str | None
@@ -79,7 +73,7 @@ class SnapshotArtifactListResponse(BaseModel):
 class ReprocessSnapshotsRequest(BaseModel):
     content_object_id: str | None = None
     source_asset_id: str | None = None
-    job_types: list[SnapshotReprocessJobType] | None = None
+    job_types: list[SnapshotJobType] | None = None
     force: bool = True
 
 

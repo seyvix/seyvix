@@ -7,6 +7,9 @@ import {
   suggestCategoryProfile,
   updateCategoryProfile,
 } from './folders.ts'
+import { setAccessToken } from '../lib/apiClient.ts'
+
+setAccessToken('test-token')
 
 function jsonResponse(body: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(body), {
@@ -40,11 +43,11 @@ test('category profile operations report backend rejections', async () => {
       positiveExamples: ['Models'],
       negativeExamples: [],
     }),
-    /Failed to update category profile/,
+    /Profile editing is disabled/,
   )
   await assert.rejects(
     () => suggestCategoryProfile('cat-1', 'Добавить LLM и инференс.'),
-    /Failed to suggest category profile/,
+    /Profile editing is disabled/,
   )
 })
 

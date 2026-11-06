@@ -1,0 +1,95 @@
+.fullscreenBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+  background: rgba(0, 0, 0, 0.82);
+  backdrop-filter: blur(8px);
+}
+
+.fullscreenShell {
+  width: min(96vw, 1440px);
+  height: min(92vh, 980px);
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: var(--radius-md);
+  background: #070707;
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.72);
+}
+
+.fullscreenChrome {
+  height: 46px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 10px 0 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--color-bg);
+}
+
+.fullscreenChrome strong {
+  flex: 1;
+  min-width: 0;
+  color: var(--color-text-primary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fullscreenChrome button {
+  all: unset;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background var(--duration-fast), color var(--duration-fast);
+}
+
+.fullscreenChrome button:hover {
+  color: var(--color-text-primary);
+  background: var(--color-surface-hover);
+}
+
+.fullscreenBody {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  overflow: hidden;
+  background: #050505;
+}
+
+@media (max-width: 760px) {
+  .fullscreenBackdrop {
+    padding: var(--app-safe-area-top) var(--app-safe-area-right) var(--app-safe-area-bottom) var(--app-safe-area-left);
+  }
+
+  .fullscreenShell {
+    width: 100%;
+    height: calc(var(--app-viewport-height) - var(--app-safe-area-top) - var(--app-safe-area-bottom));
+    border: none;
+    border-radius: 0;
+  }
+
+  .fullscreenChrome {
+    height: 50px;
+    padding-left: 12px;
+  }
+}

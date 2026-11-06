@@ -1,8 +1,9 @@
 import { apiFetch } from '../lib/apiClient.ts'
+import { readJson } from '../lib/apiError.ts'
 
 const BASE = '/api/v1/snapshots'
 
-export type SnapshotFormatKey = 'screenshot' | 'webpage_html' | 'pdf' | 'markdown' | 'archive_org'
+export type SnapshotFormatKey = 'screenshot' | 'webpage_html' | 'pdf' | 'markdown'
 
 export type SnapshotFormatSettings = Record<SnapshotFormatKey, boolean>
 export type SnapshotFormatOverrides = Record<SnapshotFormatKey, boolean | null>
@@ -21,9 +22,7 @@ export interface SnapshotSettingsResponse {
 }
 
 export async function fetchSnapshotSettings(): Promise<SnapshotSettingsResponse> {
-  const res = await apiFetch(`${BASE}/settings`)
-  if (!res.ok) throw new Error('Failed to load snapshot settings')
-  return res.json()
+  return readJson(await apiFetch(`${BASE}/settings`), 'Не удалось загрузить настройки снапшотов')
 }
 
 export async function updateSnapshotSettings(
@@ -34,6 +33,5 @@ export async function updateSnapshotSettings(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(overrides),
   })
-  if (!res.ok) throw new Error('Failed to update snapshot settings')
-  return res.json()
+  return readJson(res, 'Не удалось сохранить настройки снапшотов')
 }

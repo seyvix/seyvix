@@ -1,4 +1,4 @@
-import { createContext, useContext, useLayoutEffect, useState } from 'react'
+import { createContext, useCallback, useContext, useMemo, useState } from 'react'
 
 interface SettingsContextValue {
   cols: number
@@ -9,50 +9,51 @@ interface SettingsContextValue {
 
 const SettingsContext = createContext<SettingsContextValue | null>(null)
 
-const KEY = 'seyvix:masonry-cols'
+const COLS_KEY = 'seyvix:masonry-cols'
 const VIDEO_PREVIEW_AUTOPLAY_KEY = 'seyvix:video-preview-autoplay'
-export function SettingsProvider({ children }: { children: React.ReactNode }) {
-  const [cols, setCols] = useState<number>(5)
-  const [videoPreviewAutoplay, setVideoPreviewAutoplay] = useState(true)
+const DEFAULT_COLS = 5
 
-  useLayoutEffect(() => {
-    try {
-      const stored = localStorage.getItem(KEY)
-      const n = stored ? Number(stored) : 5
-      if (n >= 1 && n <= 7) setCols(n)
-      const storedVideoPreviewAutoplay = localStorage.getItem(VIDEO_PREVIEW_AUTOPLAY_KEY)
-      setVideoPreviewAutoplay(
-        storedVideoPreviewAutoplay === null ? true : storedVideoPreviewAutoplay === '1',
-      )
-    } catch {
-      // ignore unavailable storage
-    }
+function readStored(key: string): string | null {
+  try {
+    return localStorage.getItem(key)
+  } catch {
+    return null // storage unavailable (privacy mode, sandboxed webview)
+  }
+}
+
+function writeStored(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value)
+  } catch {
+    // quota/privacy mode: the setting just won't persist
+  }
+}
+
+function readCols(): number {
+  const n = Number(readStored(COLS_KEY) ?? DEFAULT_COLS)
+  return n >= 1 && n <= 7 ? n : DEFAULT_COLS
+}
+
+export function SettingsProvider({ children }: { children: React.ReactNode }) {
+  const [cols, setColsState] = useState(readCols)
+  const [videoPreviewAutoplay, setAutoplayState] = useState(() => readStored(VIDEO_PREVIEW_AUTOPLAY_KEY) !== '0')
+
+  const setCols = useCallback((n: number) => {
+    setColsState(n)
+    writeStored(COLS_KEY, String(n))
   }, [])
 
-  function handleSetCols(n: number) {
-    setCols(n)
-    try { localStorage.setItem(KEY, String(n)) } catch { /* ignore */ }
-  }
+  const setVideoPreviewAutoplay = useCallback((enabled: boolean) => {
+    setAutoplayState(enabled)
+    writeStored(VIDEO_PREVIEW_AUTOPLAY_KEY, enabled ? '1' : '0')
+  }, [])
 
-  function handleSetVideoPreviewAutoplay(enabled: boolean) {
-    setVideoPreviewAutoplay(enabled)
-    try {
-      localStorage.setItem(VIDEO_PREVIEW_AUTOPLAY_KEY, enabled ? '1' : '0')
-    } catch { /* ignore */ }
-  }
-
-  return (
-    <SettingsContext.Provider
-      value={{
-        cols,
-        setCols: handleSetCols,
-        videoPreviewAutoplay,
-        setVideoPreviewAutoplay: handleSetVideoPreviewAutoplay,
-      }}
-    >
-      {children}
-    </SettingsContext.Provider>
+  const value = useMemo(
+    () => ({ cols, setCols, videoPreviewAutoplay, setVideoPreviewAutoplay }),
+    [cols, setCols, videoPreviewAutoplay, setVideoPreviewAutoplay],
   )
+
+  return <SettingsContext.Provider value={value}>{children}</SettingsContext.Provider>
 }
 
 export function useSettings() {

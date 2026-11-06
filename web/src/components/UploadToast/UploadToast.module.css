@@ -9,54 +9,36 @@
   pointer-events: none;
 }
 
-.job {
-  background: #1a1a1a;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  padding: 10px 12px;
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   min-width: 240px;
   max-width: 300px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 213, 116, 0.32);
+  border-radius: var(--radius-md);
+  background: rgba(40, 28, 8, 0.92);
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
   pointer-events: all;
+  animation: toastIn 0.2s var(--ease-default, ease-out) both;
 }
 
-.jobHeader {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 8px;
+@keyframes toastIn {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
-.iconDone {
-  color: #22c55e;
-  flex-shrink: 0;
-}
-
-.iconSpinner {
-  flex-shrink: 0;
-}
-
-.jobTitle {
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-text-primary);
-  flex: 1;
-}
-
-.jobCount {
-  font-size: 10px;
-  color: var(--color-text-secondary);
-}
-
-.notice {
-  border-color: rgba(255, 213, 116, 0.32);
-  background: rgba(40, 28, 8, 0.92);
-}
-
-.notice .jobHeader {
-  align-items: flex-start;
-  margin-bottom: 0;
-  gap: 8px;
+@media (prefers-reduced-motion: reduce) {
+  .notice {
+    animation: none;
+  }
 }
 
 .iconWarn {

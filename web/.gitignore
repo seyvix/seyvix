@@ -1,9 +1,5 @@
 node_modules
-dist
+build
+.react-router
 .DS_Store
 *.local
-.superpowers/
-
-*storybook.log
-
-storybook-static

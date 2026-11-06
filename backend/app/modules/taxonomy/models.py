@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from app.core.database import Base
 from sqlalchemy import (
     JSON,
     Boolean,
@@ -19,6 +18,12 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.core.database import Base
+from app.platform.jobs import JobColumnsMixin, job_queue_indexes
+
+INBOX_PATH = "inbox"
+CLASSIFY_CONTENT_JOB = "classify_content"
 
 
 def utcnow() -> datetime:
@@ -182,61 +187,42 @@ class TaxonomyContentAssignment(Base):
     category: Mapped[TaxonomyCategory] = relationship()
 
 
-class TaxonomyClassificationJob(Base):
+class TaxonomyClassificationJob(JobColumnsMixin, Base):
+    """At most one row per (content object, job type); re-runs reset the row.
+
+    `rerun_requested` is set when new input arrives while the job is processing.
+    """
+
     __tablename__ = "taxonomy_classification_jobs"
     __table_args__ = (
-        Index(
-            "ix_taxonomy_classification_jobs_status_run_after_priority",
-            "status",
-            "run_after",
-            "priority",
-        ),
-        Index(
-            "ix_taxonomy_classification_jobs_owner_content",
-            "owner_user_id",
+        *job_queue_indexes("taxonomy_classification_jobs"),
+        UniqueConstraint(
             "content_object_id",
+            "job_type",
+            name="uq_taxonomy_classification_jobs_content_object_id_job_type",
         ),
-        UniqueConstraint("source_event_id", name="uq_taxonomy_classification_jobs_source_event_id"),
+        Index("ix_taxonomy_classification_jobs_owner_status", "owner_user_id", "status"),
         CheckConstraint(
-            "status in ('pending', 'processing', 'succeeded', 'failed', 'cancelled', 'stale')",
-            name="ck_taxonomy_classification_jobs_status",
+            "status in ('pending', 'processing', 'succeeded', 'failed', 'cancelled')",
+            name="status",
         ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    owner_user_id: Mapped[str] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), index=True
-    )
+    owner_user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     content_object_id: Mapped[str] = mapped_column(
         ForeignKey("content_objects.id", ondelete="CASCADE"),
-        index=True,
     )
-    job_type: Mapped[str] = mapped_column(String(64))
-    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
-    priority: Mapped[int] = mapped_column(Integer(), default=100)
-    attempts: Mapped[int] = mapped_column(Integer(), default=0)
-    max_attempts: Mapped[int] = mapped_column(Integer(), default=3)
-    run_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    locked_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    job_type: Mapped[str] = mapped_column(String(64), default=CLASSIFY_CONTENT_JOB)
+    rerun_requested: Mapped[bool] = mapped_column(Boolean(), default=False)
     source_event_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     correlation_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    content_updated_at_snapshot: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True),
-        nullable=True,
-    )
     assignment_id: Mapped[str | None] = mapped_column(
         ForeignKey("taxonomy_content_assignments.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # accepted | proposed | no_assignment | kept_user_choice
     result_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    last_error: Mapped[str | None] = mapped_column(Text(), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=utcnow,
-        onupdate=utcnow,
-    )
 
 
 class ClassificationFeedback(Base):

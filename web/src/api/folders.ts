@@ -1,4 +1,6 @@
 import { apiFetch } from '../lib/apiClient.ts'
+import { ensureOk } from '../lib/apiError.ts'
+import { slugify } from '../utils/slugify.ts'
 import type {
   CategoryProfile,
   CategoryProfileDraft,
@@ -82,52 +84,6 @@ function encodeFolderPath(path: string): string {
   return path.split('/').map(encodeURIComponent).join('/')
 }
 
-const cyrillicTranslit: Record<string, string> = {
-  а: 'a',
-  б: 'b',
-  в: 'v',
-  г: 'g',
-  д: 'd',
-  е: 'e',
-  ё: 'e',
-  ж: 'zh',
-  з: 'z',
-  и: 'i',
-  й: 'j',
-  к: 'k',
-  л: 'l',
-  м: 'm',
-  н: 'n',
-  о: 'o',
-  п: 'p',
-  р: 'r',
-  с: 's',
-  т: 't',
-  у: 'u',
-  ф: 'f',
-  х: 'h',
-  ц: 'c',
-  ч: 'ch',
-  ш: 'sh',
-  щ: 'sch',
-  ъ: '',
-  ы: 'y',
-  ь: '',
-  э: 'e',
-  ю: 'yu',
-  я: 'ya',
-}
-
-function slugify(value: string): string {
-  const transliterated = value
-    .trim()
-    .toLowerCase()
-    .split('')
-    .map(char => cyrillicTranslit[char] ?? char)
-    .join('')
-  return transliterated.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'category'
-}
-
 export function mapBackendFolder(item: BackendFolderItem, parentId: string | null = null): Folder {
   return {
     id: item.id,
@@ -195,7 +151,7 @@ export function mapBackendFolderDetail(data: BackendFolderDetail): FolderDetail 
 
 export async function fetchFolders(): Promise<Folder[]> {
   const res = await apiFetch(BASE)
-  if (!res.ok) throw new Error('Failed to fetch folders')
+  await ensureOk(res, 'Failed to fetch folders')
   const data = await res.json()
   // Backend returns { items: FolderTreeItem[] }
   const items: BackendFolderItem[] = Array.isArray(data) ? data : (data.items ?? [])
@@ -204,20 +160,20 @@ export async function fetchFolders(): Promise<Folder[]> {
 
 export async function fetchFolder(path: string): Promise<FolderDetail> {
   const res = await apiFetch(`${BASE}/${encodeFolderPath(path)}`)
-  if (!res.ok) throw new Error('Failed to fetch folder')
+  await ensureOk(res, 'Failed to fetch folder')
   return mapBackendFolderDetail(await res.json())
 }
 
 export async function reclassifyInbox(): Promise<{ enqueuedCount: number }> {
   const res = await apiFetch('/api/v1/taxonomy/content/inbox/reclassify', { method: 'POST', headers: { 'Content-Type': 'application/json' } })
-  if (!res.ok) throw new Error('Failed to reclassify inbox')
+  await ensureOk(res, 'Failed to reclassify inbox')
   const data = await res.json()
   return { enqueuedCount: data.enqueued_count ?? 0 }
 }
 
 export async function fetchTaxonomySettings(): Promise<TaxonomySettings> {
   const res = await apiFetch('/api/v1/taxonomy/settings')
-  if (!res.ok) throw new Error('Failed to fetch taxonomy settings')
+  await ensureOk(res, 'Failed to fetch taxonomy settings')
   return mapBackendTaxonomySettings(await res.json())
 }
 
@@ -237,7 +193,7 @@ export async function updateTaxonomySettings(payload: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-  if (!res.ok) throw new Error('Failed to update taxonomy settings')
+  await ensureOk(res, 'Failed to update taxonomy settings')
   return mapBackendTaxonomySettings(await res.json())
 }
 
@@ -252,7 +208,7 @@ export async function fetchCategoryProfile(categoryId: string): Promise<Category
       negativeExamples: [],
     }
   }
-  if (!res.ok) throw new Error('Failed to fetch category profile')
+  await ensureOk(res, 'Failed to fetch category profile')
   return mapBackendCategoryProfile(await res.json())
 }
 
@@ -270,7 +226,7 @@ export async function updateCategoryProfile(
       negative_examples: profile.negativeExamples,
     }),
   })
-  if (!res.ok) throw new Error('Failed to update category profile')
+  await ensureOk(res, 'Failed to update category profile')
   return mapBackendCategoryProfile(await res.json())
 }
 
@@ -283,7 +239,7 @@ export async function suggestCategoryProfile(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_guidance: userGuidance }),
   })
-  if (!res.ok) throw new Error('Failed to suggest category profile')
+  await ensureOk(res, 'Failed to suggest category profile')
   return mapBackendCategoryProfileDraft(await res.json())
 }
 
@@ -304,7 +260,7 @@ export async function createCategory(payload: {
       sort_order: 100,
     }),
   })
-  if (!res.ok) throw new Error('Failed to create category')
+  await ensureOk(res, 'Failed to create category')
   return mapBackendFolder(await res.json(), payload.parentId ?? null)
 }
 
@@ -320,13 +276,13 @@ export async function updateCategory(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-  if (!res.ok) throw new Error('Failed to update category')
+  await ensureOk(res, 'Failed to update category')
   return mapBackendFolder(await res.json())
 }
 
 export async function archiveCategory(categoryId: string): Promise<void> {
   const res = await apiFetch(`/api/v1/taxonomy/categories/${categoryId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } })
-  if (!res.ok) throw new Error('Failed to archive category')
+  await ensureOk(res, 'Failed to archive category')
 }
 
 export async function deleteCategory(
@@ -350,7 +306,7 @@ export async function deleteCategory(
       confirm_delete_notes_text: payload.confirmDeleteNotesText ?? null,
     }),
   })
-  if (!res.ok) throw new Error('Failed to delete category')
+  await ensureOk(res, 'Failed to delete category')
   const data = await res.json()
   return {
     archivedCategoriesCount: data.archived_categories_count ?? 0,

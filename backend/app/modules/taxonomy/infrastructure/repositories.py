@@ -1,10 +1,15 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from typing import cast
 
+from sqlalchemy import func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.modules.content.models import ContentObject
+from app.modules.tags.infrastructure.repositories import upsert_content_job
 from app.modules.taxonomy.models import (
+    CLASSIFY_CONTENT_JOB,
+    INBOX_PATH,
     ClassificationFeedback,
     TaxonomyCategory,
     TaxonomyCategoryProfile,
@@ -12,9 +17,6 @@ from app.modules.taxonomy.models import (
     TaxonomyContentAssignment,
     TaxonomyUserSettings,
 )
-from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 
 class TaxonomyRepository:
@@ -35,9 +37,6 @@ class TaxonomyRepository:
 
     def add_feedback(self, feedback: ClassificationFeedback) -> None:
         self.session.add(feedback)
-
-    def add_classification_job(self, job: TaxonomyClassificationJob) -> None:
-        self.session.add(job)
 
     async def get_category(
         self,
@@ -85,23 +84,14 @@ class TaxonomyRepository:
         )
         return list(await self.session.scalars(query))
 
-    async def list_categories_with_profiles(
-        self,
-        *,
-        owner_user_id: str,
-        include_archived: bool,
+    async def list_categories_by_paths(
+        self, *, owner_user_id: str, paths: list[str]
     ) -> list[TaxonomyCategory]:
-        query = (
-            select(TaxonomyCategory)
-            .options(selectinload(TaxonomyCategory.profile))
-            .where(TaxonomyCategory.owner_user_id == owner_user_id)
-        )
-        if not include_archived:
-            query = query.where(TaxonomyCategory.is_archived.is_(False))
-        query = query.order_by(
-            TaxonomyCategory.depth.desc(),
-            TaxonomyCategory.sort_order.asc(),
-            TaxonomyCategory.name.asc(),
+        if not paths:
+            return []
+        query = select(TaxonomyCategory).where(
+            TaxonomyCategory.owner_user_id == owner_user_id,
+            TaxonomyCategory.path.in_(paths),
         )
         return list(await self.session.scalars(query))
 
@@ -204,17 +194,12 @@ class TaxonomyRepository:
         )
         return cast(TaxonomyUserSettings | None, await self.session.scalar(query))
 
-    async def get_content_object(
-        self,
-        *,
-        owner_user_id: str,
-        content_object_id: str,
-    ) -> ContentObject | None:
-        query = select(ContentObject).where(
+    async def content_exists(self, *, owner_user_id: str, content_object_id: str) -> bool:
+        query = select(ContentObject.id).where(
             ContentObject.owner_user_id == owner_user_id,
             ContentObject.id == content_object_id,
         )
-        return cast(ContentObject | None, await self.session.scalar(query))
+        return await self.session.scalar(query) is not None
 
     async def list_assignments(
         self,
@@ -290,74 +275,81 @@ class TaxonomyRepository:
         )
         return list(await self.session.scalars(query))
 
-    async def enqueue_classification_job(
+    async def list_current_assignments_in_paths(
+        self, *, owner_user_id: str, paths: list[str]
+    ) -> list[TaxonomyContentAssignment]:
+        if not paths:
+            return []
+        query = select(TaxonomyContentAssignment).where(
+            TaxonomyContentAssignment.owner_user_id == owner_user_id,
+            TaxonomyContentAssignment.is_current.is_(True),
+            TaxonomyContentAssignment.category_path_snapshot.in_(paths),
+        )
+        return list(await self.session.scalars(query))
+
+    async def list_children(self, *, owner_user_id: str, parent_id: str) -> list[TaxonomyCategory]:
+        query = (
+            select(TaxonomyCategory)
+            .where(
+                TaxonomyCategory.owner_user_id == owner_user_id,
+                TaxonomyCategory.parent_id == parent_id,
+                TaxonomyCategory.is_archived.is_(False),
+            )
+            .order_by(TaxonomyCategory.sort_order.asc(), TaxonomyCategory.name.asc())
+        )
+        return list(await self.session.scalars(query))
+
+    async def list_subtree(
+        self, *, owner_user_id: str, path: str, include_archived: bool
+    ) -> list[TaxonomyCategory]:
+        escaped = path.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        query = select(TaxonomyCategory).where(
+            TaxonomyCategory.owner_user_id == owner_user_id,
+            (TaxonomyCategory.path == path)
+            | TaxonomyCategory.path.like(f"{escaped}/%", escape="\\"),
+        )
+        if not include_archived:
+            query = query.where(TaxonomyCategory.is_archived.is_(False))
+        return list(await self.session.scalars(query))
+
+    async def inbox_content_ids(self, *, owner_user_id: str) -> list[str]:
+        query = select(TaxonomyContentAssignment.content_object_id).where(
+            TaxonomyContentAssignment.owner_user_id == owner_user_id,
+            TaxonomyContentAssignment.is_current.is_(True),
+            TaxonomyContentAssignment.category_path_snapshot == INBOX_PATH,
+        )
+        return list(await self.session.scalars(query))
+
+    # --- classification jobs -------------------------------------------------------------
+    async def enqueue_job(
         self,
         *,
         owner_user_id: str,
         content_object_id: str,
-        job_type: str,
         priority: int,
-        source_event_id: str | None,
-        correlation_id: str | None,
-        content_updated_at_snapshot: datetime | None = None,
-    ) -> TaxonomyClassificationJob:
-        if source_event_id is not None:
-            existing = await self.session.scalar(
-                select(TaxonomyClassificationJob).where(
-                    TaxonomyClassificationJob.source_event_id == source_event_id
-                )
-            )
-            if existing is not None:
-                return existing
-        if content_updated_at_snapshot is None:
-            content_updated_at_snapshot = await self.session.scalar(
-                select(ContentObject.updated_at).where(
-                    ContentObject.owner_user_id == owner_user_id,
-                    ContentObject.id == content_object_id,
-                )
-            )
-        existing = cast(
-            TaxonomyClassificationJob | None,
-            await self.session.scalar(
-                select(TaxonomyClassificationJob).where(
-                    TaxonomyClassificationJob.owner_user_id == owner_user_id,
-                    TaxonomyClassificationJob.content_object_id == content_object_id,
-                    TaxonomyClassificationJob.job_type == job_type,
-                    TaxonomyClassificationJob.status.in_(("pending", "processing")),
-                )
-            ),
-        )
-        if existing is not None:
-            if priority > existing.priority:
-                existing.priority = priority
-            if source_event_id is not None:
-                existing.source_event_id = source_event_id
-            if correlation_id is not None:
-                existing.correlation_id = correlation_id
-            if content_updated_at_snapshot is not None:
-                existing.content_updated_at_snapshot = content_updated_at_snapshot
-            existing.last_error = None
-            existing.run_after = datetime.now(UTC)
-            if existing.status == "processing":
-                existing.status = "pending"
-                existing.locked_at = None
-                existing.locked_by = None
-                existing.attempts = 0
-            await self.session.flush()
-            return existing
-        job = TaxonomyClassificationJob(
+        max_attempts: int,
+        source_event_id: str | None = None,
+        correlation_id: str | None = None,
+    ) -> str:
+        return await upsert_content_job(
+            self.session,
+            TaxonomyClassificationJob,
             owner_user_id=owner_user_id,
             content_object_id=content_object_id,
-            job_type=job_type,
-            status="pending",
+            job_type=CLASSIFY_CONTENT_JOB,
             priority=priority,
+            max_attempts=max_attempts,
             source_event_id=source_event_id,
             correlation_id=correlation_id,
-            content_updated_at_snapshot=content_updated_at_snapshot,
         )
-        self.session.add(job)
-        await self.session.flush()
-        return job
+
+    async def get_job(
+        self, job_id: str, *, for_update: bool = False
+    ) -> TaxonomyClassificationJob | None:
+        query = select(TaxonomyClassificationJob).where(TaxonomyClassificationJob.id == job_id)
+        if for_update:
+            query = query.with_for_update()
+        return cast(TaxonomyClassificationJob | None, await self.session.scalar(query))
 
     async def list_classification_jobs_for_content(
         self,
@@ -375,42 +367,23 @@ class TaxonomyRepository:
         )
         return list(await self.session.scalars(query))
 
-    async def claim_pending_classification_jobs(
-        self,
-        *,
-        limit: int,
-        worker_id: str,
-        lock_timeout_seconds: int,
-    ) -> list[TaxonomyClassificationJob]:
-        now = datetime.now(UTC)
-        stale_before = now - timedelta(seconds=lock_timeout_seconds)
-        query = (
-            select(TaxonomyClassificationJob)
-            .where(
-                (
-                    (TaxonomyClassificationJob.status == "pending")
-                    & (TaxonomyClassificationJob.run_after <= now)
-                )
-                | (
-                    (TaxonomyClassificationJob.status == "processing")
-                    & (TaxonomyClassificationJob.locked_at < stale_before)
-                )
-            )
-            .order_by(
-                TaxonomyClassificationJob.priority.desc(),
-                TaxonomyClassificationJob.created_at.asc(),
-            )
-            .limit(limit)
-            .with_for_update(skip_locked=True)
+    async def count_jobs_by_status(self, *, owner_user_id: str) -> list[tuple[str, int]]:
+        rows = await self.session.execute(
+            select(TaxonomyClassificationJob.status, func.count(TaxonomyClassificationJob.id))
+            .where(TaxonomyClassificationJob.owner_user_id == owner_user_id)
+            .group_by(TaxonomyClassificationJob.status)
         )
-        jobs = list(await self.session.scalars(query))
-        for job in jobs:
-            job.status = "processing"
-            job.attempts += 1
-            job.locked_at = now
-            job.locked_by = worker_id
-        await self.session.flush()
-        return jobs
+        return [(str(status), int(count)) for status, count in rows.all()]
+
+    async def count_pending_proposals(self, *, owner_user_id: str) -> int:
+        count = await self.session.scalar(
+            select(func.count(TaxonomyContentAssignment.id)).where(
+                TaxonomyContentAssignment.owner_user_id == owner_user_id,
+                TaxonomyContentAssignment.status == "proposed",
+                TaxonomyContentAssignment.is_current.is_(True),
+            )
+        )
+        return int(count or 0)
 
     async def override_current_assignments(
         self,

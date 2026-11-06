@@ -1,21 +1,24 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Final
 
 import jwt
+from fastapi import APIRouter, Cookie, Depends, Query, Request, Security, status
+from fastapi.responses import Response
+from fastapi.security import HTTPAuthorizationCredentials
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.api.dependencies import get_db_session
 from app.api.errors import AppError
 from app.api.schemas import ErrorResponse
 from app.core.config import get_settings
-from app.core.logging import get_logger
-from app.modules.auth.presentation.rest.router import (
-    bearer_auth_scheme,
-    get_auth_context,
-    get_auth_service,
-)
+from app.modules.auth.dependencies import bearer_auth_scheme, get_auth_context, get_auth_service
 from app.modules.auth.service import AuthContext, AuthService, InvalidAccessTokenError
+from app.modules.content.presentation.rest.files import (
+    IMMUTABLE_FILE_CACHE,
+    storage_file_response,
+)
 from app.modules.snapshots.schemas import (
     ReprocessSnapshotsRequest,
     ReprocessSnapshotsResponse,
@@ -24,25 +27,30 @@ from app.modules.snapshots.schemas import (
     SnapshotSettingsResponse,
     UpdateSnapshotSettingsRequest,
 )
-from app.modules.snapshots.service import SnapshotArtifactNotFoundError, SnapshotService
-from fastapi import APIRouter, Cookie, Depends, Query, Request, Security, status
-from fastapi.responses import FileResponse, Response
-from fastapi.security import HTTPAuthorizationCredentials
-from sqlalchemy.ext.asyncio import AsyncSession
+from app.modules.snapshots.service import SnapshotFile, SnapshotNotFoundError, SnapshotService
+from app.platform.storage.service import StorageBackend
 
 router = APIRouter(prefix="/snapshots", tags=["snapshots"])
-SNAPSHOT_ACCESS_COOKIE = "snapshot_access"
-SNAPSHOT_ACCESS_TTL_SECONDS = 15 * 60
-logger = get_logger(__name__)
+SNAPSHOT_ACCESS_COOKIE: Final = "snapshot_access"
+SNAPSHOT_ACCESS_TTL_SECONDS: Final = 15 * 60
+# Archived pages are untrusted third-party HTML served from our origin: no scripts, no
+# plugins, no outbound loads — only the archived resources themselves.
+ARCHIVE_CSP: Final = (
+    "default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+    "font-src 'self' data:; media-src 'self'; frame-ancestors 'self'; base-uri 'none'; "
+    "form-action 'none'"
+)
 
 
 def get_snapshot_service(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> SnapshotService:
-    storage_root = getattr(request.app.state, "content_storage_root", Path("data/content"))
-    storage_backend = getattr(request.app.state, "storage_backend", None)
-    return SnapshotService(session, Path(storage_root), storage_backend=storage_backend)
+    return SnapshotService(session, request.app.state.storage)
+
+
+def _not_found(code: str = "snapshot_artifact_not_found") -> AppError:
+    return AppError(status_code=404, code=code, message="Snapshot artifact not found.")
 
 
 def _build_snapshot_access_token(*, user_id: str, artifact_id: str) -> str:
@@ -60,23 +68,21 @@ def _build_snapshot_access_token(*, user_id: str, artifact_id: str) -> str:
 
 def _decode_snapshot_access_token(*, token: str, artifact_id: str) -> str:
     settings = get_settings()
-    payload = jwt.decode(
-        token,
-        settings.auth_jwt_secret,
-        algorithms=[settings.auth_jwt_algorithm],
-    )
+    payload = jwt.decode(token, settings.auth_jwt_secret, algorithms=[settings.auth_jwt_algorithm])
     if payload.get("type") != "snapshot_access" or payload.get("artifact_id") != artifact_id:
         raise jwt.InvalidTokenError("invalid snapshot access token")
     return str(payload["sub"])
 
 
-async def _resolve_snapshot_owner_user_id(
+async def _resolve_owner(
     *,
     artifact_id: str,
     auth_service: AuthService,
     authorization: HTTPAuthorizationCredentials | None,
     snapshot_access: str | None,
 ) -> tuple[str, bool]:
+    """Bearer token (API clients) or the scoped cookie set by a previous bearer request
+    (lets an <iframe>/<img> load the artifact and its archived resources)."""
     if authorization and authorization.credentials:
         try:
             context = await auth_service.get_auth_context(authorization.credentials.strip())
@@ -87,23 +93,16 @@ async def _resolve_snapshot_owner_user_id(
                 message="Invalid access token.",
             ) from exc
         return context.user.id, True
-
     if snapshot_access:
         try:
-            return (
-                _decode_snapshot_access_token(
-                    token=snapshot_access,
-                    artifact_id=artifact_id,
-                ),
-                False,
-            )
+            user_id = _decode_snapshot_access_token(token=snapshot_access, artifact_id=artifact_id)
+            return user_id, False
         except jwt.InvalidTokenError as exc:
             raise AppError(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 code="invalid_snapshot_access_token",
                 message="Invalid snapshot access token.",
             ) from exc
-
     raise AppError(
         status_code=status.HTTP_401_UNAUTHORIZED,
         code="missing_access_token",
@@ -124,13 +123,38 @@ def _set_snapshot_access_cookie(response: Response, *, user_id: str, artifact_id
     )
 
 
+async def file_response(
+    request: Request, storage: StorageBackend, file: SnapshotFile, *, archive: bool = False
+) -> Response:
+    """Serve without temp files (sendfile/Range/ETag locally, ranged streaming on S3).
+    Artifact ids change on every re-snapshot, so responses are cacheable."""
+    if file.key is None:
+        response: Response = Response(
+            content=file.text or "",
+            media_type=file.mime_type,
+            headers={"Cache-Control": IMMUTABLE_FILE_CACHE, "X-Content-Type-Options": "nosniff"},
+        )
+    else:
+        response = await storage_file_response(
+            request,
+            storage,
+            key=file.key,
+            filename=file.filename,
+            media_type=file.mime_type,
+            cache_control=IMMUTABLE_FILE_CACHE,
+        )
+    if archive:
+        response.headers["Content-Security-Policy"] = ARCHIVE_CSP
+    return response
+
+
 @router.get(
     "/settings",
     response_model=SnapshotSettingsResponse,
     summary="Get snapshot settings",
     description=(
-        "Returns effective snapshot archive settings for the current user and nullable "
-        "per-user overrides. Null override values inherit global environment settings."
+        "Returns effective snapshot settings for the current user and nullable per-user "
+        "overrides. Null override values inherit the server defaults."
     ),
 )
 async def get_snapshot_settings(
@@ -146,7 +170,7 @@ async def get_snapshot_settings(
     summary="Update snapshot settings",
     description=(
         "Stores nullable per-user overrides for snapshot formats. Omitted fields keep their "
-        "current value; explicit null resets a format to the global environment default."
+        "current value; explicit null resets a format to the server default."
     ),
 )
 async def update_snapshot_settings(
@@ -161,10 +185,7 @@ async def update_snapshot_settings(
     "/jobs",
     response_model=SnapshotJobListResponse,
     summary="List snapshot jobs",
-    description=(
-        "Returns snapshot worker jobs owned by the current user. The optional content_object_id "
-        "filter is useful for clients that want to poll processing status for a material."
-    ),
+    description="Snapshot jobs owned by the current user, optionally for one content object.",
 )
 async def list_snapshot_jobs(
     context: Annotated[AuthContext, Depends(get_auth_context)],
@@ -172,8 +193,7 @@ async def list_snapshot_jobs(
     content_object_id: Annotated[str | None, Query(max_length=36)] = None,
 ) -> SnapshotJobListResponse:
     return await service.list_jobs(
-        owner_user_id=context.user.id,
-        content_object_id=content_object_id,
+        owner_user_id=context.user.id, content_object_id=content_object_id
     )
 
 
@@ -181,11 +201,7 @@ async def list_snapshot_jobs(
     "/artifacts",
     response_model=SnapshotArtifactListResponse,
     summary="List snapshot artifacts",
-    description=(
-        "Returns ready snapshot artifacts owned by the current user. Clients can use this "
-        "endpoint after polling jobs to show available Markdown, HTML, PDF, screenshot, and "
-        "thumbnail views."
-    ),
+    description="Ready snapshot artifacts owned by the current user.",
 )
 async def list_snapshot_artifacts(
     context: Annotated[AuthContext, Depends(get_auth_context)],
@@ -193,8 +209,7 @@ async def list_snapshot_artifacts(
     content_object_id: Annotated[str | None, Query(max_length=36)] = None,
 ) -> SnapshotArtifactListResponse:
     return await service.list_artifacts(
-        owner_user_id=context.user.id,
-        content_object_id=content_object_id,
+        owner_user_id=context.user.id, content_object_id=content_object_id
     )
 
 
@@ -203,13 +218,10 @@ async def list_snapshot_artifacts(
     response_model=ReprocessSnapshotsResponse,
     summary="Reprocess snapshot jobs",
     description=(
-        "Queues snapshot jobs for existing owned content or a specific source asset. "
+        "Queues snapshot jobs for owned content or a specific source asset. "
         "When job_types is omitted, Markdown extraction is queued."
     ),
-    responses={
-        200: {"description": "Snapshot jobs queued."},
-        404: {"model": ErrorResponse, "description": "Content object or asset not found."},
-    },
+    responses={404: {"model": ErrorResponse, "description": "Content or asset not found."}},
 )
 async def reprocess_snapshots(
     payload: ReprocessSnapshotsRequest,
@@ -218,11 +230,9 @@ async def reprocess_snapshots(
 ) -> ReprocessSnapshotsResponse:
     try:
         return await service.reprocess(owner_user_id=context.user.id, payload=payload)
-    except SnapshotArtifactNotFoundError as exc:
+    except SnapshotNotFoundError as exc:
         raise AppError(
-            status_code=404,
-            code="snapshot_source_not_found",
-            message="Snapshot source not found.",
+            status_code=404, code="snapshot_source_not_found", message="Snapshot source not found."
         ) from exc
 
 
@@ -238,53 +248,29 @@ async def reprocess_snapshots(
 )
 async def get_snapshot_artifact_file(
     artifact_id: str,
+    request: Request,
     auth_service: Annotated[AuthService, Depends(get_auth_service)],
     service: Annotated[SnapshotService, Depends(get_snapshot_service)],
     authorization: Annotated[
-        HTTPAuthorizationCredentials | None,
-        Security(bearer_auth_scheme),
+        HTTPAuthorizationCredentials | None, Security(bearer_auth_scheme)
     ] = None,
     snapshot_access: Annotated[str | None, Cookie(alias=SNAPSHOT_ACCESS_COOKIE)] = None,
-) -> FileResponse:
-    owner_user_id, used_bearer = await _resolve_snapshot_owner_user_id(
+) -> Response:
+    owner_user_id, used_bearer = await _resolve_owner(
         artifact_id=artifact_id,
         auth_service=auth_service,
         authorization=authorization,
         snapshot_access=snapshot_access,
     )
-    logger.info(
-        "snapshot.rest.artifact.request",
-        artifact_id=artifact_id,
-        owner_user_id=owner_user_id,
-        auth_method="bearer" if used_bearer else "snapshot_cookie",
-    )
     try:
-        path, mime_type, filename = await service.get_artifact_file(
-            owner_user_id=owner_user_id,
-            artifact_id=artifact_id,
-        )
-    except SnapshotArtifactNotFoundError as exc:
-        raise AppError(
-            status_code=404,
-            code="snapshot_artifact_not_found",
-            message="Snapshot artifact not found.",
-        ) from exc
-    response = FileResponse(
-        path,
-        media_type=mime_type,
-        filename=filename,
-        content_disposition_type="inline",
+        file = await service.get_artifact_file(owner_user_id=owner_user_id, artifact_id=artifact_id)
+    except SnapshotNotFoundError as exc:
+        raise _not_found() from exc
+    response = await file_response(
+        request, request.app.state.storage, file, archive=file.mime_type == "text/html"
     )
     if used_bearer:
         _set_snapshot_access_cookie(response, user_id=owner_user_id, artifact_id=artifact_id)
-    logger.info(
-        "snapshot.rest.artifact.response",
-        artifact_id=artifact_id,
-        filename=filename,
-        mime_type=mime_type,
-        path=str(path),
-        cookie_set=used_bearer,
-    )
     return response
 
 
@@ -292,8 +278,8 @@ async def get_snapshot_artifact_file(
     "/artifacts/{artifact_id}/resources/{filename}",
     summary="Get snapshot archive resource",
     description=(
-        "Streams a static resource file (CSS, image, font) belonging to a webpage HTML archive. "
-        "Access is granted by a short-lived scoped snapshot cookie."
+        "Streams a static resource (CSS, image, font) of a webpage HTML archive. Access is "
+        "granted by the short-lived scoped snapshot cookie or a bearer token."
     ),
     responses={
         200: {"description": "Resource file returned."},
@@ -304,45 +290,24 @@ async def get_snapshot_artifact_file(
 async def get_snapshot_artifact_resource(
     artifact_id: str,
     filename: str,
+    request: Request,
     auth_service: Annotated[AuthService, Depends(get_auth_service)],
     service: Annotated[SnapshotService, Depends(get_snapshot_service)],
     authorization: Annotated[
-        HTTPAuthorizationCredentials | None,
-        Security(bearer_auth_scheme),
+        HTTPAuthorizationCredentials | None, Security(bearer_auth_scheme)
     ] = None,
     snapshot_access: Annotated[str | None, Cookie(alias=SNAPSHOT_ACCESS_COOKIE)] = None,
 ) -> Response:
-    owner_user_id, _ = await _resolve_snapshot_owner_user_id(
+    owner_user_id, _ = await _resolve_owner(
         artifact_id=artifact_id,
         auth_service=auth_service,
         authorization=authorization,
         snapshot_access=snapshot_access,
     )
-    logger.info(
-        "snapshot.rest.resource.request",
-        artifact_id=artifact_id,
-        filename=filename,
-        owner_user_id=owner_user_id,
-        has_cookie=snapshot_access is not None,
-        has_bearer=authorization is not None and bool(authorization.credentials),
-    )
     try:
-        data, content_type = await service.get_artifact_resource(
-            owner_user_id=owner_user_id,
-            artifact_id=artifact_id,
-            filename=filename,
+        file = await service.get_artifact_resource(
+            owner_user_id=owner_user_id, artifact_id=artifact_id, filename=filename
         )
-    except SnapshotArtifactNotFoundError as exc:
-        raise AppError(
-            status_code=404,
-            code="snapshot_artifact_not_found",
-            message="Snapshot artifact not found.",
-        ) from exc
-    logger.info(
-        "snapshot.rest.resource.response",
-        artifact_id=artifact_id,
-        filename=filename,
-        content_type=content_type,
-        size_bytes=len(data),
-    )
-    return Response(content=data, media_type=content_type)
+    except SnapshotNotFoundError as exc:
+        raise _not_found() from exc
+    return await file_response(request, request.app.state.storage, file, archive=True)

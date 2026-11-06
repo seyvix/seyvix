@@ -1,9 +1,6 @@
-import { useEffect, useRef } from 'react'
-import { type InfiniteData, useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
+import { type InfiniteData, useInfiniteQuery } from '@tanstack/react-query'
 import { fetchNotesPage, NOTES_PAGE_SIZE } from '../api/notes.ts'
 import type { Note, NotesPageResult, NotesParams } from '../types/index.ts'
-
-const HOME_NOTES_POLL_INTERVAL_MS = 2_000
 
 export function notesQueryKey(params: NotesParams = {}) {
   return ['notes', {
@@ -33,32 +30,8 @@ export function hasNotesSearchOrFilters(params: NotesParams = {}) {
   )
 }
 
-export function notesRefetchInterval(
-  params: NotesParams = {},
-  visibilityState: DocumentVisibilityState = 'visible',
-) {
-  if (hasNotesSearchOrFilters(params)) return false
-  return visibilityState === 'visible' ? HOME_NOTES_POLL_INTERVAL_MS : false
-}
-
-type NotesQueryParams = ReturnType<typeof notesQueryKey>[1]
 export type NotesInfiniteData = InfiniteData<NotesPageResult, number>
 export type NotesQueryData = NotesInfiniteData | Note[] | undefined
-
-function notesParamsFromQueryParams(params: NotesQueryParams): NotesParams {
-  return {
-    search: params.search ?? undefined,
-    searchMode: params.searchMode ?? undefined,
-    sort: params.sort ?? undefined,
-    tags: params.tags.length ? [...params.tags] : undefined,
-    folders: params.folders.length ? [...params.folders] : undefined,
-    contentTypes: params.contentTypes.length ? [...params.contentTypes] : undefined,
-    sources: params.sources.length ? [...params.sources] : undefined,
-    favorite: params.favorite,
-    createdAfter: params.createdAfter,
-    createdBefore: params.createdBefore,
-  }
-}
 
 export function dedupeNotes(notes: Note[]) {
   const seen = new Set<string>()
@@ -136,95 +109,72 @@ export function replaceNoteInNotesQueryData(
   }
 }
 
-export function mergeNoteInNotesQueryData(
+/**
+ * Applies a change-feed batch to one cached list: known cards are replaced in place (keeping
+ * list-specific fields such as search matches and the client's stable key), removed ids are
+ * dropped, and — only for the unfiltered list — unknown cards are prepended. Returns the same
+ * object when nothing changed so React Query skips re-rendering.
+ */
+export function applyNoteChangesToNotesQueryData(
   data: NotesQueryData,
-  mergedNote: Note,
-  sourceSlug: string,
-): NotesInfiniteData | undefined {
+  changed: ReadonlyMap<string, Note>,
+  removedIds: ReadonlySet<string>,
+  options: { insertNew: boolean },
+): NotesQueryData {
   const normalized = normalizeNotesQueryData(data)
-  if (!normalized) return undefined
-  return {
-    ...normalized,
-    pages: normalized.pages.map(page => ({
-      ...page,
-      items: (page.items ?? [])
-        .filter(note => note.slug !== sourceSlug)
-        .map(note => note.slug === mergedNote.slug ? mergedNote : note),
-    })),
+  if (!normalized) return data
+  const seen = new Set<string>()
+  let modified = false
+  const pages = normalized.pages.map((page) => {
+    let pageModified = false
+    const items: Note[] = []
+    for (const note of page.items ?? []) {
+      if (removedIds.has(note.id)) {
+        pageModified = true
+        continue
+      }
+      const update = changed.get(note.id)
+      seen.add(note.id)
+      if (update) {
+        pageModified = true
+        items.push({
+          ...update,
+          searchMatches: note.searchMatches?.length ? note.searchMatches : update.searchMatches,
+          stableKey: note.stableKey,
+        })
+      } else {
+        items.push(note)
+      }
+    }
+    if (!pageModified) return page
+    modified = true
+    return { ...page, items }
+  })
+  if (options.insertNew) {
+    const fresh = [...changed.values()].filter(note => !seen.has(note.id) && !removedIds.has(note.id))
+    if (fresh.length) {
+      modified = true
+      pages[0] = { ...pages[0], items: [...fresh, ...(pages[0]?.items ?? [])] }
+    }
   }
+  return modified ? { ...normalized, pages } : data
 }
 
+/**
+ * Paginated note cards. Freshness comes from the change feed (`useNotesChangeFeed`), which
+ * merges updated cards into these caches, so lists are never re-polled.
+ */
 export function useNotes(params: NotesParams = {}) {
-  const hasSearchOrFilters = hasNotesSearchOrFilters(params)
-  const queryClient = useQueryClient()
-  const queryKey = notesQueryKey(params)
-  const stableParams = queryKey[1]
-  const stableParamsKey = JSON.stringify(stableParams)
-  const refreshInFlightRef = useRef(false)
   const query = useInfiniteQuery({
-    queryKey,
+    queryKey: notesQueryKey(params),
     queryFn: ({ pageParam, signal }) => fetchNotesPage(params, signal, {
       limit: NOTES_PAGE_SIZE,
       offset: pageParam,
     }),
     initialPageParam: 0,
     getNextPageParam: page => page.nextOffset ?? undefined,
-    staleTime: hasSearchOrFilters ? 5_000 : 10_000,
     placeholderData: previousData => previousData,
-    refetchOnWindowFocus: hasSearchOrFilters ? 'always' : false,
   })
-
-  useEffect(() => {
-    if (typeof window === 'undefined' || typeof document === 'undefined') return
-
-    const queryParams = JSON.parse(stableParamsKey) as NotesQueryParams
-    const interval = notesRefetchInterval(queryParams, document.visibilityState)
-    if (interval === false) return
-
-    const pollParams = notesParamsFromQueryParams(queryParams)
-    const pollQueryKey = notesQueryKey(pollParams)
-    let cancelled = false
-
-    async function refreshFirstPage() {
-      if (document.visibilityState !== 'visible' || refreshInFlightRef.current) return
-      refreshInFlightRef.current = true
-      try {
-        const firstPage = await fetchNotesPage(pollParams, undefined, {
-          limit: NOTES_PAGE_SIZE,
-          offset: 0,
-        })
-        if (cancelled) return
-        queryClient.setQueryData<NotesQueryData>(
-          pollQueryKey,
-          current => {
-            const normalized = normalizeNotesQueryData(current)
-            if (!normalized) return { pages: [firstPage], pageParams: [0] }
-            return {
-              ...normalized,
-              pages: [firstPage, ...normalized.pages.slice(1)],
-              pageParams: [0, ...normalized.pageParams.slice(1)],
-            }
-          },
-        )
-      } finally {
-        refreshInFlightRef.current = false
-      }
-    }
-
-    const intervalId = window.setInterval(() => {
-      void refreshFirstPage()
-    }, interval)
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') void refreshFirstPage()
-    }
-    document.addEventListener('visibilitychange', handleVisibilityChange)
-
-    return () => {
-      cancelled = true
-      window.clearInterval(intervalId)
-      document.removeEventListener('visibilitychange', handleVisibilityChange)
-    }
-  }, [queryClient, stableParamsKey])
 
   return {
     ...query,

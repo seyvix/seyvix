@@ -1,26 +1,25 @@
-.git
-.gitignore
-.idea
-.DS_Store
+# Build context is the repository root for every image. Allowlist only what the
+# Dockerfiles copy so local data, secrets, caches and host build output never leak in.
+*
 
-.env
-.env.*
-!.env.example
+!backend/pyproject.toml
+!backend/uv.lock
+!backend/alembic.ini
+!backend/app
+!backend/migrations
+
+!telegram-bot/pyproject.toml
+!telegram-bot/uv.lock
+!telegram-bot/telegram_bot
+
+!web
+web/node_modules
+web/build
+web/dist
+web/.react-router
+web/**/*.test.ts
+web/**/*.test.tsx
 
 **/__pycache__
-**/*.pyc
-**/.pytest_cache
-**/.ruff_cache
-**/.mypy_cache
-**/.venv
-**/venv
-
-web/node_modules
-web/dist
-
-api/data
-data
-postgres_data
-redis_data
-rabbitmq_data
-minio_data
+**/*.py[cod]
+**/.DS_Store

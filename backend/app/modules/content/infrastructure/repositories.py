@@ -1,34 +1,35 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from typing import cast
+
+from sqlalchemy import Select, func, or_, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+from sqlalchemy.sql.base import ExecutableOption
 
 from app.modules.content.models import (
     ContentAsset,
     ContentCollectionItem,
     ContentFileUpload,
     ContentObject,
-    ContentTag,
 )
-from sqlalchemy import func, select, text
-from sqlalchemy.dialects.postgresql import insert as postgresql_insert
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
-from sqlalchemy.sql.base import ExecutableOption
 
 
 def content_object_load_options() -> tuple[ExecutableOption, ...]:
+    """Eager loads needed to render a note card (one query per relationship level)."""
+    child = selectinload(ContentObject.collection_items).selectinload(
+        ContentCollectionItem.content_object
+    )
     return (
-        selectinload(ContentObject.tags),
         selectinload(ContentObject.assets),
-        selectinload(ContentObject.collection_items)
-        .selectinload(ContentCollectionItem.content_object)
-        .selectinload(ContentObject.tags),
-        selectinload(ContentObject.collection_items)
-        .selectinload(ContentCollectionItem.content_object)
-        .selectinload(ContentObject.assets),
+        child.selectinload(ContentObject.assets),
+        child.selectinload(ContentObject.collection_items).selectinload(
+            ContentCollectionItem.content_object
+        ),
         selectinload(ContentObject.collection_memberships).selectinload(
-            ContentCollectionItem.collection,
+            ContentCollectionItem.collection
         ),
     )
 
@@ -40,81 +41,58 @@ class ContentRepository:
     def add(self, content_object: ContentObject) -> None:
         self.session.add(content_object)
 
-    def add_asset(self, asset: ContentAsset) -> None:
-        self.session.add(asset)
-
     def add_collection_item(self, item: ContentCollectionItem) -> None:
         self.session.add(item)
 
-    async def get_by_slug(
-        self,
-        *,
-        owner_user_id: str,
-        slug: str,
-        include_deleted: bool = False,
-    ) -> ContentObject | None:
+    def _owned(self, owner_user_id: str, include_deleted: bool) -> Select[tuple[ContentObject]]:
         query = (
             select(ContentObject)
             .options(*content_object_load_options())
-            .where(ContentObject.owner_user_id == owner_user_id, ContentObject.slug == slug)
+            .where(ContentObject.owner_user_id == owner_user_id)
         )
         if not include_deleted:
             query = query.where(ContentObject.deleted_at.is_(None))
+        return query
+
+    async def get_by_slug(
+        self, *, owner_user_id: str, slug: str, include_deleted: bool = False
+    ) -> ContentObject | None:
+        query = self._owned(owner_user_id, include_deleted).where(ContentObject.slug == slug)
         return cast(ContentObject | None, await self.session.scalar(query))
 
     async def get_by_id(
-        self,
-        *,
-        owner_user_id: str,
-        object_id: str,
-        include_deleted: bool = False,
+        self, *, owner_user_id: str, object_id: str, include_deleted: bool = False
     ) -> ContentObject | None:
-        query = (
-            select(ContentObject)
-            .options(*content_object_load_options())
-            .where(ContentObject.owner_user_id == owner_user_id, ContentObject.id == object_id)
-        )
-        if not include_deleted:
-            query = query.where(ContentObject.deleted_at.is_(None))
+        query = self._owned(owner_user_id, include_deleted).where(ContentObject.id == object_id)
         return cast(ContentObject | None, await self.session.scalar(query))
 
-    async def get_by_asset_id(
-        self,
-        *,
-        owner_user_id: str,
-        asset_id: str,
-    ) -> ContentObject | None:
-        query = (
-            select(ContentObject)
-            .options(*content_object_load_options())
-            .join(ContentAsset, ContentAsset.content_object_id == ContentObject.id)
-            .where(
-                ContentObject.owner_user_id == owner_user_id,
-                ContentAsset.id == asset_id,
+    async def get_by_asset_id(self, *, owner_user_id: str, asset_id: str) -> ContentObject | None:
+        query = self._owned(owner_user_id, False).where(
+            ContentObject.id.in_(
+                select(ContentAsset.content_object_id).where(ContentAsset.id == asset_id)
             )
         )
         return cast(ContentObject | None, await self.session.scalar(query))
 
-    async def list_by_slugs(
-        self,
-        *,
-        owner_user_id: str,
-        slugs: list[str],
-        include_deleted: bool = False,
+    async def list_by_ids(
+        self, *, owner_user_id: str, ids: Sequence[str], include_deleted: bool = False
     ) -> list[ContentObject]:
-        query = (
-            select(ContentObject)
-            .options(*content_object_load_options())
-            .where(ContentObject.owner_user_id == owner_user_id, ContentObject.slug.in_(slugs))
-        )
-        if not include_deleted:
-            query = query.where(ContentObject.deleted_at.is_(None))
+        if not ids:
+            return []
+        query = self._owned(owner_user_id, include_deleted).where(ContentObject.id.in_(ids))
+        return list(await self.session.scalars(query))
+
+    async def list_by_slugs(
+        self, *, owner_user_id: str, slugs: Sequence[str], include_deleted: bool = False
+    ) -> list[ContentObject]:
+        if not slugs:
+            return []
+        query = self._owned(owner_user_id, include_deleted).where(ContentObject.slug.in_(slugs))
         return list(await self.session.scalars(query))
 
     async def slug_exists(self, *, owner_user_id: str, slug: str) -> bool:
         query = select(ContentObject.id).where(
-            ContentObject.owner_user_id == owner_user_id,
-            ContentObject.slug == slug,
+            ContentObject.owner_user_id == owner_user_id, ContentObject.slug == slug
         )
         return await self.session.scalar(query) is not None
 
@@ -124,135 +102,72 @@ class ContentRepository:
             {"lock_key": f"content-object-slug:{owner_user_id}:{slug_base}"},
         )
 
-    async def list_all(
-        self,
-        *,
-        owner_user_id: str,
-        include_deleted: bool = False,
-    ) -> list[ContentObject]:
-        query = (
-            select(ContentObject)
-            .options(*content_object_load_options())
-            .where(ContentObject.owner_user_id == owner_user_id)
-        )
-        if not include_deleted:
-            query = query.where(ContentObject.deleted_at.is_(None))
-        return list(await self.session.scalars(query))
-
-    async def list_deleted(self, *, owner_user_id: str) -> list[ContentObject]:
-        query = (
-            select(ContentObject)
-            .options(*content_object_load_options())
-            .where(
+    async def min_sort_order(self, *, owner_user_id: str) -> int:
+        value = await self.session.scalar(
+            select(func.min(ContentObject.sort_order)).where(
                 ContentObject.owner_user_id == owner_user_id,
-                ContentObject.deleted_at.is_not(None),
+                ContentObject.deleted_at.is_(None),
             )
-            .order_by(ContentObject.deleted_at.desc())
         )
-        return list(await self.session.scalars(query))
+        return int(value or 0)
+
+    async def next_collection_position(self, collection_id: str) -> int:
+        value = await self.session.scalar(
+            select(func.max(ContentCollectionItem.position)).where(
+                ContentCollectionItem.collection_id == collection_id
+            )
+        )
+        return int(value or 0) + 10
 
     async def list_collection_items(
-        self,
-        collection_id: str,
-        *,
-        include_deleted_children: bool = False,
+        self, collection_id: str, *, include_deleted_children: bool = False
     ) -> list[ContentCollectionItem]:
         query = (
             select(ContentCollectionItem)
+            .join(ContentObject, ContentObject.id == ContentCollectionItem.content_object_id)
             .options(
-                selectinload(ContentCollectionItem.content_object).selectinload(ContentObject.tags),
-                selectinload(ContentCollectionItem.content_object).selectinload(
-                    ContentObject.assets,
-                ),
-                selectinload(ContentCollectionItem.content_object)
-                .selectinload(ContentObject.collection_memberships)
-                .selectinload(ContentCollectionItem.collection),
+                selectinload(ContentCollectionItem.content_object).options(
+                    *content_object_load_options()  # type: ignore[arg-type]
+                )
             )
             .where(ContentCollectionItem.collection_id == collection_id)
-            .order_by(ContentCollectionItem.position.asc())
+            .order_by(ContentCollectionItem.position.asc(), ContentCollectionItem.id.asc())
         )
-        items = list(await self.session.scalars(query))
-        if include_deleted_children:
-            return items
-        # Soft-deleted children keep their content_collection_items row so the
-        # link can be restored from trash, but they must disappear from the
-        # collection's user-visible objects list.
-        return [
-            item
-            for item in items
-            if item.content_object is not None and item.content_object.deleted_at is None
-        ]
+        # Soft-deleted children keep their membership row (restorable from trash) but are
+        # hidden from the collection's visible items.
+        if not include_deleted_children:
+            query = query.where(ContentObject.deleted_at.is_(None))
+        return list(await self.session.scalars(query))
 
     async def get_membership(self, content_object_id: str) -> ContentCollectionItem | None:
         query = select(ContentCollectionItem).where(
-            ContentCollectionItem.content_object_id == content_object_id,
+            ContentCollectionItem.content_object_id == content_object_id
         )
         return cast(ContentCollectionItem | None, await self.session.scalar(query))
 
-    async def get_max_sort_order(self, *, owner_user_id: str) -> int:
-        objects = await self.list_all(owner_user_id=owner_user_id)
-        return max((content_object.sort_order for content_object in objects), default=0)
-
-    async def get_min_sort_order(self, *, owner_user_id: str) -> int:
-        objects = await self.list_all(owner_user_id=owner_user_id)
-        return min((content_object.sort_order for content_object in objects), default=0)
-
-    async def count_owned_notes(self, *, owner_user_id: str) -> int:
-        result = await self.session.execute(
-            select(func.count())
-            .select_from(ContentObject)
-            .where(
-                ContentObject.owner_user_id == owner_user_id,
-                ContentObject.deleted_at.is_(None),
-                ContentObject.kind != "collection",
+    async def descendant_ids(self, root_ids: Sequence[str]) -> list[str]:
+        """`root_ids` plus every object nested (at any depth) in those collections."""
+        if not root_ids:
+            return []
+        roots = select(ContentObject.id.label("id")).where(ContentObject.id.in_(root_ids))
+        tree = roots.cte("tree", recursive=True)
+        tree = tree.union(
+            select(ContentCollectionItem.content_object_id.label("id")).join(
+                tree, ContentCollectionItem.collection_id == tree.c.id
             )
         )
-        return int(result.scalar_one())
+        return list(await self.session.scalars(select(tree.c.id)))
 
-
-class TagRepository:
-    def __init__(self, session: AsyncSession) -> None:
-        self.session = session
-
-    def add(self, tag: ContentTag) -> None:
-        self.session.add(tag)
-
-    async def get_by_slug(self, *, owner_user_id: str, slug: str) -> ContentTag | None:
-        query = select(ContentTag).where(
-            ContentTag.owner_user_id == owner_user_id,
-            ContentTag.slug == slug,
+    async def live_prefixes(self, prefixes: Sequence[str]) -> set[str]:
+        """Which of `prefixes` (`objects/{id}/`) still hold keys of live assets."""
+        if not prefixes:
+            return set()
+        keys = await self.session.scalars(
+            select(ContentAsset.storage_key).where(
+                or_(*(ContentAsset.storage_key.startswith(p, autoescape=True) for p in prefixes))
+            )
         )
-        return cast(ContentTag | None, await self.session.scalar(query))
-
-    async def get_or_create(
-        self,
-        *,
-        owner_user_id: str,
-        name: str,
-        slug: str,
-    ) -> ContentTag:
-        statement = (
-            postgresql_insert(ContentTag)
-            .values(owner_user_id=owner_user_id, name=name, slug=slug)
-            .on_conflict_do_nothing(constraint="uq_content_tags_owner_user_id_slug")
-            .returning(ContentTag)
-        )
-        tag = cast(ContentTag | None, await self.session.scalar(statement))
-        if tag is not None:
-            return tag
-
-        existing = await self.get_by_slug(owner_user_id=owner_user_id, slug=slug)
-        if existing is None:
-            raise RuntimeError(f"Failed to load content tag after conflict: {slug}")
-        return existing
-
-    async def list_all(self, *, owner_user_id: str) -> list[ContentTag]:
-        query = (
-            select(ContentTag)
-            .where(ContentTag.owner_user_id == owner_user_id)
-            .order_by(ContentTag.name.asc())
-        )
-        return list(await self.session.scalars(query))
+        return {prefix for key in keys for prefix in prefixes if key.startswith(prefix)}
 
 
 class FileUploadRepository:
@@ -262,28 +177,18 @@ class FileUploadRepository:
     def add(self, upload: ContentFileUpload) -> None:
         self.session.add(upload)
 
-    async def get_available_by_id(
-        self,
-        *,
-        owner_user_id: str,
-        upload_id: str,
-    ) -> ContentFileUpload | None:
-        query = select(ContentFileUpload).where(
-            ContentFileUpload.owner_user_id == owner_user_id,
-            ContentFileUpload.id == upload_id,
-            ContentFileUpload.consumed_at.is_(None),
-        )
-        return cast(ContentFileUpload | None, await self.session.scalar(query))
-
-    async def list_expired(
-        self,
-        *,
-        owner_user_id: str,
-        now: datetime,
+    async def list_available(
+        self, *, owner_user_id: str, upload_ids: Sequence[str], now: datetime
     ) -> list[ContentFileUpload]:
-        query = select(ContentFileUpload).where(
-            ContentFileUpload.owner_user_id == owner_user_id,
-            ContentFileUpload.expires_at <= now,
-            ContentFileUpload.consumed_at.is_(None),
+        if not upload_ids:
+            return []
+        query = (
+            select(ContentFileUpload)
+            .where(
+                ContentFileUpload.owner_user_id == owner_user_id,
+                ContentFileUpload.id.in_(upload_ids),
+                ContentFileUpload.expires_at > now,
+            )
+            .with_for_update()
         )
         return list(await self.session.scalars(query))

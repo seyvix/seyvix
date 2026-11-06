@@ -1,4 +1,4 @@
-/* Shared loading UI — import once in main.tsx */
+/* Shared loading UI — imported once in root.tsx */
 
 .appLoaderSpinner {
   width: 120px;
@@ -26,6 +26,11 @@
 
 .appLoaderHost--tall {
   min-height: min(72vh, 640px);
+}
+
+.appLoaderHost--fullscreen {
+  min-height: 100vh;
+  min-height: 100dvh;
 }
 
 .appLoaderOverlay {

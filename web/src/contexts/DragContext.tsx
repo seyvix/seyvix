@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect } from 'react'
+import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import { monitorForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter'
 import { monitorForExternal } from '@atlaskit/pragmatic-drag-and-drop/external/adapter'
 import { containsFiles } from '@atlaskit/pragmatic-drag-and-drop/external/file'
@@ -50,11 +50,12 @@ export function DragProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
-  return (
-    <DragContext.Provider value={{ isDragging: draggedId !== null, draggedId, overId, setOverId, isFileDragging }}>
-      {children}
-    </DragContext.Provider>
+  const value = useMemo(
+    () => ({ isDragging: draggedId !== null, draggedId, overId, setOverId, isFileDragging }),
+    [draggedId, overId, isFileDragging],
   )
+
+  return <DragContext.Provider value={value}>{children}</DragContext.Provider>
 }
 
 export function useDragContext() {

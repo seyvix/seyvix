@@ -104,8 +104,9 @@ class SearchCapabilitiesResponse(BaseModel):
     """Capabilities of the search subsystem for the current user."""
 
     note_count: int = Field(serialization_alias="noteCount")
-    threshold: int
+    threshold: int  # min notes for vector modes; kept for the web client (always finite)
     unlocked_modes: list[SearchMode] = Field(serialization_alias="unlockedModes")
     default_mode: SearchMode = Field(serialization_alias="defaultMode")
+    ai_enabled: bool = Field(serialization_alias="aiEnabled")
 
     model_config = ConfigDict(serialize_by_alias=True)

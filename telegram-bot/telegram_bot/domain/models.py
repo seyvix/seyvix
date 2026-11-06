@@ -9,6 +9,9 @@ from telegram_bot.domain.enums import BotMode
 
 
 class MaterialType(StrEnum):
+    """Wire values understood by the backend. Voice notes are sent as `audio` and round video
+    notes as `video`: the backend treats them like any other audio/video file."""
+
     TEXT = "text"
     LINK = "link"
     PHOTO = "photo"
@@ -22,10 +25,7 @@ class Attachment:
     file_id: str
     filename: str
     mime_type: str | None
-    data: bytes | None = None
-
-    def with_data(self, data: bytes) -> Attachment:
-        return replace(self, data=data)
+    file_size: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +47,9 @@ class SourceMetadata:
     def to_payload(self) -> dict[str, Any]:
         return {key: value for key, value in asdict(self).items() if value is not None}
 
+    def with_metadata(self, metadata: dict[str, Any]) -> SourceMetadata:
+        return replace(self, metadata=metadata)
+
 
 @dataclass(frozen=True, slots=True)
 class InboundMaterial:
@@ -60,11 +63,6 @@ class InboundMaterial:
     attachment: Attachment | None
     source: SourceMetadata | None = None
 
-    def with_attachment_data(self, data: bytes) -> InboundMaterial:
-        if self.attachment is None:
-            return self
-        return replace(self, attachment=self.attachment.with_data(data))
-
 
 @dataclass(frozen=True, slots=True)
 class SavedMaterial:
@@ -75,67 +73,33 @@ class SavedMaterial:
 
 @dataclass(frozen=True, slots=True)
 class UserContext:
-    telegram_user_id: str
+    telegram_user_id: int
+    allowed: bool
+    is_admin: bool
     linked: bool
-    user_id: str | None = None
     display_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class BotState:
-    telegram_user_id: str
+    telegram_user_id: int
     mode: BotMode
-    created_at: datetime
-    updated_at: datetime
     active_collection_id: str | None = None
-    auto_group_collection_id: str | None = None
-    auto_group_last_message_at: datetime | None = None
     manual_collection_started_at: datetime | None = None
-    manual_collection_last_item_at: datetime | None = None
-    manual_collection_reminder_sent_at: datetime | None = None
 
-    def with_mode(self, mode: BotMode, *, now: datetime) -> BotState:
-        if mode != BotMode.MANUAL_COLLECTION:
-            return replace(
-                self,
-                mode=mode,
-                active_collection_id=None,
-                manual_collection_started_at=None,
-                manual_collection_last_item_at=None,
-                manual_collection_reminder_sent_at=None,
-                updated_at=now,
-            )
-        return replace(self, mode=mode, updated_at=now)
 
-    def with_manual_collection(self, *, collection_id: str, now: datetime) -> BotState:
-        return replace(
-            self,
-            mode=BotMode.MANUAL_COLLECTION,
-            active_collection_id=collection_id,
-            manual_collection_started_at=self.manual_collection_started_at or now,
-            manual_collection_last_item_at=now,
-            manual_collection_reminder_sent_at=None,
-            updated_at=now,
-        )
+@dataclass(frozen=True, slots=True)
+class AccessGrant:
+    id: str
+    telegram_user_id: int | None
+    username: str | None
+    note: str | None
+    display_name: str | None
+    last_login_at: str | None
 
-    def with_auto_group(self, *, collection_id: str | None, now: datetime) -> BotState:
-        return replace(
-            self,
-            auto_group_collection_id=collection_id,
-            auto_group_last_message_at=now if collection_id is not None else None,
-            updated_at=now,
-        )
 
-    def finish_collection(self, *, now: datetime) -> BotState:
-        return replace(
-            self,
-            mode=BotMode.AUTO,
-            active_collection_id=None,
-            manual_collection_started_at=None,
-            manual_collection_last_item_at=None,
-            manual_collection_reminder_sent_at=None,
-            updated_at=now,
-        )
-
-    def mark_manual_collection_reminder_sent(self, *, now: datetime) -> BotState:
-        return replace(self, manual_collection_reminder_sent_at=now, updated_at=now)
+@dataclass(frozen=True, slots=True)
+class AccessList:
+    mode: str
+    admins: list[int]
+    items: list[AccessGrant]

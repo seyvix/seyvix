@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Annotated
 
+from fastapi import APIRouter, Depends, Query, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.api.dependencies import get_db_session
 from app.api.errors import AppError
 from app.api.schemas import ErrorResponse
@@ -22,8 +25,6 @@ from app.modules.vectorization.service import (
     VectorizationProviderNotFoundError,
     VectorizationService,
 )
-from fastapi import APIRouter, Depends, Query, status
-from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/vectorization", tags=["vectorization"])
 
@@ -34,16 +35,20 @@ def get_vectorization_service(
     return VectorizationService(session)
 
 
+def _provider_not_found(exc: VectorizationProviderNotFoundError) -> AppError:
+    return AppError(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        code="vectorization_provider_not_found",
+        message="Vectorization provider not found for requested source.",
+    )
+
+
 @router.post(
     "/index",
     response_model=VectorizationIndexResponse,
     status_code=status.HTTP_202_ACCEPTED,
     summary="Enqueue vectorization indexing for a source",
-    responses={
-        202: {"description": "Indexing job enqueued."},
-        401: {"model": ErrorResponse},
-        422: {"model": ErrorResponse},
-    },
+    responses={401: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
 )
 async def enqueue_index(
     payload: VectorizationIndexRequestBody,
@@ -57,14 +62,9 @@ async def enqueue_index(
             source_type=payload.source_type,
             source_id=payload.source_id,
             priority=payload.priority,
-            reason=payload.reason,
         )
     except VectorizationProviderNotFoundError as exc:
-        raise AppError(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            code="vectorization_provider_not_found",
-            message="Vectorization provider not found for requested source.",
-        ) from exc
+        raise _provider_not_found(exc) from exc
     return VectorizationIndexResponse(job_id=job.id, status=job.status)
 
 
@@ -73,11 +73,7 @@ async def enqueue_index(
     response_model=VectorizationReindexResponse,
     status_code=status.HTTP_202_ACCEPTED,
     summary="Enqueue reindexing jobs for indexed sources in a source scope",
-    responses={
-        202: {"description": "Reindex jobs enqueued."},
-        401: {"model": ErrorResponse},
-        422: {"model": ErrorResponse},
-    },
+    responses={401: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
 )
 async def enqueue_reindex(
     payload: VectorizationReindexRequestBody,
@@ -85,23 +81,15 @@ async def enqueue_reindex(
     service: Annotated[VectorizationService, Depends(get_vectorization_service)],
 ) -> VectorizationReindexResponse:
     try:
-        jobs = await service.enqueue_reindex_request(
+        job_ids = await service.enqueue_reindex_request(
             owner_user_id=context.user.id,
             source=payload.source,
             source_type=payload.source_type,
             priority=payload.priority,
-            reason=payload.reason,
         )
     except VectorizationProviderNotFoundError as exc:
-        raise AppError(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            code="vectorization_provider_not_found",
-            message="Vectorization provider not found for requested source.",
-        ) from exc
-    return VectorizationReindexResponse(
-        job_count=len(jobs),
-        job_ids=[job.id for job in jobs],
-    )
+        raise _provider_not_found(exc) from exc
+    return VectorizationReindexResponse(job_count=len(job_ids), job_ids=job_ids)
 
 
 @router.post(
@@ -135,10 +123,8 @@ async def list_jobs(
     service: Annotated[VectorizationService, Depends(get_vectorization_service)],
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> list[VectorizationJobResponse]:
-    return [
-        VectorizationJobResponse.model_validate(job)
-        for job in await service.repository.list_jobs(owner_user_id=context.user.id, limit=limit)
-    ]
+    jobs = await service.list_jobs(owner_user_id=context.user.id, limit=limit)
+    return [VectorizationJobResponse.model_validate(job) for job in jobs]
 
 
 @router.get(
@@ -152,13 +138,8 @@ async def list_sources(
     service: Annotated[VectorizationService, Depends(get_vectorization_service)],
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> list[VectorizationSourceResponse]:
-    return [
-        VectorizationSourceResponse.model_validate(source)
-        for source in await service.repository.list_sources(
-            owner_user_id=context.user.id,
-            limit=limit,
-        )
-    ]
+    sources = await service.list_sources(owner_user_id=context.user.id, limit=limit)
+    return [VectorizationSourceResponse.model_validate(source) for source in sources]
 
 
 @router.get(
@@ -172,9 +153,4 @@ async def list_chunks(
     service: Annotated[VectorizationService, Depends(get_vectorization_service)],
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> list[VectorizationChunkResponse]:
-    return [
-        VectorizationChunkResponse.model_validate(chunk)
-        for chunk in await service.repository.list_chunks(
-            owner_user_id=context.user.id, limit=limit
-        )
-    ]
+    return await service.list_chunks(owner_user_id=context.user.id, limit=limit)

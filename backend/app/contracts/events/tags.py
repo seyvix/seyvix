@@ -11,8 +11,10 @@ class ContentTagsCompletedPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     content_object_id: str
-    tagging_job_id: str
-    job_type: str
+    # None when tagging was skipped without a job (AI or auto-tagging disabled).
+    tagging_job_id: str | None = None
+    job_type: str = "suggest_content_tags"
+    # succeeded | failed | cancelled | skipped
     status: str
     metadata: dict[str, Any] = Field(default_factory=dict)
 

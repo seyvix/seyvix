@@ -10,7 +10,6 @@ class VectorizationIndexRequestBody(BaseModel):
     source_type: str = Field(min_length=1, max_length=64)
     source_id: str = Field(min_length=1, max_length=255)
     priority: int = Field(default=100, ge=0, le=1000)
-    reason: str | None = Field(default=None, max_length=255)
 
 
 class VectorizationIndexResponse(BaseModel):
@@ -22,7 +21,6 @@ class VectorizationReindexRequestBody(BaseModel):
     source: str = Field(min_length=1, max_length=64)
     source_type: str = Field(min_length=1, max_length=64)
     priority: int = Field(default=100, ge=0, le=1000)
-    reason: str | None = Field(default=None, max_length=255)
 
 
 class VectorizationReindexResponse(BaseModel):
@@ -44,11 +42,9 @@ class VectorizationJobResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
-    job_type: str
     source: str
     source_type: str
     source_id: str
-    external_id: str | None
     status: str
     priority: int
     attempts: int
@@ -68,14 +64,12 @@ class VectorizationSourceResponse(BaseModel):
     source: str
     source_type: str
     source_id: str
-    external_id: str
-    source_hash: str | None
-    status: str
-    provider: str | None
-    model: str | None
-    dimensions: int | None
-    last_indexed_at: datetime | None
+    content_hash: str
+    chunk_count: int
+    needs_embedding: bool
+    embedding_model: str | None
     last_error: str | None
+    indexed_at: datetime
     created_at: datetime
     updated_at: datetime
 
@@ -85,11 +79,8 @@ class VectorizationChunkResponse(BaseModel):
 
     id: str
     source_record_id: str
-    document_id: str
     chunk_index: int
-    chunk_external_id: str
     text_hash: str
     token_count: int
-    metadata_: dict[str, object] = Field(serialization_alias="metadata")
+    has_embedding: bool
     created_at: datetime
-    updated_at: datetime

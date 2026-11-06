@@ -1,0 +1,386 @@
+.page {
+  height: 100%;
+  overflow: auto;
+  padding: 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  background:
+    radial-gradient(circle at 80% 0%, rgba(99, 102, 241, 0.14), transparent 32%),
+    var(--color-bg);
+  color: var(--color-text-primary);
+}
+
+.header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.eyebrow {
+  margin-bottom: 8px;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.header h1 {
+  font-size: clamp(28px, 4vw, 40px);
+  line-height: 1;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.muted {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.error {
+  color: var(--color-danger);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.metric,
+.panel {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: rgba(26, 26, 26, 0.86);
+}
+
+.metric {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px;
+}
+
+.metric strong {
+  font-size: var(--font-size-xl);
+  font-variant-numeric: tabular-nums;
+}
+
+.metric small {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+}
+
+.metricLabel {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.meter {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--color-surface-hover);
+}
+
+.meterFill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-accent);
+  transition: width var(--duration-normal) var(--ease-default);
+}
+
+.meterWarn {
+  background: #f59e0b;
+}
+
+.meterDanger {
+  background: var(--color-danger);
+}
+
+.panel {
+  padding: 20px;
+  min-width: 0;
+}
+
+.panelHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.panelHeader h2 {
+  font-size: var(--font-size-lg);
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 20px;
+}
+
+.worker {
+  border-top: 1px solid var(--color-border);
+  padding: 12px 0;
+}
+
+.workerHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.dotOk,
+.dotBad {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.dotOk {
+  background: #22c55e;
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.6);
+}
+
+.dotBad {
+  background: var(--color-danger);
+}
+
+.loops {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.loop {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  padding: 8px 10px;
+  font-size: var(--font-size-sm);
+  min-width: 0;
+}
+
+.loop small {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.loop small.error {
+  color: var(--color-danger);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-size-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.table th,
+.table td {
+  border-top: 1px solid var(--color-border);
+  padding: 9px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.table th {
+  color: var(--color-text-secondary);
+  font-weight: var(--font-weight-medium);
+  border-top: 0;
+}
+
+.clickable {
+  cursor: pointer;
+}
+
+.clickable:hover {
+  background: var(--color-surface-hover);
+}
+
+.jobs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 6px 0 10px;
+}
+
+.jobsToolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.job {
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  padding: 8px 10px;
+}
+
+.jobHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.badge {
+  border-radius: 999px;
+  background: var(--color-surface-hover);
+  padding: 2px 8px;
+  font-size: var(--font-size-xs);
+}
+
+.badge[data-status='failed'] {
+  background: rgba(239, 68, 68, 0.18);
+  color: var(--color-danger);
+}
+
+.badge[data-status='succeeded'] {
+  background: rgba(34, 197, 94, 0.16);
+  color: #4ade80;
+}
+
+.errorBox {
+  margin-top: 6px;
+  max-height: 160px;
+  overflow: auto;
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.35);
+  color: #fca5a5;
+  font-size: var(--font-size-xs);
+  padding: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.segmented {
+  display: flex;
+  gap: 4px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 3px;
+}
+
+.segmented button,
+.button,
+.dangerButton,
+.linkButton {
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--font-size-sm);
+}
+
+.segmented button {
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 5px 10px;
+}
+
+.segmented .segmentActive {
+  background: var(--color-accent);
+  color: #fff;
+}
+
+.button {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+  padding: 8px 12px;
+}
+
+.button:hover {
+  background: var(--color-accent);
+}
+
+.dangerButton {
+  background: rgba(239, 68, 68, 0.16);
+  color: var(--color-danger);
+  padding: 8px 12px;
+}
+
+.button:disabled,
+.dangerButton:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.linkButton {
+  margin-left: auto;
+  background: transparent;
+  color: var(--color-accent);
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 16px;
+  font-size: var(--font-size-sm);
+}
+
+.kv dt {
+  color: var(--color-text-secondary);
+}
+
+.kv dd {
+  overflow-wrap: anywhere;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 16px;
+}
+
+.chipOn,
+.chipOff {
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: var(--font-size-xs);
+}
+
+.chipOn {
+  background: rgba(34, 197, 94, 0.14);
+  color: #4ade80;
+}
+
+.chipOff {
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  text-decoration: line-through;
+}
+
+@media (max-width: 720px) {
+  .page {
+    padding: 18px 14px calc(var(--mobile-bottom-nav-clearance, 0px) + 18px);
+  }
+
+  .table {
+    display: block;
+    overflow-x: auto;
+  }
+}

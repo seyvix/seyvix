@@ -136,6 +136,8 @@ class AppNote(BaseModel):
         default_factory=list,
         serialization_alias="searchMatches",
     )
+    # True while snapshot/thumbnail processing is pending for the note (or its children).
+    processing: bool = False
 
 
 class AppNoteListResponse(BaseModel):
@@ -189,12 +191,24 @@ class AppCardNote(BaseModel):
         default_factory=list,
         serialization_alias="searchMatches",
     )
+    # True while snapshot/thumbnail processing is pending for the note (or its children).
+    processing: bool = False
 
 
 class AppCardNoteListResponse(BaseModel):
     model_config = ConfigDict(serialize_by_alias=True)
     items: list[AppCardNote]
     nextOffset: int | None = Field(default=None, serialization_alias="nextOffset")
+
+
+class NoteChangesResponse(BaseModel):
+    """`GET /notes/changes`: cards changed since `cursor`; keys are snake_case by contract."""
+
+    cursor: str
+    notes: list[AppCardNote]
+    removed_ids: list[str]
+    reset: bool
+    has_more: bool = False
 
 
 class FileUploadAppResponse(BaseModel):
@@ -388,9 +402,7 @@ def _compact_search_matches(
                 text=text,
                 score=match.score,
                 highlight_ranges=[
-                    range_
-                    for range_ in match.highlight_ranges
-                    if range_.end <= len(text)
+                    range_ for range_ in match.highlight_ranges if range_.end <= len(text)
                 ],
             )
         )
@@ -479,6 +491,7 @@ def note_card_to_app_note(
         source=_source(card.source) if include_source else None,
         deferredLinkSnapshots=_deferred_link_snapshots(card),
         searchMatches=search_matches,
+        processing=card.processing,
     )
 
 
@@ -535,6 +548,7 @@ def note_card_to_app_card_note(
         collection=note.collection,
         deferredLinkSnapshots=note.deferredLinkSnapshots,
         searchMatches=note.searchMatches,
+        processing=note.processing,
     )
 
 

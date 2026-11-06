@@ -1,4 +1,5 @@
-import { apiFetch } from '../lib/apiClient'
+import { apiFetch } from '../lib/apiClient.ts'
+import { readJson } from '../lib/apiError.ts'
 import type { SearchMode } from '../components/SearchBar/SearchBar'
 
 export interface SearchCapabilities {
@@ -6,13 +7,10 @@ export interface SearchCapabilities {
   threshold: number
   unlockedModes: SearchMode[]
   defaultMode: SearchMode
+  /** False when the server runs without an AI provider (FTS-only search, no auto-enrichment). */
+  aiEnabled?: boolean
 }
 
-const BASE = '/api/v1/search'
-
 export async function apiSearchCapabilities(): Promise<SearchCapabilities> {
-  const res = await apiFetch(`${BASE}/capabilities`)
-  if (!res.ok) throw new Error('Failed to fetch search capabilities')
-  const data = (await res.json()) as SearchCapabilities
-  return data
+  return readJson(await apiFetch('/api/v1/search/capabilities'), 'Failed to fetch search capabilities')
 }
