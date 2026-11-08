@@ -479,7 +479,7 @@ async def queue_jobs(session: AsyncSession, rows: Sequence[dict[str, Any]], *, f
         return
     # Table (not ORM entity) insert: row keys are column names (`metadata` would otherwise
     # resolve to the declarative `Base.metadata`).
-    statement = pg_insert(SnapshotJob.__table__)  # type: ignore[arg-type]
+    statement = pg_insert(SnapshotJob.__table__).values(rows)  # type: ignore[arg-type]
     excluded = statement.excluded
     table = SnapshotJob.__table__.c
     statement = statement.on_conflict_do_update(
