@@ -192,19 +192,6 @@ export default function AsideHeader() {
           <span className={styles.navDot} />
         </NavLink>
 
-        {user?.is_admin && (
-          <NavLink
-            to="/admin"
-            onClick={() => setSettingsOpen(false)}
-            className={({ isActive }) =>
-              [styles.navItem, isActive ? styles.active : ''].filter(Boolean).join(' ')
-            }
-          >
-            <span className={styles.navIcon}><ShieldCheck size={18} strokeWidth={1.8} /></span>
-            <span className={styles.navLabel}>Админка</span>
-            <span className={styles.navDot} />
-          </NavLink>
-        )}
       </nav>
 
       <div className={styles.bottom}>

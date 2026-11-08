@@ -203,8 +203,9 @@
 }
 
 .moreMenuOpen {
-  max-height: 140px;
+  max-height: min(68vh, 460px);
   opacity: 1;
+  overflow-y: auto;
   pointer-events: auto;
   transform: translateY(0) scale(1);
 }
