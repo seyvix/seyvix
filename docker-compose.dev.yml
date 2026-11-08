@@ -43,6 +43,7 @@ services:
   snapshot-worker:
     <<: *dev-backend
     build: !reset null
+    command: ["python", "-m", "app.worker", "snapshots"]
 
   web:
     image: seyvix/web-dev:local

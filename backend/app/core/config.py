@@ -119,6 +119,9 @@ class Settings(BaseSettings):
     # Providers with asymmetric embeddings (e.g. Yandex text-search-doc/-query) use a separate
     # model for search queries; defaults to ai_embedding_model.
     ai_embedding_query_model: str | None = None
+    # Optional provider-specific task labels (e.g. Jina retrieval.passage / retrieval.query).
+    ai_embedding_task: str | None = None
+    ai_embedding_query_task: str | None = None
     # Optional per-capability endpoints (e.g. chat on one provider, Whisper on another);
     # each falls back to ai_base_url / ai_api_key.
     ai_embedding_base_url: str | None = None

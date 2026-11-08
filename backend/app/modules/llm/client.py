@@ -189,6 +189,13 @@ class AIClient:
             }
             if settings.ai_embedding_send_dimensions:
                 payload["dimensions"] = settings.ai_embedding_dimensions
+            task = (
+                settings.ai_embedding_query_task
+                if query and settings.ai_embedding_query_task
+                else settings.ai_embedding_task
+            )
+            if task:
+                payload["task"] = task
             body = await self._post_json(
                 "embeddings", payload, operation="embed", capability="embedding"
             )
